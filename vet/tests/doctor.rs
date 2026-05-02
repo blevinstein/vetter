@@ -21,9 +21,11 @@ fn doctor_runs_and_reports_stubs() {
 
 #[test]
 fn unimplemented_subcommand_exits_78() {
+    // `vet daemon start` is still a Phase-3 stub; once it lands,
+    // swap this for any remaining not-yet-implemented surface.
     Command::cargo_bin("vet")
         .expect("vet binary should be built")
-        .args(["allow", "list"])
+        .args(["daemon", "start"])
         .assert()
         .code(78)
         .stderr(contains("not implemented"));

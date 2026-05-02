@@ -21,11 +21,11 @@ url = { workspace = true }
 anstyle = { workspace = true }
 sha2 = "0.10"
 serde_yaml_ng = "0.10"
+tempfile = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
 serde_json = { workspace = true }
-tempfile = { workspace = true }
 proptest = "1"
 
 [[test]]

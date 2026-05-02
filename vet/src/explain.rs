@@ -132,8 +132,12 @@ fn load_error(e: &LoadError) -> String {
     match e {
         LoadError::Io { path, source } => format!("read {}: {source}", path.display()),
         LoadError::Yaml { path, source } => format!("parse {}: {source}", path.display()),
+        LoadError::Serialize { path, source } => format!("serialise {}: {source}", path.display()),
         LoadError::DuplicateId { id, path } => {
             format!("duplicate rule id `{id}` in {}", path.display())
+        }
+        LoadError::RuleNotFound { id, path } => {
+            format!("no rule with id `{id}` in {}", path.display())
         }
     }
 }

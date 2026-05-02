@@ -66,8 +66,16 @@ pub enum LoadError {
         #[source]
         source: serde_yaml_ng::Error,
     },
+    #[error("serialising allowlist for {path}: {source}")]
+    Serialize {
+        path: PathBuf,
+        #[source]
+        source: serde_yaml_ng::Error,
+    },
     #[error("duplicate rule id `{id}` in {path}")]
     DuplicateId { id: String, path: PathBuf },
+    #[error("no rule with id `{id}` in {path}")]
+    RuleNotFound { id: String, path: PathBuf },
 }
 
 /// Load the layered store. With `override_path` set, that single file
@@ -139,7 +147,10 @@ pub fn discover_project_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
-fn user_allowlist_path() -> Option<PathBuf> {
+/// Compute the path to the user-scope allowlist file from environment.
+/// Returns `None` when neither `XDG_CONFIG_HOME` nor `HOME` is set —
+/// the CLI surfaces that as an actionable error rather than guessing.
+pub fn user_allowlist_path() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         let xdg = PathBuf::from(xdg);
         if !xdg.as_os_str().is_empty() {
@@ -184,9 +195,114 @@ fn enforce_unique_ids(file: &AllowlistFile, path: &Path) -> Result<(), LoadError
     Ok(())
 }
 
+/// Atomically write `file` to `path`, creating parent dirs as needed.
+///
+/// Atomicity is via `tempfile::NamedTempFile::persist`: the YAML is
+/// written to a sibling tempfile in the same directory and then
+/// renamed over `path`. If the process is killed before the rename,
+/// the prior file (if any) is intact.
+pub fn write_file(path: &Path, file: &AllowlistFile) -> Result<(), LoadError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|source| LoadError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+    }
+    let yaml = serde_yaml_ng::to_string(file).map_err(|source| LoadError::Serialize {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let tmp = match parent {
+        Some(p) => tempfile::NamedTempFile::new_in(p),
+        None => tempfile::NamedTempFile::new_in("."),
+    }
+    .map_err(|source| LoadError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    {
+        use std::io::Write as _;
+        let mut handle = tmp.as_file();
+        handle
+            .write_all(yaml.as_bytes())
+            .map_err(|source| LoadError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        handle.sync_all().map_err(|source| LoadError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+    tmp.persist(path).map_err(|e| LoadError::Io {
+        path: path.to_path_buf(),
+        source: e.error,
+    })?;
+    Ok(())
+}
+
+/// Append `rule` to `path`'s `rules:` list, creating the file if it
+/// does not exist. Rejects rules whose `id` is already present (in
+/// either `rules:` or `deny:`).
+pub fn add_rule(path: &Path, rule: Rule) -> Result<(), LoadError> {
+    let mut file = if path.exists() {
+        load_file(path)?
+    } else {
+        AllowlistFile::default()
+    };
+    file.rules.push(rule);
+    enforce_unique_ids(&file, path)?;
+    write_file(path, &file)
+}
+
+/// Remove the first rule with the given `id` from `path`. Searches
+/// `rules:` first, then `deny:`. Returns `LoadError::RuleNotFound`
+/// if the id is absent.
+pub fn remove_rule(path: &Path, id: &str) -> Result<(), LoadError> {
+    let mut file = load_file(path)?;
+    if let Some(idx) = file.rules.iter().position(|r| r.id == id) {
+        file.rules.remove(idx);
+    } else if let Some(idx) = file.deny.iter().position(|r| r.id == id) {
+        file.deny.remove(idx);
+    } else {
+        return Err(LoadError::RuleNotFound {
+            id: id.to_string(),
+            path: path.to_path_buf(),
+        });
+    }
+    write_file(path, &file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::matcher::rule::{HttpClause, RuleWhen};
+    use crate::HttpMethod;
+    use tempfile::TempDir;
+
+    fn rule(id: &str, methods: Vec<HttpMethod>) -> Rule {
+        Rule {
+            id: id.to_string(),
+            command: None,
+            when: RuleWhen {
+                http: Some(HttpClause {
+                    method: Some(methods),
+                    url: None,
+                    headers_allow: Some(vec!["*".into()]),
+                    no_body: None,
+                    query: None,
+                }),
+                file_write: None,
+                file_read: None,
+            },
+            note: None,
+            created_by: None,
+            created_at: None,
+        }
+    }
 
     #[test]
     fn allowlist_file_round_trip_minimal() {
@@ -210,5 +326,111 @@ made_up: 1
 "#;
         let err = serde_yaml_ng::from_str::<AllowlistFile>(yaml).unwrap_err();
         assert!(err.to_string().contains("made_up"), "{err}");
+    }
+
+    #[test]
+    fn write_file_then_load_file_round_trips() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("nested/sub/allowlist.yaml");
+        let file = AllowlistFile {
+            rules: vec![rule("a", vec![HttpMethod::Get])],
+            deny: vec![rule("b", vec![HttpMethod::Post])],
+        };
+        write_file(&path, &file).unwrap();
+        let back = load_file(&path).unwrap();
+        assert_eq!(back.rules.len(), 1);
+        assert_eq!(back.rules[0].id, "a");
+        assert_eq!(back.deny.len(), 1);
+        assert_eq!(back.deny[0].id, "b");
+    }
+
+    #[test]
+    fn add_rule_creates_missing_file_with_parents() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("a/b/c/allowlist.yaml");
+        add_rule(&path, rule("only", vec![HttpMethod::Get])).unwrap();
+        assert!(path.exists());
+        let back = load_file(&path).unwrap();
+        assert_eq!(back.rules.len(), 1);
+        assert_eq!(back.rules[0].id, "only");
+    }
+
+    #[test]
+    fn add_rule_preserves_existing_rules_and_deny() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("allowlist.yaml");
+        let initial = AllowlistFile {
+            rules: vec![rule("first", vec![HttpMethod::Get])],
+            deny: vec![rule("blocked", vec![HttpMethod::Post])],
+        };
+        write_file(&path, &initial).unwrap();
+        add_rule(&path, rule("second", vec![HttpMethod::Head])).unwrap();
+        let back = load_file(&path).unwrap();
+        assert_eq!(back.rules.len(), 2);
+        assert_eq!(back.rules[0].id, "first");
+        assert_eq!(back.rules[1].id, "second");
+        assert_eq!(back.deny.len(), 1);
+        assert_eq!(back.deny[0].id, "blocked");
+    }
+
+    #[test]
+    fn add_rule_rejects_duplicate_id() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("allowlist.yaml");
+        add_rule(&path, rule("dup", vec![HttpMethod::Get])).unwrap();
+        let err = add_rule(&path, rule("dup", vec![HttpMethod::Head])).unwrap_err();
+        assert!(matches!(err, LoadError::DuplicateId { ref id, .. } if id == "dup"));
+    }
+
+    #[test]
+    fn remove_rule_from_rules_list() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("allowlist.yaml");
+        let initial = AllowlistFile {
+            rules: vec![
+                rule("keep1", vec![HttpMethod::Get]),
+                rule("drop", vec![HttpMethod::Head]),
+                rule("keep2", vec![HttpMethod::Get]),
+            ],
+            deny: vec![rule("blocked", vec![HttpMethod::Post])],
+        };
+        write_file(&path, &initial).unwrap();
+        remove_rule(&path, "drop").unwrap();
+        let back = load_file(&path).unwrap();
+        let ids: Vec<_> = back.rules.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["keep1", "keep2"]);
+        assert_eq!(back.deny.len(), 1);
+        assert_eq!(back.deny[0].id, "blocked");
+    }
+
+    #[test]
+    fn remove_rule_from_deny_list() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("allowlist.yaml");
+        let initial = AllowlistFile {
+            rules: vec![rule("keep", vec![HttpMethod::Get])],
+            deny: vec![rule("drop", vec![HttpMethod::Post])],
+        };
+        write_file(&path, &initial).unwrap();
+        remove_rule(&path, "drop").unwrap();
+        let back = load_file(&path).unwrap();
+        assert!(back.deny.is_empty());
+        assert_eq!(back.rules.len(), 1);
+    }
+
+    #[test]
+    fn remove_rule_unknown_id_errors() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("allowlist.yaml");
+        write_file(
+            &path,
+            &AllowlistFile {
+                rules: vec![rule("only", vec![HttpMethod::Get])],
+                deny: vec![],
+            },
+        )
+        .unwrap();
+        let err = remove_rule(&path, "missing").unwrap_err();
+        assert!(matches!(err, LoadError::RuleNotFound { ref id, .. } if id == "missing"));
     }
 }

@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod allow;
 mod color;
 mod doctor;
 mod explain;
@@ -76,16 +77,36 @@ enum Command {
 #[derive(Subcommand, Debug)]
 enum AllowAction {
     /// Add an allowlist rule (YAML pattern as the argument).
-    Add { pattern: String },
+    Add {
+        pattern: String,
+        /// Which scope to write to. Default `user`. Ignored when
+        /// `--allowlist <path>` is given.
+        #[arg(long, value_enum, default_value_t = AllowScope::User)]
+        scope: AllowScope,
+    },
     /// Remove the allowlist rule with the given id.
-    Rm { id: String },
+    Rm {
+        id: String,
+        /// Which scope to remove from. Default `user`. Ignored when
+        /// `--allowlist <path>` is given.
+        #[arg(long, value_enum, default_value_t = AllowScope::User)]
+        scope: AllowScope,
+    },
     /// List loaded rules.
     List {
-        #[arg(long)]
-        scope: Option<String>,
+        /// Restrict the listing to one source layer.
+        #[arg(long, value_enum)]
+        scope: Option<AllowScope>,
+        /// Print the audit log instead of the rule set (Phase 3).
         #[arg(long)]
         history: bool,
     },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum AllowScope {
+    User,
+    Project,
 }
 
 #[derive(Subcommand, Debug)]
@@ -100,7 +121,15 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Doctor => doctor::run(),
-        Command::Allow { .. } => not_implemented("`vet allow`", "Phase 2"),
+        Command::Allow { action } => match action {
+            AllowAction::Add { pattern, scope } => {
+                allow::add(&pattern, scope, cli.allowlist.as_deref())
+            }
+            AllowAction::Rm { id, scope } => allow::rm(&id, scope, cli.allowlist.as_deref()),
+            AllowAction::List { scope, history } => {
+                allow::list(scope, history, cli.allowlist.as_deref())
+            }
+        },
         Command::Daemon { .. } => not_implemented("`vet daemon`", "Phase 3"),
         Command::Wrap(argv) => {
             if cli.dry_run {

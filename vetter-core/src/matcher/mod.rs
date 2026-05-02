@@ -20,7 +20,8 @@ pub mod url;
 
 pub use decide::{decide, matches_rule, Decision, Scope};
 pub use loader::{
-    discover_project_root, load_default, load_file, AllowlistFile, AllowlistStore, LoadError,
+    add_rule, discover_project_root, load_default, load_file, remove_rule, user_allowlist_path,
+    write_file, AllowlistFile, AllowlistStore, LoadError,
 };
 pub use rule::{
     FileReadClause, FileWriteClause, HostPattern, HttpClause, Rule, RuleWhen, UrlClause,

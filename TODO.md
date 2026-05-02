@@ -62,7 +62,7 @@ Roadmap: [plans/Overview.md](plans/Overview.md) §8.4, §11. Test plan:
       `PlainWriter` vs `AnsiWriter`
 - [x] `vet doctor` reports `parsers registered . 1` (curl)
 
-## Phase 2 — Allowlist evaluation  `[~] in progress`
+## Phase 2 — Allowlist evaluation  `[x] done`
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §5. Test plan:
 [plans/TestingPlan.md](plans/TestingPlan.md) §2.5, §2.6.
@@ -75,7 +75,7 @@ Roadmap: [plans/Overview.md](plans/Overview.md) §5. Test plan:
 - [x] Path/host glob matching; URL normalisation before match
 - [x] `vet --explain curl …` reports allow / deny / prompt with
       matched rule id
-- [ ] `vet allow add` / `rm` / `list` subcommands fully wired
+- [x] `vet allow add` / `rm` / `list` subcommands fully wired
 - [x] Property tests over rule matching (TestingPlan §2.5)
 - [x] Negative tests: host-suffix confusion, path traversal, denylist
       overrides allow at every layer

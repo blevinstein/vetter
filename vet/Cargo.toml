@@ -22,6 +22,8 @@ sha2 = "0.10"
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 # Build vetterd as a sibling test artefact so wrap-mode integration
 # tests can spawn it via `assert_cmd::cargo_bin!("vetterd")`.

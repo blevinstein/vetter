@@ -2,6 +2,8 @@
 //! `AGENTS.md`.
 
 use super::*;
+use crate::notifier::NoopNotifier;
+use crate::pending::PendingQueue;
 use crate::testutil::tmpdir;
 use vetter_core::wire::WireDecision;
 
@@ -12,10 +14,14 @@ fn handle_connection_evaluates_and_responds() {
     let audit_path = dir.path().join("audit.log");
     let allowlist = load_default(None, None).unwrap();
     let audit = Arc::new(AuditLog::open(&audit_path).unwrap());
+    let pending = Arc::new(PendingQueue::new());
+    let notifier: Arc<dyn crate::notifier::Notifier> = Arc::new(NoopNotifier);
     let _ctx = Context {
         socket_path: sock,
         audit,
         allowlist,
+        pending,
+        notifier,
     };
     // Smoke-only: full e2e is in vetterd/tests/daemon_e2e.rs.
     // Here we just confirm Context can be assembled.

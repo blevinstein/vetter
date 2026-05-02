@@ -6,7 +6,7 @@ mod common;
 
 use predicates::str::contains;
 
-use common::{install_fake_curl, vet_cmd, Daemon};
+use common::{install_fake_curl, vet_cmd, Daemon, MockResponse};
 
 const ALLOWLIST: &str = r#"
 rules:
@@ -74,9 +74,12 @@ fn deny_path_does_not_exec() {
     );
 }
 
+/// Phase 4: `--dry-run` now routes to the notifier. The mock here
+/// rejects, so the wire response is Deny and `vet` exits 77.
 #[test]
-fn dry_run_forces_stub_deny_even_when_a_rule_would_allow() {
+fn dry_run_routes_to_notifier_and_can_be_rejected() {
     let d = Daemon::spawn(ALLOWLIST);
+    d.ui.set_default(MockResponse::deny("test rejected dry-run"));
     let dir = scratch();
     let marker = dir.path().join("ran.marker");
     install_fake_curl(dir.path(), &marker);
@@ -85,14 +88,18 @@ fn dry_run_forces_stub_deny_even_when_a_rule_would_allow() {
         .args(["--dry-run", "curl", "https://example.test/"])
         .assert()
         .code(77)
-        .stderr(contains("no UI yet"));
+        .stderr(contains("vet: deny"))
+        .stderr(contains("rejected dry-run"));
 
     assert!(!marker.exists(), "dry-run must not exec");
 }
 
+/// Phase 4: a no-rule-match request now routes to the notifier; the
+/// mock approves and the wrapped command runs.
 #[test]
-fn no_rule_match_falls_back_to_stub_deny() {
+fn no_rule_match_routes_to_notifier_and_can_be_approved() {
     let d = Daemon::spawn(ALLOWLIST);
+    d.ui.set_default(MockResponse::allow("test approved unmatched"));
     let dir = scratch();
     let marker = dir.path().join("ran.marker");
     install_fake_curl(dir.path(), &marker);
@@ -100,10 +107,11 @@ fn no_rule_match_falls_back_to_stub_deny() {
     vet_cmd(&d.socket, dir.path())
         .args(["curl", "https://unmatched.test/"])
         .assert()
-        .code(77)
-        .stderr(contains("no UI yet"));
+        .success()
+        .stderr(contains("vet: allow"))
+        .stderr(contains("approved unmatched"));
 
-    assert!(!marker.exists());
+    assert!(marker.exists(), "approved prompt must exec");
 }
 
 #[test]

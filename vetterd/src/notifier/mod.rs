@@ -1,0 +1,126 @@
+//! Approval-UI surface.
+//!
+//! The [`Notifier`] trait abstracts "show this prompt to the user".
+//! `notify` is fire-and-forget: the trait does not return a decision.
+//! Decisions flow back through [`crate::pending::PendingQueue::resolve`]
+//! from whatever thread / callback the platform delivers them on
+//! (UNUserNotificationCenter delegate, control socket reader, etc.).
+//!
+//! Two implementations ship with this crate:
+//!
+//! - [`mac::MacNotifier`] (cfg `target_os = "macos"`) — real
+//!   `UNUserNotificationCenter` integration with Approve / Reject
+//!   action buttons. Requires the binary to be inside a code-signed
+//!   `.app` bundle with `LSUIElement=true`; see `tools/build-app.sh`.
+//! - [`mock::MockNotifier`] — talks to a Unix socket the test harness
+//!   listens on, used by `daemon_e2e_prompt.rs` and the
+//!   `prompt_class_*` tests in `daemon_e2e.rs`. CI never has a logged-in
+//!   GUI session to drive the real notifier, so the mock is the
+//!   workhorse for automated coverage.
+//!
+//! Both implementations are constructed at daemon startup based on the
+//! `VETTERD_NOTIFIER` env variable (`mac` default, `mock` for tests).
+
+use std::sync::Arc;
+
+use crate::pending::{PendingQueue, PromptSummary};
+use crate::PlatformDriver;
+
+#[cfg(target_os = "macos")]
+pub mod mac;
+pub mod mock;
+
+/// Approval surface. Implementations push the decision back into the
+/// shared [`PendingQueue`] through their captured `Arc<PendingQueue>`.
+///
+/// `notify` MUST NOT block on the user's response — the connection
+/// worker is parked on `PendingQueue::submit`'s `Receiver` and the
+/// notifier is responsible only for getting the prompt in front of
+/// the user (or test driver).
+pub trait Notifier: Send + Sync {
+    /// Display `summary` to the user. The notifier may spawn threads
+    /// or post to a runloop; what it must not do is call
+    /// [`PendingQueue::submit`] (already done by the caller) or block
+    /// the calling thread waiting for the user.
+    fn notify(&self, summary: &PromptSummary);
+
+    /// Optional graceful shutdown hook. The default is a no-op; the
+    /// mock implementation overrides this so its background reader
+    /// thread terminates promptly when the daemon is going down.
+    fn shutdown(&self) {}
+}
+
+/// Convenience: wrap a notifier in `Arc<dyn Notifier>` to share it
+/// across worker threads.
+pub fn boxed<N: Notifier + 'static>(n: N) -> Arc<dyn Notifier> {
+    Arc::new(n)
+}
+
+/// Build the notifier the daemon should use, based on the
+/// `VETTERD_NOTIFIER` environment variable. Returns the notifier
+/// itself plus the [`PlatformDriver`] the caller should run on the
+/// main thread.
+///
+/// - `mac` (the bundle's launchd plist sets this) → [`mac::MacNotifier`]
+///   + [`PlatformDriver::AppKit`].
+/// - `mock` → [`mock::MockNotifier`]; requires `VETTERD_NOTIFIER_SOCKET`.
+///   Driver is [`PlatformDriver::None`] (accept loop on main thread).
+/// - `noop` → [`NoopNotifier`]. Driver is [`PlatformDriver::None`].
+///
+/// Default when unset: `noop` (so existing tests / non-bundle
+/// invocations don't accidentally try to launch AppKit, which would
+/// crash a headless CI worker). The bundle's launchd plist sets
+/// `VETTERD_NOTIFIER=mac` explicitly.
+pub fn build_from_env(
+    queue: Arc<PendingQueue>,
+) -> Result<(Arc<dyn Notifier>, PlatformDriver), NotifierBuildError> {
+    let kind = std::env::var("VETTERD_NOTIFIER").ok();
+    let kind = kind.as_deref().unwrap_or("noop");
+    match kind {
+        "mock" => {
+            let sock = std::env::var_os("VETTERD_NOTIFIER_SOCKET").ok_or(
+                NotifierBuildError::MissingEnv("VETTERD_NOTIFIER_SOCKET (required for mock)"),
+            )?;
+            let n: Arc<dyn Notifier> = Arc::new(mock::MockNotifier::new(sock.into(), queue));
+            Ok((n, PlatformDriver::None))
+        }
+        "noop" => {
+            let n: Arc<dyn Notifier> = Arc::new(NoopNotifier);
+            Ok((n, PlatformDriver::None))
+        }
+        #[cfg(target_os = "macos")]
+        "mac" => {
+            let n: Arc<dyn Notifier> = Arc::new(mac::MacNotifier::install(queue)?);
+            Ok((n, PlatformDriver::AppKit))
+        }
+        #[cfg(not(target_os = "macos"))]
+        "mac" => Err(NotifierBuildError::Unsupported(
+            "VETTERD_NOTIFIER=mac requires a macOS target",
+        )),
+        other => Err(NotifierBuildError::Unknown(other.to_string())),
+    }
+}
+
+/// Errors returned by [`from_env`]. `vetterd::main` translates these
+/// into an exit-78 message.
+#[derive(Debug, thiserror::Error)]
+pub enum NotifierBuildError {
+    #[error("missing required env: {0}")]
+    MissingEnv(&'static str),
+    #[error("unknown VETTERD_NOTIFIER value `{0}`; expected mac | mock | noop")]
+    Unknown(String),
+    #[error("notifier not supported on this build: {0}")]
+    Unsupported(&'static str),
+    #[error("notifier setup failed: {0}")]
+    Setup(String),
+}
+
+/// Discards every prompt. Pairs with the daemon's `cancel_all` on
+/// shutdown so blocked workers wake with deny — useful only on
+/// non-macOS builds where neither the real nor mock notifier is
+/// configured (the daemon's CI build).
+pub struct NoopNotifier;
+
+impl Notifier for NoopNotifier {
+    fn notify(&self, _summary: &PromptSummary) {}
+}

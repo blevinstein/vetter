@@ -7,18 +7,32 @@
 //! Public surface intentionally minimal:
 //! - [`run`] — main entry point, blocks until SIGTERM/SIGINT.
 //! - [`Context`] — request-handling context (socket path, audit log,
-//!   loaded allowlist store), mostly exposed for tests.
+//!   loaded allowlist store, pending-queue, notifier handle), mostly
+//!   exposed for tests.
 //! - the submodules are `pub` for integration-test reach but the
 //!   contract for in-tree consumers is to call [`run`].
 //!
 //! Shutdown contract: a SIGTERM/SIGINT flips an `AtomicBool`; the
-//! accept loop polls it between non-blocking `accept` attempts and
-//! tears the socket file down on its way out. This avoids a partial
+//! accept loop polls it between non-blocking `accept` attempts, the
+//! pending queue is cancelled so blocked workers wake with deny, and
+//! the socket file is torn down on the way out. This avoids a partial
 //! write to the socket inode if the user `Ctrl-C`s during a request.
+//!
+//! Phase 4 added the prompt-class routing: when [`policy::evaluate`]
+//! returns [`policy::PolicyOutcome::Prompt`], the connection worker
+//! enqueues onto [`pending::PendingQueue`] and the
+//! [`notifier::Notifier`] surfaces the prompt to the user (via
+//! `UNUserNotificationCenter` on macOS, or a control-socket mock
+//! used by tests). The worker blocks on the queue's receiver until
+//! the user's decision arrives, then writes the wire reply.
 
 pub mod audit;
+pub mod notifier;
 pub mod paths;
+pub mod pending;
 pub mod policy;
+#[cfg(target_os = "macos")]
+pub mod runloop;
 pub mod socket;
 
 use std::path::{Path, PathBuf};
@@ -36,13 +50,16 @@ use vetter_core::wire::{
 use vetter_core::{analyze, ParsedCommand};
 
 pub use audit::{AuditEntry, AuditLog};
-pub use policy::evaluate;
+pub use pending::{PendingDecision, PendingQueue, PromptSummary};
+pub use policy::{evaluate, PolicyOutcome};
 
 /// Per-process context shared by every connection worker.
 pub struct Context {
     pub socket_path: PathBuf,
     pub audit: Arc<AuditLog>,
     pub allowlist: AllowlistStore,
+    pub pending: Arc<PendingQueue>,
+    pub notifier: Arc<dyn notifier::Notifier>,
 }
 
 /// Top-level daemon error. Recoverable framing errors are *not*
@@ -58,6 +75,22 @@ pub enum DaemonError {
     Pidfile(#[source] std::io::Error),
     #[error("allowlist: {0}")]
     Allowlist(#[from] vetter_core::matcher::LoadError),
+    #[error("notifier: {0}")]
+    Notifier(#[from] notifier::NotifierBuildError),
+}
+
+/// Which platform driver to run on the main thread after the accept
+/// loop is up. Returned by [`notifier::driver_for_env`] so the daemon
+/// knows whether it needs to hand `NSApplication::run()` the main
+/// thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformDriver {
+    /// Mock / noop notifier; the main thread can run the accept loop
+    /// itself.
+    None,
+    /// macOS `UNUserNotificationCenter` notifier; the main thread
+    /// must drive `NSApplication`.
+    AppKit,
 }
 
 /// Start the daemon. Blocks until SIGTERM / SIGINT, then cleans up
@@ -69,6 +102,15 @@ pub fn run(
     audit_path: PathBuf,
     allowlist_override: Option<PathBuf>,
 ) -> Result<(), DaemonError> {
+    // Install signal handlers as the very first thing the daemon
+    // does, before any IO that could race with a SIGTERM during
+    // process startup. signal-hook replaces the default action
+    // (terminate) with a pipe write, so SIGTERM after this point
+    // just flips the shutdown atomic instead of killing the daemon
+    // before its socket / pidfile cleanup can run.
+    let shutdown = Arc::new(AtomicBool::new(false));
+    install_signal_handlers(Arc::clone(&shutdown));
+
     let allowlist =
         load_default(None, allowlist_override.as_deref()).map_err(DaemonError::Allowlist)?;
     let audit = Arc::new(AuditLog::open(&audit_path).map_err(DaemonError::Audit)?);
@@ -83,18 +125,43 @@ pub fn run(
     pidfile::write(&pidfile_path, std::process::id(), SystemTime::now())
         .map_err(DaemonError::Pidfile)?;
 
+    let pending = Arc::new(PendingQueue::new());
+    let (notifier, driver) = notifier::build_from_env(Arc::clone(&pending))?;
+
     let ctx = Arc::new(Context {
         socket_path: socket_path.clone(),
         audit,
         allowlist,
+        pending: Arc::clone(&pending),
+        notifier: Arc::clone(&notifier),
     });
-
-    let shutdown = Arc::new(AtomicBool::new(false));
-    install_signal_handlers(Arc::clone(&shutdown));
 
     eprintln!("vetterd: listening on {}", socket_path.display());
 
-    let result = accept_loop(listener, ctx, shutdown);
+    let result = match driver {
+        PlatformDriver::None => {
+            // Accept loop runs on the main thread (the historical
+            // shape preserved for tests with mock / noop notifier).
+            let r = accept_loop(listener, Arc::clone(&ctx), Arc::clone(&shutdown));
+            pending.cancel_all();
+            r
+        }
+        #[cfg(target_os = "macos")]
+        PlatformDriver::AppKit => run_with_appkit(
+            listener,
+            Arc::clone(&ctx),
+            Arc::clone(&shutdown),
+            Arc::clone(&pending),
+        ),
+        #[cfg(not(target_os = "macos"))]
+        PlatformDriver::AppKit => unreachable!(
+            "PlatformDriver::AppKit can only be selected on macOS — \
+             notifier::build_from_env should refuse this combination"
+        ),
+    };
+
+    // Notifier shutdown hook (e.g. close mock control listeners).
+    notifier.shutdown();
 
     // Best-effort cleanup. If either file isn't ours (someone
     // replaced it under us) we still don't want to crash on shutdown.
@@ -102,6 +169,37 @@ pub fn run(
     pidfile::remove(&pidfile_path);
 
     result
+}
+
+/// macOS-only main loop. Runs the accept loop on a background thread
+/// and drives `NSApplication::run()` on the main thread; on shutdown
+/// the runloop helper terminates `NSApp` and we join the accept
+/// thread.
+#[cfg(target_os = "macos")]
+fn run_with_appkit(
+    listener: std::os::unix::net::UnixListener,
+    ctx: Arc<Context>,
+    shutdown: Arc<AtomicBool>,
+    pending: Arc<PendingQueue>,
+) -> Result<(), DaemonError> {
+    let accept_ctx = Arc::clone(&ctx);
+    let accept_shutdown = Arc::clone(&shutdown);
+    let accept_handle = std::thread::Builder::new()
+        .name("vetterd-accept".into())
+        .spawn(move || accept_loop(listener, accept_ctx, accept_shutdown))
+        .map_err(DaemonError::Socket)?;
+
+    runloop::run_app_kit(Arc::clone(&pending), Arc::clone(&shutdown));
+
+    // AppKit returned: signal the accept loop to wind down and join.
+    shutdown.store(true, Ordering::SeqCst);
+    pending.cancel_all();
+    match accept_handle.join() {
+        Ok(r) => r,
+        Err(_) => Err(DaemonError::Socket(std::io::Error::other(
+            "vetterd-accept thread panicked",
+        ))),
+    }
 }
 
 fn install_signal_handlers(shutdown: Arc<AtomicBool>) {
@@ -159,6 +257,10 @@ fn accept_loop(
 /// could submit `argv: ["curl", "https://evil"]` along with `parsed`
 /// effects describing a benign call and bypass the matcher. See
 /// `plans/ThreatModel.md` T2.
+///
+/// Prompt-class outcomes (no rule matched, or `--dry-run`) park the
+/// worker on [`PendingQueue`] until the [`notifier::Notifier`]
+/// surfaces the prompt and the user (or test driver) resolves it.
 pub fn handle_connection(
     mut stream: std::os::unix::net::UnixStream,
     ctx: &Context,
@@ -167,8 +269,10 @@ pub fn handle_connection(
 
     let (decision, reason, command_for_audit) = match parse_request(&req) {
         Ok(parsed) => {
-            let (decision, reason) = evaluate(&parsed, req.force_prompt, &ctx.allowlist);
-            (decision, reason, parsed.command)
+            let command_for_audit = parsed.command.clone();
+            let outcome = evaluate(&parsed, &req.id, req.force_prompt, &ctx.allowlist);
+            let (decision, reason) = resolve_outcome(outcome, &req, ctx);
+            (decision, reason, command_for_audit)
         }
         Err(e) => {
             // Fail closed: a request the daemon cannot parse is one the
@@ -206,6 +310,47 @@ pub fn handle_connection(
 
     write_frame(&mut stream, &resp)?;
     Ok(())
+}
+
+/// Map a [`PolicyOutcome`] onto the final wire `(decision, reason)`.
+/// For [`PolicyOutcome::Prompt`] this blocks the worker on the
+/// pending queue until the notifier delivers a decision (or the
+/// queue is cancelled on shutdown, in which case the worker falls
+/// back to deny so the agent never hangs forever).
+fn resolve_outcome(
+    outcome: PolicyOutcome,
+    _req: &VetRequest,
+    ctx: &Context,
+) -> (WireDecision, String) {
+    match outcome {
+        PolicyOutcome::Auto { decision, reason } => (decision, reason),
+        PolicyOutcome::Prompt(summary) => {
+            let id = summary.id.clone();
+            let rx = ctx.pending.submit(summary.clone());
+            ctx.notifier.notify(&summary);
+            match rx.recv() {
+                Ok(dec) => (dec.decision, dec.reason),
+                Err(_) => {
+                    // Sender was dropped — daemon shutdown wiped the
+                    // pending entry before any decision arrived. Fall
+                    // back to deny so the agent unblocks. We log here
+                    // so the audit reason is not the operator's only
+                    // signal.
+                    eprintln!(
+                        "vetterd: pending queue drained before decision for id `{id}`; \
+                         denying request"
+                    );
+                    (
+                        WireDecision::Deny,
+                        format!(
+                            "{} (pending request `{id}` cancelled)",
+                            pending::SHUTDOWN_REASON
+                        ),
+                    )
+                }
+            }
+        }
+    }
 }
 
 /// Re-run the parser on `req.argv` using the request's `cwd` and the

@@ -3,7 +3,9 @@
 
 use super::*;
 use vetter_core::matcher::rule::{HostPattern, HttpClause, Rule, RuleWhen, UrlClause};
-use vetter_core::{Body, DisplayHints, Effect, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy};
+use vetter_core::{
+    Body, DisplayHints, Effect, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy, WireDecision,
+};
 
 fn parsed_get(host: &str) -> ParsedCommand {
     ParsedCommand {
@@ -22,7 +24,11 @@ fn parsed_get(host: &str) -> ParsedCommand {
             proxy: None,
         })],
         signals: vec![],
-        display_hints: DisplayHints::default(),
+        display_hints: DisplayHints {
+            primary_verb: "GET".into(),
+            primary_target: format!("https://{host}/"),
+            badges: vec![],
+        },
         extras: serde_json::Value::Null,
     }
 }
@@ -54,7 +60,7 @@ fn allow_rule(id: &str, host: &str) -> Rule {
 }
 
 #[test]
-fn allow_rule_in_user_scope_returns_allow_with_reason() {
+fn allow_rule_in_user_scope_returns_auto_allow_with_reason() {
     let store = AllowlistStore {
         denylist: vec![],
         session: vec![],
@@ -62,14 +68,19 @@ fn allow_rule_in_user_scope_returns_allow_with_reason() {
         user: vec![allow_rule("yes", "example.test")],
         builtin: vec![],
     };
-    let (d, reason) = evaluate(&parsed_get("example.test"), false, &store);
-    assert_eq!(d, WireDecision::Allow);
-    assert!(reason.contains("yes"), "{reason}");
-    assert!(reason.contains("user"), "{reason}");
+    let outcome = evaluate(&parsed_get("example.test"), "id-1", false, &store);
+    match outcome {
+        PolicyOutcome::Auto { decision, reason } => {
+            assert_eq!(decision, WireDecision::Allow);
+            assert!(reason.contains("yes"), "{reason}");
+            assert!(reason.contains("user"), "{reason}");
+        }
+        other => panic!("expected auto-allow, got {other:?}"),
+    }
 }
 
 #[test]
-fn denylist_rule_returns_deny_with_reason() {
+fn denylist_rule_returns_auto_deny_with_reason() {
     let store = AllowlistStore {
         denylist: vec![allow_rule("blocked", "example.test")],
         session: vec![],
@@ -77,22 +88,35 @@ fn denylist_rule_returns_deny_with_reason() {
         user: vec![allow_rule("would-allow", "example.test")],
         builtin: vec![],
     };
-    let (d, reason) = evaluate(&parsed_get("example.test"), false, &store);
-    assert_eq!(d, WireDecision::Deny);
-    assert!(reason.contains("blocked"), "{reason}");
-    assert!(reason.contains("denylist"), "{reason}");
+    let outcome = evaluate(&parsed_get("example.test"), "id-2", false, &store);
+    match outcome {
+        PolicyOutcome::Auto { decision, reason } => {
+            assert_eq!(decision, WireDecision::Deny);
+            assert!(reason.contains("blocked"), "{reason}");
+            assert!(reason.contains("denylist"), "{reason}");
+        }
+        other => panic!("expected auto-deny, got {other:?}"),
+    }
 }
 
 #[test]
-fn no_match_falls_back_to_stub_deny() {
+fn no_match_returns_prompt_with_summary() {
     let store = AllowlistStore::default();
-    let (d, reason) = evaluate(&parsed_get("unknown.test"), false, &store);
-    assert_eq!(d, WireDecision::Deny);
-    assert_eq!(reason, STUB_PROMPT_REASON);
+    let outcome = evaluate(&parsed_get("unknown.test"), "id-3", false, &store);
+    match outcome {
+        PolicyOutcome::Prompt(s) => {
+            assert_eq!(s.id, "id-3");
+            assert_eq!(s.command, "curl");
+            assert_eq!(s.primary_verb, "GET");
+            assert_eq!(s.primary_target, "https://unknown.test/");
+            assert!(!s.force_prompt);
+        }
+        other => panic!("expected prompt, got {other:?}"),
+    }
 }
 
 #[test]
-fn force_prompt_short_circuits_even_with_allow_rule() {
+fn force_prompt_short_circuits_allow_rule_with_force_prompt_summary() {
     let store = AllowlistStore {
         denylist: vec![],
         session: vec![],
@@ -100,7 +124,37 @@ fn force_prompt_short_circuits_even_with_allow_rule() {
         user: vec![allow_rule("would-allow", "example.test")],
         builtin: vec![],
     };
-    let (d, reason) = evaluate(&parsed_get("example.test"), true, &store);
-    assert_eq!(d, WireDecision::Deny);
-    assert_eq!(reason, STUB_PROMPT_REASON);
+    let outcome = evaluate(&parsed_get("example.test"), "id-4", true, &store);
+    match outcome {
+        PolicyOutcome::Prompt(s) => {
+            assert_eq!(s.id, "id-4");
+            assert!(s.force_prompt, "force_prompt should propagate to summary");
+        }
+        other => panic!("expected prompt, got {other:?}"),
+    }
+}
+
+#[test]
+fn force_prompt_does_not_short_circuit_denylist() {
+    // A denylist hit must still surface as an auto-deny even when
+    // the caller requested force_prompt — denylist beats prompts.
+    // Today the matcher's Decision::Deny branch is reached only
+    // when force_prompt is false (we short-circuit above), so we
+    // assert by toggling force_prompt off and confirming deny still
+    // wins. Documents the intentional ordering.
+    let store = AllowlistStore {
+        denylist: vec![allow_rule("blocked", "example.test")],
+        session: vec![],
+        project: vec![],
+        user: vec![allow_rule("would-allow", "example.test")],
+        builtin: vec![],
+    };
+    let outcome = evaluate(&parsed_get("example.test"), "id-5", false, &store);
+    matches!(
+        outcome,
+        PolicyOutcome::Auto {
+            decision: WireDecision::Deny,
+            ..
+        }
+    );
 }

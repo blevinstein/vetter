@@ -104,19 +104,48 @@ Phase 3a (spine) landed; remaining boxes are Phase 3b polish.
 - [x] §4.9 fail-closed test (no exec on deny / missing socket)
 - [x] §6.3 protocol fuzzing entry
 
-## Phase 4 — macOS approver UI  `[ ] not started`  (MVP milestone)
+## Phase 4 — macOS approver UI  `[~] in progress`  (MVP milestone)
 
-Roadmap: [plans/Overview.md](plans/Overview.md) §7.
+Roadmap: [plans/Overview.md](plans/Overview.md) §7. Operational notes
++ manual smoke procedure: [plans/Phase4Notes.md](plans/Phase4Notes.md).
 
-- [ ] Swift menu-bar `.app` bundle, `LSUIElement`, no dock icon
-- [ ] `UNUserNotificationCenter` integration: Approve /
-      Allowlist… / Reject actions
+PR 1 (this PR) lands the approve/reject happy path: an all-in-Rust
+`Vetter.app` bundle, `UNUserNotificationCenter` notifications with
+Approve / Reject buttons, and the full pending-queue → notifier round
+trip. Allowlist…, the popover detail view, coalescing, and notarised
+distribution are deferred to follow-on PRs.
+
+- [x] All-in-Rust menu-bar `.app` bundle, `LSUIElement`, no dock icon
+      (`tools/build-app.sh`,
+      [vetterd/resources/Info.plist.template](vetterd/resources/Info.plist.template),
+      [vetterd/src/runloop.rs](vetterd/src/runloop.rs))
+- [x] `UNUserNotificationCenter` integration: Approve / Reject
+      actions wired through
+      [vetterd/src/notifier/mac.rs](vetterd/src/notifier/mac.rs) +
+      [vetterd/src/runloop.rs](vetterd/src/runloop.rs)
+- [x] Pending-queue spine + `Notifier` trait + `MockNotifier` for
+      test-driven coverage
+      ([vetterd/src/pending.rs](vetterd/src/pending.rs),
+      [vetterd/src/notifier/](vetterd/src/notifier/))
+- [x] `policy::evaluate` returns `PolicyOutcome::{Auto, Prompt}`
+      (Phase 3a stub-deny removed)
+      ([vetterd/src/policy.rs](vetterd/src/policy.rs))
+- [x] Audit log records the human-driven decision, not a stub
+- [x] Mock-driven E2E: approve, reject, concurrent prompts,
+      shutdown-while-pending
+      ([vetterd/tests/daemon_e2e_prompt.rs](vetterd/tests/daemon_e2e_prompt.rs))
+- [x] Ad-hoc code-signed `.app` for local dev (`tools/build-app.sh`)
+- [x] Manual smoke procedure documented
+      ([plans/Phase4Notes.md](plans/Phase4Notes.md))
+- [ ] `Allowlist…` action (Phase 5 territory anyway)
 - [ ] Popover listing pending requests with §8.5 rendered summary
       and detail view
 - [ ] Notification coalescing into menu-bar after the first banner
-- [ ] Code signing + notarisation pipeline; Homebrew tap
+- [ ] Real Developer-ID signing + notarisation pipeline; Homebrew tap
 - [ ] Full §7 cross-cutting security property suite passes
-- [ ] E2E happy-path + deny-path tests
+- [ ] E2E happy-path + deny-path tests against the signed bundle
+      (PR 1 covers them via `MockNotifier`; signed-app E2E waits on
+      the notarisation pipeline)
 
 ## Phase 5 — Pattern suggestions  `[ ] not started`
 

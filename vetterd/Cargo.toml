@@ -23,6 +23,17 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 signal-hook = "0.3"
 
+# macOS approver UI (Phase 4). Pulled in only on macOS targets so the
+# crate still builds on Linux/CI workers; the daemon refuses to start
+# its UI on non-macOS per Overview.md §7 ("macOS only for MVP").
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-user-notifications = "0.3"
+block2 = "0.6"
+dispatch2 = "0.3"
+
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }

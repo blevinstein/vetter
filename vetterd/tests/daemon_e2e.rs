@@ -1,126 +1,26 @@
 //! End-to-end tests that spawn the real `vetterd` binary on a
 //! tempdir socket and exercise the wire protocol from a `vet`-shaped
 //! client. Each test gets its own scratch dir; env (`VETTERD_SOCKET`,
-//! `VETTER_AUDIT_LOG`, `VETTER_ALLOWLIST`) is set per-spawn so tests
-//! parallelise without stomping on each other.
+//! `VETTER_AUDIT_LOG`, `VETTER_ALLOWLIST`, `VETTERD_NOTIFIER` /
+//! `VETTERD_NOTIFIER_SOCKET`) is set per-spawn so tests parallelise
+//! without stomping on each other.
+//!
+//! Phase 4 changed prompt-class routing: the daemon no longer
+//! auto-denies on no-rule-match. Instead it routes through the
+//! pending queue and the configured notifier. These tests use the
+//! mock notifier from [`common::MockUi`]; the real
+//! `UNUserNotificationCenter` integration is exercised manually
+//! per `plans/Phase4Notes.md`.
 
-use std::io::Write as _;
+use std::io::{Read, Write as _};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use tempfile::TempDir;
-use vetter_core::wire::{
-    new_request_id, read_decision, write_frame, VetRequest, WireDecision, PROTOCOL_VERSION,
-};
+use vetter_core::wire::{read_decision, write_frame, WireDecision};
 use vetterd::AuditEntry;
 
-struct Daemon {
-    child: Child,
-    pub socket: PathBuf,
-    pub audit: PathBuf,
-    _scratch: TempDir,
-}
-
-impl Daemon {
-    fn spawn(allowlist_yaml: &str) -> Self {
-        let scratch = tempfile::tempdir().expect("tempdir");
-        let socket = scratch.path().join("vetter.sock");
-        let audit = scratch.path().join("audit.log");
-        let allow_path = scratch.path().join("allowlist.yaml");
-        std::fs::write(&allow_path, allowlist_yaml).expect("write allowlist");
-        let bin = assert_cmd::cargo_bin!("vetterd");
-        let child = Command::new(bin)
-            .env("VETTERD_SOCKET", &socket)
-            .env("VETTER_AUDIT_LOG", &audit)
-            .env("VETTER_ALLOWLIST", &allow_path)
-            .env_remove("VETTER_ALLOWLIST_OVERRIDE")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn vetterd");
-        wait_for_socket(&socket, Duration::from_secs(5));
-        Self {
-            child,
-            socket,
-            audit,
-            _scratch: scratch,
-        }
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        // SIGTERM via libc; signal-hook installed the handler in the
-        // daemon's own thread.
-        unsafe {
-            libc_kill(self.child.id() as i32, 15);
-        }
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match self.child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if Instant::now() >= deadline => {
-                    let _ = self.child.kill();
-                    let _ = self.child.wait();
-                    break;
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(_) => break,
-            }
-        }
-    }
-}
-
-extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-}
-
-unsafe fn libc_kill(pid: i32, sig: i32) {
-    let _ = kill(pid, sig);
-}
-
-fn wait_for_socket(path: &Path, timeout: Duration) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() && UnixStream::connect(path).is_ok() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("daemon socket did not appear at {}", path.display());
-}
-
-/// Build a v2 [`VetRequest`] from the wrapped command's argv. The
-/// daemon does its own parse, so callers no longer pass a pre-built
-/// `ParsedCommand` — they hand over the same `argv` they would type
-/// into a shell.
-fn make_req<I, S>(argv: I, force_prompt: bool) -> VetRequest
-where
-    I: IntoIterator<Item = S>,
-    S: Into<String>,
-{
-    VetRequest {
-        v: PROTOCOL_VERSION,
-        id: new_request_id(),
-        cwd: None,
-        agent_hint: None,
-        argv: argv.into_iter().map(Into::into).collect(),
-        force_prompt,
-    }
-}
-
-fn curl_get(url: &str) -> Vec<String> {
-    vec!["curl".into(), url.into()]
-}
-
-fn round_trip(socket: &Path, req: &VetRequest) -> vetter_core::wire::VetDecision {
-    let mut s = UnixStream::connect(socket).expect("connect");
-    write_frame(&mut s, req).expect("write frame");
-    s.flush().ok();
-    read_decision(&mut s, &req.id).expect("read decision")
-}
+mod common;
+use common::{curl_get, make_req, round_trip, Daemon, MockResponse};
 
 const ALLOWLIST: &str = r#"
 rules:
@@ -163,22 +63,53 @@ fn deny_path_returns_deny_with_denylist_scope_in_reason() {
     assert!(dec.reason.contains("denylist"), "{}", dec.reason);
 }
 
+/// Phase 4: a prompt-class request now routes to the notifier and
+/// blocks until the notifier resolves the pending entry. The mock
+/// here approves; the wire response is Allow with the mock's reason.
 #[test]
-fn prompt_class_falls_back_to_stub_deny() {
+fn prompt_class_routes_to_notifier_and_returns_its_decision() {
     let d = Daemon::spawn(ALLOWLIST);
+    d.ui.set_default(MockResponse::allow("test approved unmatched call"));
+
     let req = make_req(curl_get("https://unmatched.test/"), false);
     let dec = round_trip(&d.socket, &req);
-    assert_eq!(dec.decision, WireDecision::Deny);
-    assert!(dec.reason.contains("no UI yet"), "{}", dec.reason);
+    assert_eq!(dec.decision, WireDecision::Allow);
+    assert!(
+        dec.reason.contains("test approved"),
+        "expected mock reason, got {}",
+        dec.reason
+    );
+
+    let observed = d.ui.observed();
+    assert_eq!(observed.len(), 1, "{:?}", observed);
+    assert_eq!(observed[0].command, "curl");
+    assert_eq!(observed[0].primary_target, "https://unmatched.test/");
+    assert!(!observed[0].force_prompt);
 }
 
+/// Phase 4: `--dry-run` (force_prompt) now also routes to the
+/// notifier. Even when a permissive allow rule would match, the
+/// daemon prompts; the mock's deny here drives the wire response.
 #[test]
-fn force_prompt_overrides_existing_allow_rule() {
+fn force_prompt_routes_to_notifier_and_overrides_allow_rule() {
     let d = Daemon::spawn(ALLOWLIST);
+    d.ui.set_default(MockResponse::deny("test rejected dry-run"));
+
     let req = make_req(curl_get("https://example.test/"), true);
     let dec = round_trip(&d.socket, &req);
     assert_eq!(dec.decision, WireDecision::Deny);
-    assert!(dec.reason.contains("no UI yet"), "{}", dec.reason);
+    assert!(
+        dec.reason.contains("test rejected"),
+        "expected mock reason, got {}",
+        dec.reason
+    );
+
+    let observed = d.ui.observed();
+    assert_eq!(observed.len(), 1);
+    assert!(
+        observed[0].force_prompt,
+        "force_prompt should propagate into PromptSummary"
+    );
 }
 
 #[test]
@@ -325,8 +256,6 @@ fn version_mismatch_request_is_rejected_by_daemon() {
 /// connections, i.e. no panic / wedge occurred.
 #[test]
 fn random_bytes_do_not_crash_daemon() {
-    use std::io::Read as _;
-
     let d = Daemon::spawn(ALLOWLIST);
 
     let garbage_probes: &[&[u8]] = &[
@@ -351,7 +280,7 @@ fn random_bytes_do_not_crash_daemon() {
         &[0x42],
     ];
 
-    let timeout = std::time::Duration::from_secs(1);
+    let timeout = Duration::from_secs(1);
 
     for (i, probe) in garbage_probes.iter().enumerate() {
         let mut s = UnixStream::connect(&d.socket)
@@ -383,4 +312,8 @@ fn random_bytes_do_not_crash_daemon() {
         WireDecision::Allow,
         "daemon should still be functional after garbage probes"
     );
+
+    // Touch `Instant` so the unused-imports warning doesn't fire on
+    // CI where this is the only file with helpers.
+    let _ = Instant::now();
 }

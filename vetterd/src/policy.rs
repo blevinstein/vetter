@@ -1,48 +1,72 @@
-//! Wraps [`vetter_core::matcher::decide`] with the Phase-3 stub UI.
+//! Wraps [`vetter_core::matcher::decide`] with the prompt-class
+//! routing rules from `plans/Overview.md` §5.
 //!
-//! The matcher returns `Allow{rule_id, scope}` / `Deny{rule_id,
-//! scope}` / `Prompt`. We project those onto the wire's
-//! [`WireDecision`] enum and add a human-readable `reason` string.
-//! `Prompt` (or any `force_prompt: true` request, i.e. `vet
-//! --dry-run`) gets the stub treatment: there is no human UI yet, so
-//! we auto-deny with `"no UI yet (Phase 4)"`. The CLI surfaces that
-//! verbatim so users understand why the request was refused.
+//! The matcher returns `Allow{rule_id, scope}` / `Deny{rule_id, scope}`
+//! / `Prompt`. We project those onto a [`PolicyOutcome`]:
 //!
-//! Note: `evaluate` takes a [`vetter_core::ParsedCommand`] *and* the
-//! `force_prompt` flag separately — the daemon owns the parse step
-//! (see `plans/ThreatModel.md` T2 / wire v2) and only the
-//! out-of-band `force_prompt` toggle still rides the wire.
+//! - `Auto(WireDecision::Allow, ...)` for matched allow rules.
+//! - `Auto(WireDecision::Deny, ...)` for matched denylist rules.
+//! - `Prompt(...)` for everything else (no-match, or any
+//!   `force_prompt: true` request from `vet --dry-run`).
+//!
+//! The Phase 3a stub-deny path is gone — prompt-class outcomes now
+//! route through [`crate::pending::PendingQueue`] and the
+//! [`crate::notifier::Notifier`] surface. See `plans/ThreatModel.md`
+//! T2 for why the daemon owns the parse step the matcher consumes.
 
 use vetter_core::matcher::{decide, AllowlistStore, Decision};
 use vetter_core::wire::WireDecision;
 use vetter_core::ParsedCommand;
 
-/// Human-readable reason for the `force_prompt` / no-rule-match
-/// branch. Single source of truth so tests can assert on the exact
-/// string the daemon emits.
-pub const STUB_PROMPT_REASON: &str = "no UI yet (Phase 4)";
+use crate::pending::PromptSummary;
 
-/// Run the matcher against `parsed`, project the matcher's decision
-/// onto a wire decision, and return a `(decision, reason)` pair ready
-/// to embed in a [`vetter_core::wire::VetDecision`].
+/// What the policy says we should do with this request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyOutcome {
+    /// Final decision the daemon can ship to the wire without
+    /// asking the user.
+    Auto {
+        decision: WireDecision,
+        reason: String,
+    },
+    /// Prompt-class request: the matcher found no automatic
+    /// resolution (or the caller asked for `force_prompt`). The
+    /// daemon should hand `summary` to the [`crate::notifier::Notifier`]
+    /// and park the worker on the pending queue.
+    Prompt(PromptSummary),
+}
+
+/// Run the matcher against `parsed` and decide whether the daemon
+/// can answer without a human or has to escalate.
 pub fn evaluate(
     parsed: &ParsedCommand,
+    request_id: &str,
     force_prompt: bool,
     store: &AllowlistStore,
-) -> (WireDecision, String) {
+) -> PolicyOutcome {
     if force_prompt {
-        return (WireDecision::Deny, STUB_PROMPT_REASON.to_string());
+        return PolicyOutcome::Prompt(prompt_summary(request_id, parsed, true));
     }
     match decide(parsed, store) {
-        Decision::Allow { rule_id, scope } => (
-            WireDecision::Allow,
-            format!("matched rule `{rule_id}` in {}", scope.as_str()),
-        ),
-        Decision::Deny { rule_id, scope } => (
-            WireDecision::Deny,
-            format!("denylist rule `{rule_id}` in {}", scope.as_str()),
-        ),
-        Decision::Prompt => (WireDecision::Deny, STUB_PROMPT_REASON.to_string()),
+        Decision::Allow { rule_id, scope } => PolicyOutcome::Auto {
+            decision: WireDecision::Allow,
+            reason: format!("matched rule `{rule_id}` in {}", scope.as_str()),
+        },
+        Decision::Deny { rule_id, scope } => PolicyOutcome::Auto {
+            decision: WireDecision::Deny,
+            reason: format!("denylist rule `{rule_id}` in {}", scope.as_str()),
+        },
+        Decision::Prompt => PolicyOutcome::Prompt(prompt_summary(request_id, parsed, false)),
+    }
+}
+
+fn prompt_summary(id: &str, parsed: &ParsedCommand, force_prompt: bool) -> PromptSummary {
+    PromptSummary {
+        id: id.to_string(),
+        command: parsed.command.clone(),
+        primary_verb: parsed.display_hints.primary_verb.clone(),
+        primary_target: parsed.display_hints.primary_target.clone(),
+        force_prompt,
     }
 }
 

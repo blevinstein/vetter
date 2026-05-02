@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>vetterd</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.vetter.daemon</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Vetter</string>
+    <key>CFBundleDisplayName</key>
+    <string>Vetter</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__VERSION__</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <!-- Menu-bar / accessory app: no dock icon, no app-switcher entry. -->
+    <key>LSUIElement</key>
+    <true/>
+    <!-- vetterd is a long-running daemon; tag it accordingly so the
+         system surfaces sensible energy-impact and termination
+         heuristics. -->
+    <key>LSBackgroundOnly</key>
+    <false/>
+    <!-- Hard-wire the notifier kind so the bundle reliably runs the
+         AppKit / UNUserNotificationCenter integration regardless of
+         the launching shell's environment. -->
+    <key>LSEnvironment</key>
+    <dict>
+        <key>VETTERD_NOTIFIER</key>
+        <string>mac</string>
+    </dict>
+    <key>NSHumanReadableCopyright</key>
+    <string>Vetter — local security gate for LLM coding agents.</string>
+    <!-- Under macOS sandboxing the daemon needs network IPC and the
+         UNUserNotifications entitlement; we don't ship sandboxed in
+         PR 1, so the entitlements file is a follow-up. -->
+</dict>
+</plist>

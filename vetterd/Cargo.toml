@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "vetterd — long-running per-user daemon backing the vet CLI."
 
+[lib]
+name = "vetterd"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vetterd"
 path = "src/main.rs"
@@ -14,7 +18,13 @@ path = "src/main.rs"
 [dependencies]
 vetter-core = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+signal-hook = "0.3"
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+tempfile = { workspace = true }
+url = { workspace = true }

@@ -22,6 +22,7 @@ anstyle = { workspace = true }
 sha2 = "0.10"
 serde_yaml_ng = "0.10"
 tempfile = { workspace = true }
+ulid = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

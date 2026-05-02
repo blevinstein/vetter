@@ -21,6 +21,10 @@ pub use parsers::{
 };
 pub use render::{AnsiWriter, DefaultRenderer, PlainWriter, Renderer, Style, StyledWriter};
 pub use signals::{analyze, RiskSignal, SignalKind};
+pub use wire::{
+    new_request_id, read_decision, read_frame, read_request, write_frame, VetDecision, VetRequest,
+    WireDecision, WireError, MAX_FRAME_BYTES, PROTOCOL_VERSION,
+};
 
 /// Returns the crate version. Used by `vet doctor` for diagnostics.
 pub fn version() -> &'static str {

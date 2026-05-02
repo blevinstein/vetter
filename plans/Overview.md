@@ -231,6 +231,10 @@ or project scope per their selection.
 
 ## 6. Threat model & non-goals
 
+See [ThreatModel.md](ThreatModel.md) for the per-boundary actor / asset
+analysis, threat IDs, and mitigation status. The summary below is the
+prose version; the doc is canonical.
+
 **Protects against**: an aligned-but-fallible LLM agent issuing requests
 the user wouldn't authorise if asked individually — wrong host, wrong
 method, sensitive credentials in headers, surprise POSTs, etc.

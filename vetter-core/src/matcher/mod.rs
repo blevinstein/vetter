@@ -1,3 +1,27 @@
-//! Rule matcher: evaluates a `ParsedCommand` against allow/deny rules.
+//! Rule matcher: evaluates a [`crate::ParsedCommand`] against the layered
+//! allowlist + denylist defined in `plans/Overview.md` §5.
 //!
-//! Implemented in Phase 2 (`plans/Overview.md` §5). Empty in Phase 0.
+//! Layout:
+//! - [`rule`]    — `Rule`, `RuleWhen`, clause types + `serde` derive.
+//! - [`glob`]    — host + path globs (no regex dep).
+//! - [`url`]     — URL canonicalisation (resolves `.` / `..`).
+//! - [`decide`]  — `Decision`, `Scope`, `decide()` entry point.
+//! - [`loader`]  — YAML schema, `AllowlistStore`, project discovery.
+//!
+//! Public surface intentionally narrow: callers grab an
+//! [`AllowlistStore`] from [`load_default`] and feed each
+//! [`crate::ParsedCommand`] through [`decide`] to get a [`Decision`].
+
+pub mod decide;
+pub mod glob;
+pub mod loader;
+pub mod rule;
+pub mod url;
+
+pub use decide::{decide, matches_rule, Decision, Scope};
+pub use loader::{
+    discover_project_root, load_default, load_file, AllowlistFile, AllowlistStore, LoadError,
+};
+pub use rule::{
+    FileReadClause, FileWriteClause, HostPattern, HttpClause, Rule, RuleWhen, UrlClause,
+};

@@ -6,6 +6,7 @@
 //! exits 78 (config error per §4 conventions) with a `not implemented`
 //! message that names the roadmap phase that will land it.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -38,6 +39,12 @@ struct Cli {
     /// Suppress the rendered summary (the wrapped command still runs).
     #[arg(long, global = true)]
     quiet: bool,
+
+    /// Override allowlist file. Bypasses XDG / project discovery —
+    /// the named file becomes the sole rule source. Useful for tests
+    /// and ad-hoc inspection.
+    #[arg(long, global = true, value_name = "PATH")]
+    allowlist: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -100,7 +107,7 @@ fn main() -> ExitCode {
                 return not_implemented("`--dry-run`", "Phase 3 (daemon)");
             }
             if cli.explain {
-                return explain::run(argv, cli.quiet);
+                return explain::run(argv, cli.quiet, cli.allowlist.as_deref());
             }
             let cmd = argv.first().map(String::as_str).unwrap_or("<command>");
             not_implemented(

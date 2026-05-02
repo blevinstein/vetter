@@ -2,17 +2,16 @@
 //!
 //! Per `plans/Overview.md` §4 / [`plans/TestingPlan.md`](plans/TestingPlan.md)
 //! §4.2: explain-mode is read-only — it parses the wrapped command,
-//! runs the generic risk analyzer, renders the §8.5 layout to stderr,
-//! and prints what the policy decision would be. It never executes the
-//! wrapped binary and never has any other side effects.
-//!
-//! In Phase 1b there is no daemon and no policy yet, so the decision
-//! line just announces that fact. Phase 2 / Phase 3 will replace the
-//! placeholder with a real allow/deny/prompt result.
+//! runs the generic risk analyzer, loads the layered allowlist,
+//! evaluates the matcher, renders the §8.5 layout to stderr, and
+//! prints the policy decision. It never executes the wrapped binary
+//! and never has any other side effects.
 
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
+use vetter_core::matcher::{self, Decision, LoadError};
 use vetter_core::{
     analyze,
     parsers::{self, EnvSnapshot, ParseError, StdinHandle},
@@ -29,7 +28,9 @@ const EXIT_CONFIG: u8 = 78;
 ///
 /// `argv` is the full wrapped argv (e.g. `["curl", "-X", "GET", "url"]`).
 /// `quiet` suppresses the §8.5 render block but keeps the policy line.
-pub fn run(argv: Vec<String>, quiet: bool) -> ExitCode {
+/// `allowlist_override` makes `vet` ignore XDG / project discovery and
+/// load the single named file instead.
+pub fn run(argv: Vec<String>, quiet: bool, allowlist_override: Option<&Path>) -> ExitCode {
     let cmd = match argv.first() {
         Some(c) => c.as_str(),
         None => {
@@ -59,32 +60,55 @@ pub fn run(argv: Vec<String>, quiet: bool) -> ExitCode {
     };
     parsed.signals.extend(analyze(&parsed));
 
+    let store = match matcher::load_default(env.cwd.as_deref(), allowlist_override) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("vet: allowlist load failed: {}", load_error(&e));
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    let decision = matcher::decide(&parsed, &store);
+
     let stderr = io::stderr();
     let style = color::pick(&stderr);
     if !quiet {
-        if let Err(e) = render_to_stderr(&parsed, style) {
+        if let Err(e) = render_to_stderr(&parsed, Some(&decision), style) {
             eprintln!("vet: render failed: {e}");
             return ExitCode::from(EXIT_CONFIG);
         }
     }
 
-    // Phase 1b placeholder: there is no allowlist or daemon to consult
-    // yet, so we only state what mode we're in. Phase 2 will replace
-    // this line with the actual decision (allow / deny / prompt).
-    let _ = writeln!(
-        io::stderr().lock(),
-        "vet: --explain mode (Phase 1b: no daemon, no policy yet)"
-    );
+    let _ = writeln!(io::stderr().lock(), "{}", decision_summary(&decision));
 
     ExitCode::SUCCESS
 }
 
-fn render_to_stderr(p: &vetter_core::ParsedCommand, style: Style) -> io::Result<()> {
+fn render_to_stderr(
+    p: &vetter_core::ParsedCommand,
+    outcome: Option<&Decision>,
+    style: Style,
+) -> io::Result<()> {
     let stderr = io::stderr();
     let mut handle = stderr.lock();
     match style {
-        Style::Plain => DefaultRenderer.render(p, &mut PlainWriter(&mut handle)),
-        Style::Ansi => DefaultRenderer.render(p, &mut AnsiWriter(&mut handle)),
+        Style::Plain => DefaultRenderer.render(p, outcome, &mut PlainWriter(&mut handle)),
+        Style::Ansi => DefaultRenderer.render(p, outcome, &mut AnsiWriter(&mut handle)),
+    }
+}
+
+fn decision_summary(d: &Decision) -> String {
+    match d {
+        Decision::Allow { rule_id, scope } => format!(
+            "vet: decision = allow (matched rule `{rule_id}` in {} scope)",
+            scope.as_str()
+        ),
+        Decision::Deny { rule_id, scope } => format!(
+            "vet: decision = deny (denylist rule `{rule_id}` in {} scope)",
+            scope.as_str()
+        ),
+        Decision::Prompt => {
+            "vet: decision = prompt (no rule matched; daemon will escalate when wired)".to_string()
+        }
     }
 }
 
@@ -101,5 +125,15 @@ fn explain_error(e: &ParseError) -> String {
                 .into()
         }
         ParseError::Other(s) => s.clone(),
+    }
+}
+
+fn load_error(e: &LoadError) -> String {
+    match e {
+        LoadError::Io { path, source } => format!("read {}: {source}", path.display()),
+        LoadError::Yaml { path, source } => format!("parse {}: {source}", path.display()),
+        LoadError::DuplicateId { id, path } => {
+            format!("duplicate rule id `{id}` in {}", path.display())
+        }
     }
 }

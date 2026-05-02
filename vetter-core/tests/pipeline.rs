@@ -22,7 +22,7 @@ fn full_pipeline_renders_url() {
 
     let mut buf = Vec::<u8>::new();
     DefaultRenderer
-        .render(&parsed, &mut PlainWriter(&mut buf))
+        .render(&parsed, None, &mut PlainWriter(&mut buf))
         .expect("render");
     let out = String::from_utf8(buf).expect("utf8");
 

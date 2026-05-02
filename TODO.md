@@ -62,22 +62,22 @@ Roadmap: [plans/Overview.md](plans/Overview.md) §8.4, §11. Test plan:
       `PlainWriter` vs `AnsiWriter`
 - [x] `vet doctor` reports `parsers registered . 1` (curl)
 
-## Phase 2 — Allowlist evaluation  `[ ] not started`
+## Phase 2 — Allowlist evaluation  `[~] in progress`
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §5. Test plan:
 [plans/TestingPlan.md](plans/TestingPlan.md) §2.5, §2.6.
 
-- [ ] YAML schema + loader for user scope (`~/.config/vet/allowlist.yaml`)
+- [x] YAML schema + loader for user scope (`~/.config/vet/allowlist.yaml`)
       and project scope (`<repo>/.vet/allowlist.yaml`); walks up from cwd
-- [ ] Rule matcher in `vetter-core::matcher` against `effects`; layered
+- [x] Rule matcher in `vetter-core::matcher` against `effects`; layered
       precedence (denylist > session > project > user > built-in)
-- [ ] `headers_allow` default-deny semantics; explicit `*` opt-in
-- [ ] Path/host glob matching; URL normalisation before match
-- [ ] `vet --explain curl …` reports allow / deny / prompt with
+- [x] `headers_allow` default-deny semantics; explicit `*` opt-in
+- [x] Path/host glob matching; URL normalisation before match
+- [x] `vet --explain curl …` reports allow / deny / prompt with
       matched rule id
 - [ ] `vet allow add` / `rm` / `list` subcommands fully wired
-- [ ] Property tests over rule matching (TestingPlan §2.5)
-- [ ] Negative tests: host-suffix confusion, path traversal, denylist
+- [x] Property tests over rule matching (TestingPlan §2.5)
+- [x] Negative tests: host-suffix confusion, path traversal, denylist
       overrides allow at every layer
 
 ## Phase 3 — Daemon + IPC  `[ ] not started`
@@ -153,7 +153,7 @@ before the rest land.
 
 Tracked from [plans/Overview.md](plans/Overview.md) §12:
 
-- [ ] Decide allowlist semantics for query strings (default off; opt-in
+- [x] Decide allowlist semantics for query strings (default off; opt-in
       `query:` matcher)
 - [ ] Decide telemetry policy (default none; opt-in local-only metrics)
 - [ ] Distribution: Homebrew tap publishing the notarised `.app`

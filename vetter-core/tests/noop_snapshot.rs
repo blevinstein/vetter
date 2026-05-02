@@ -26,7 +26,7 @@ fn noop_render_plain() {
     let p = noop_parsed();
     let mut buf = Vec::<u8>::new();
     DefaultRenderer
-        .render(&p, &mut PlainWriter(&mut buf))
+        .render(&p, None, &mut PlainWriter(&mut buf))
         .unwrap();
     let out = String::from_utf8(buf).unwrap();
     insta::assert_snapshot!("noop_plain", out);
@@ -37,7 +37,7 @@ fn noop_render_ansi() {
     let p = noop_parsed();
     let mut buf = Vec::<u8>::new();
     DefaultRenderer
-        .render(&p, &mut AnsiWriter(&mut buf))
+        .render(&p, None, &mut AnsiWriter(&mut buf))
         .unwrap();
     let out = String::from_utf8(buf).unwrap();
     // Replace ESC with a printable marker so the snapshot reads cleanly

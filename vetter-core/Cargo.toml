@@ -20,10 +20,13 @@ thiserror = { workspace = true }
 url = { workspace = true }
 anstyle = { workspace = true }
 sha2 = "0.10"
+serde_yaml_ng = "0.10"
 
 [dev-dependencies]
 insta = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
+proptest = "1"
 
 [[test]]
 name = "registry"
@@ -52,3 +55,11 @@ path = "tests/curl_corpus.rs"
 [[test]]
 name = "curl_render_snapshot"
 path = "tests/curl_render_snapshot.rs"
+
+[[test]]
+name = "matcher_props"
+path = "tests/matcher_props.rs"
+
+[[test]]
+name = "allowlist_loader"
+path = "tests/allowlist_loader.rs"

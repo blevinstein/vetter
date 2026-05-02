@@ -9,6 +9,7 @@
 
 use std::io::{self, Write};
 
+use crate::matcher::{Decision, Scope};
 use crate::parsers::{
     Auth, Badge, BadgeSeverity, Body, Effect, FileRead, FileWrite, Header, HttpMethod, HttpRequest,
     ParsedCommand, ProcessSpawn,
@@ -130,17 +131,31 @@ fn ansi_for(style: Style) -> anstyle::Style {
 }
 
 pub trait Renderer {
-    fn render(&self, p: &ParsedCommand, w: &mut dyn StyledWriter) -> io::Result<()>;
+    /// Render the §8.5 layout for `p`. `outcome` populates the
+    /// `Match:` line: `None` (no policy evaluated yet) renders the same
+    /// "no rule" placeholder as `Some(Decision::Prompt)`; the daemon
+    /// will distinguish those once it ships.
+    fn render(
+        &self,
+        p: &ParsedCommand,
+        outcome: Option<&Decision>,
+        w: &mut dyn StyledWriter,
+    ) -> io::Result<()>;
 }
 
 /// Default implementation of the §8.5 layout.
 ///
-/// Phase 1a hard-codes the `Match: no rule` line; Phase 2 will pass an
-/// optional `MatchOutcome` once the matcher exists.
+/// Phase 2 wires `outcome` through; Phase 1a tests that pass `None`
+/// keep working unchanged.
 pub struct DefaultRenderer;
 
 impl Renderer for DefaultRenderer {
-    fn render(&self, p: &ParsedCommand, w: &mut dyn StyledWriter) -> io::Result<()> {
+    fn render(
+        &self,
+        p: &ParsedCommand,
+        outcome: Option<&Decision>,
+        w: &mut dyn StyledWriter,
+    ) -> io::Result<()> {
         const RULE: &str = " ─────────────────────────────────────────────────────────────────\n";
 
         w.write_styled(" vet  ", Style::Plain)?;
@@ -174,7 +189,7 @@ impl Renderer for DefaultRenderer {
 
         w.write_styled(RULE, Style::RuleLine)?;
         write_signals_line(w, &p.signals)?;
-        write_match_line(w)?;
+        write_match_line(w, outcome)?;
         Ok(())
     }
 }
@@ -361,11 +376,31 @@ fn write_signals_line(w: &mut dyn StyledWriter, signals: &[RiskSignal]) -> io::R
     w.newline()
 }
 
-fn write_match_line(w: &mut dyn StyledWriter) -> io::Result<()> {
+fn write_match_line(w: &mut dyn StyledWriter, outcome: Option<&Decision>) -> io::Result<()> {
     w.plain("   ")?;
     w.write_styled("Match:        ", Style::Header)?;
-    w.write_styled("no rule", Style::MatchNone)?;
+    match outcome {
+        Some(Decision::Allow { rule_id, scope }) => {
+            w.write_styled(
+                &format!("matched rule {rule_id} ({})", scope_label(scope)),
+                Style::MatchOk,
+            )?;
+        }
+        Some(Decision::Deny { rule_id, scope }) => {
+            w.write_styled(
+                &format!("denylist {rule_id} ({})", scope_label(scope)),
+                Style::MatchDeny,
+            )?;
+        }
+        Some(Decision::Prompt) | None => {
+            w.write_styled("no rule", Style::MatchNone)?;
+        }
+    }
     w.newline()
+}
+
+fn scope_label(scope: &Scope) -> &'static str {
+    scope.as_str()
 }
 
 fn signal_kind_label(k: SignalKind) -> &'static str {
@@ -395,9 +430,13 @@ mod tests {
     use url::Url;
 
     fn render_to_string(p: &ParsedCommand) -> String {
+        render_to_string_with(p, None)
+    }
+
+    fn render_to_string_with(p: &ParsedCommand, outcome: Option<&Decision>) -> String {
         let mut buf = Vec::<u8>::new();
         DefaultRenderer
-            .render(p, &mut PlainWriter(&mut buf))
+            .render(p, outcome, &mut PlainWriter(&mut buf))
             .expect("render");
         String::from_utf8(buf).expect("utf-8")
     }
@@ -513,9 +552,34 @@ mod tests {
         let p = pc_get_with_headers(vec![("Content-Type", "application/json")]);
         let mut buf = Vec::<u8>::new();
         DefaultRenderer
-            .render(&p, &mut AnsiWriter(&mut buf))
+            .render(&p, None, &mut AnsiWriter(&mut buf))
             .unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("\x1b["), "no ANSI escape in styled output");
+    }
+
+    #[test]
+    fn match_line_dispatches_on_decision() {
+        let p = pc_get_with_headers(vec![]);
+
+        let allow = Decision::Allow {
+            rule_id: "github-readonly".into(),
+            scope: Scope::Project,
+        };
+        let out = render_to_string_with(&p, Some(&allow));
+        assert!(out.contains("matched rule github-readonly"), "{out}");
+        assert!(out.contains("(project)"), "{out}");
+
+        let deny = Decision::Deny {
+            rule_id: "no-prod-writes".into(),
+            scope: Scope::Denylist,
+        };
+        let out = render_to_string_with(&p, Some(&deny));
+        assert!(out.contains("denylist no-prod-writes"), "{out}");
+        assert!(out.contains("(denylist)"), "{out}");
+
+        let prompt = Decision::Prompt;
+        let out = render_to_string_with(&p, Some(&prompt));
+        assert!(out.contains("no rule"), "{out}");
     }
 }

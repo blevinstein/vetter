@@ -56,7 +56,7 @@ fn parsed_fixture(name: &str) -> vetter_core::ParsedCommand {
 fn render_plain(p: &vetter_core::ParsedCommand) -> String {
     let mut buf = Vec::<u8>::new();
     DefaultRenderer
-        .render(p, &mut PlainWriter(&mut buf))
+        .render(p, None, &mut PlainWriter(&mut buf))
         .expect("render plain");
     String::from_utf8(buf).expect("utf-8")
 }
@@ -64,7 +64,7 @@ fn render_plain(p: &vetter_core::ParsedCommand) -> String {
 fn render_ansi(p: &vetter_core::ParsedCommand) -> String {
     let mut buf = Vec::<u8>::new();
     DefaultRenderer
-        .render(p, &mut AnsiWriter(&mut buf))
+        .render(p, None, &mut AnsiWriter(&mut buf))
         .expect("render ansi");
     // Replace ESC with `\e` so snapshot diffs stay readable.
     String::from_utf8(buf)

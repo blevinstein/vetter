@@ -23,7 +23,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use vetter_core::peer_cred::assert_peer_is_self;
 use vetter_core::pidfile::{self, PidFileContents};
-use vetter_core::{default_pidfile_path, default_socket_path};
+use vetter_core::wire::{
+    read_frame, write_frame, MgmtRequest, MgmtResponse, PendingItem, WireError,
+};
+use vetter_core::{default_admin_socket_path, default_pidfile_path, default_socket_path};
 
 const EXIT_OK: u8 = 0;
 const EXIT_CONFIG: u8 = 78;
@@ -200,11 +203,16 @@ pub fn status() -> ExitCode {
 
     match (contents, alive) {
         (Some(c), true) => {
+            let pending_label = match query_admin(MgmtRequest::ListPending) {
+                Ok(MgmtResponse::PendingList { items }) => items.len().to_string(),
+                _ => "?".to_string(),
+            };
             println!(
-                "vet daemon: running (pid={}, uptime={}, socket={}, pending=0 [Phase 4 will populate])",
+                "vet daemon: running (pid={}, uptime={}, socket={}, pending={})",
                 c.pid,
                 format_uptime(&c),
-                socket.display()
+                socket.display(),
+                pending_label,
             );
             ExitCode::from(EXIT_OK)
         }
@@ -231,6 +239,69 @@ pub fn status() -> ExitCode {
             ExitCode::from(EXIT_CONFIG)
         }
     }
+}
+
+/// List pending approval requests waiting for a human decision.
+pub fn list() -> ExitCode {
+    match query_admin(MgmtRequest::ListPending) {
+        Ok(MgmtResponse::PendingList { items }) => {
+            print_pending_list(&items);
+            ExitCode::from(EXIT_OK)
+        }
+        Ok(MgmtResponse::Error { message }) => {
+            eprintln!("vet daemon list: daemon error: {message}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+        Err(e) => {
+            eprintln!("vet daemon list: {e}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+    }
+}
+
+fn print_pending_list(items: &[PendingItem]) {
+    if items.is_empty() {
+        println!("vet daemon: no pending approvals");
+        return;
+    }
+    println!("vet daemon: {} pending approval(s):", items.len());
+    for item in items {
+        let tag = if item.force_prompt { " [dry-run]" } else { "" };
+        // Truncate long targets so output stays readable at 80 cols.
+        let target = if item.primary_target.len() > 60 {
+            format!("{}…", &item.primary_target[..59])
+        } else {
+            item.primary_target.clone()
+        };
+        if item.primary_verb.is_empty() {
+            println!("  [{}] {}{} {}", item.id, item.command, tag, target);
+        } else {
+            println!(
+                "  [{}] {} {} {}{}",
+                item.id, item.command, item.primary_verb, target, tag
+            );
+        }
+    }
+}
+
+/// Send a single [`MgmtRequest`] to the admin socket and return the
+/// [`MgmtResponse`]. Returns `Err` with a human-readable message when
+/// the admin socket is unreachable (daemon not running, old daemon
+/// without admin socket, etc.).
+fn query_admin(req: MgmtRequest) -> Result<MgmtResponse, String> {
+    let admin_socket = default_admin_socket_path();
+    let mut stream = UnixStream::connect(&admin_socket).map_err(|e| {
+        format!(
+            "cannot connect to admin socket {} (is vetterd running?): {e}",
+            admin_socket.display()
+        )
+    })?;
+    assert_peer_is_self(&stream)
+        .map_err(|e| format!("admin socket peer-credential check failed: {e}"))?;
+    write_frame::<_, MgmtRequest>(&mut stream, &req)
+        .map_err(|e: WireError| format!("admin write error: {e}"))?;
+    read_frame::<_, MgmtResponse>(&mut stream)
+        .map_err(|e: WireError| format!("admin read error: {e}"))
 }
 
 fn socket_alive(path: &Path) -> bool {

@@ -108,9 +108,14 @@ pub enum AllowScope {
 
 #[derive(Subcommand, Debug)]
 enum DaemonAction {
+    /// Start the vetterd daemon.
     Start,
+    /// Stop the vetterd daemon.
     Stop,
+    /// Show daemon status (pid, uptime, pending count).
     Status,
+    /// List pending approval requests waiting for a human decision.
+    List,
 }
 
 fn main() -> ExitCode {
@@ -131,6 +136,7 @@ fn main() -> ExitCode {
             DaemonAction::Start => daemon::start(),
             DaemonAction::Stop => daemon::stop(),
             DaemonAction::Status => daemon::status(),
+            DaemonAction::List => daemon::list(),
         },
         Command::Wrap(argv) => {
             if cli.explain {

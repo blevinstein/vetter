@@ -108,6 +108,21 @@ fn platform_runtime_dir() -> Option<PathBuf> {
     Some(xdg.join("vetter"))
 }
 
+/// Admin socket for management commands (`vet daemon list`, etc.).
+/// Derived from the main socket path so tests that set `$VETTERD_SOCKET`
+/// automatically get a co-located admin socket without extra env vars.
+///
+/// Override with `$VETTERD_ADMIN_SOCKET` for rare cases where caller needs
+/// explicit control (e.g. cross-socket integration tests).
+pub fn default_admin_socket_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("VETTERD_ADMIN_SOCKET") {
+        return PathBuf::from(p);
+    }
+    let mut p = default_socket_path();
+    p.set_file_name("vetter-admin.sock");
+    p
+}
+
 /// `$VETTER_AUDIT_LOG` if set, else
 /// `~/Library/Logs/vetter/audit.log` on macOS,
 /// `$XDG_STATE_HOME/vetter/audit.log` (default

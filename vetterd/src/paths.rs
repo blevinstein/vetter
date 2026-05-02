@@ -7,7 +7,8 @@
 //! working.
 
 pub use vetter_core::paths::{
-    default_audit_path, default_pidfile_path, default_socket_path, PathError,
+    default_admin_socket_path, default_audit_path, default_pidfile_path, default_socket_path,
+    PathError,
 };
 
 #[cfg(test)]

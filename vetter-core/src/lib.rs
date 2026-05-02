@@ -24,12 +24,15 @@ pub use parsers::{
     HttpRequest, NetworkOpen, ParseError, ParsedCommand, ProcessSpawn, Sha256, StdinHandle,
     TlsPolicy, WriteSource,
 };
-pub use paths::{default_audit_path, default_pidfile_path, default_socket_path};
+pub use paths::{
+    default_admin_socket_path, default_audit_path, default_pidfile_path, default_socket_path,
+};
 pub use render::{AnsiWriter, DefaultRenderer, PlainWriter, Renderer, Style, StyledWriter};
 pub use signals::{analyze, RiskSignal, SignalKind};
 pub use wire::{
-    new_request_id, read_decision, read_frame, read_request, write_frame, VetDecision, VetRequest,
-    WireDecision, WireError, MAX_FRAME_BYTES, PROTOCOL_VERSION,
+    new_request_id, read_decision, read_frame, read_request, write_frame, MgmtRequest,
+    MgmtResponse, PendingItem, VetDecision, VetRequest, WireDecision, WireError, MAX_FRAME_BYTES,
+    PROTOCOL_VERSION,
 };
 
 /// Returns the crate version. Used by `vet doctor` for diagnostics.

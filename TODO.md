@@ -161,6 +161,13 @@ and notarised distribution are still deferred.
 - [ ] E2E happy-path + deny-path tests against the signed bundle
       (PR 1/2 cover them via `MockNotifier`; signed-app E2E waits on
       the notarisation pipeline)
+- [x] `vet daemon list` — CLI command to list pending approvals over
+      a new admin socket (`vetter-admin.sock`); `vet daemon status`
+      now shows real pending count
+      ([vet/src/daemon.rs](vet/src/daemon.rs),
+      [vetterd/src/lib.rs](vetterd/src/lib.rs),
+      [vetter-core/src/wire/mod.rs](vetter-core/src/wire/mod.rs),
+      [vetterd/tests/admin_ipc.rs](vetterd/tests/admin_ipc.rs))
 
 ## Phase 5 — Pattern suggestions  `[ ] not started`
 

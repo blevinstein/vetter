@@ -42,11 +42,12 @@ use std::time::SystemTime;
 
 use vetter_core::matcher::{load_default, AllowlistStore, Decision};
 use vetter_core::parsers::{self, EnvSnapshot, ParseError, StdinHandle};
+use vetter_core::peer_cred::assert_peer_is_self;
 use vetter_core::pidfile;
 use vetter_core::render::{DefaultRenderer, PlainWriter, Renderer};
 use vetter_core::wire::{
-    new_request_id, read_request, write_frame, VetDecision, VetRequest, WireDecision, WireError,
-    PROTOCOL_VERSION,
+    new_request_id, read_frame, read_request, write_frame, MgmtRequest, MgmtResponse, PendingItem,
+    VetDecision, VetRequest, WireDecision, WireError, PROTOCOL_VERSION,
 };
 use vetter_core::{analyze, ParsedCommand};
 
@@ -117,6 +118,9 @@ pub fn run(
     let audit = Arc::new(AuditLog::open(&audit_path).map_err(DaemonError::Audit)?);
     let listener = socket::listen(&socket_path).map_err(DaemonError::Socket)?;
 
+    let admin_socket_path = admin_socket_path_for(&socket_path);
+    let admin_listener = socket::listen(&admin_socket_path).map_err(DaemonError::Socket)?;
+
     // Pidfile is co-located with the socket by default. Written
     // *after* the listener binds so a pidfile's existence implies the
     // socket is also live; removed alongside the socket on shutdown so
@@ -138,6 +142,15 @@ pub fn run(
     });
 
     eprintln!("vetterd: listening on {}", socket_path.display());
+
+    // Admin accept loop runs on a background thread regardless of the
+    // platform driver; it only needs the pending queue and shutdown flag.
+    let admin_pending = Arc::clone(&pending);
+    let admin_shutdown = Arc::clone(&shutdown);
+    std::thread::Builder::new()
+        .name("vetterd-admin".into())
+        .spawn(move || run_admin_loop(admin_listener, admin_pending, admin_shutdown))
+        .map_err(DaemonError::Socket)?;
 
     let result = match driver {
         PlatformDriver::None => {
@@ -167,6 +180,7 @@ pub fn run(
     // Best-effort cleanup. If either file isn't ours (someone
     // replaced it under us) we still don't want to crash on shutdown.
     let _ = std::fs::remove_file(&socket_path);
+    let _ = std::fs::remove_file(&admin_socket_path);
     pidfile::remove(&pidfile_path);
 
     result
@@ -200,6 +214,78 @@ fn run_with_appkit(
         Err(_) => Err(DaemonError::Socket(std::io::Error::other(
             "vetterd-accept thread panicked",
         ))),
+    }
+}
+
+/// Derive the admin socket path from the main socket path. Co-located
+/// so per-test scratch dirs stay isolated. `$VETTERD_ADMIN_SOCKET`
+/// overrides for explicit test control.
+fn admin_socket_path_for(main: &Path) -> PathBuf {
+    if let Some(p) = std::env::var_os("VETTERD_ADMIN_SOCKET") {
+        return PathBuf::from(p);
+    }
+    let mut p = main.to_path_buf();
+    p.set_file_name("vetter-admin.sock");
+    p
+}
+
+/// Accept loop for the admin socket. Handles one request at a time
+/// inline (no per-connection threads needed — management queries are
+/// O(pending queue size) and never block on user input).
+fn run_admin_loop(
+    listener: std::os::unix::net::UnixListener,
+    pending: Arc<PendingQueue>,
+    shutdown: Arc<AtomicBool>,
+) {
+    if listener.set_nonblocking(true).is_err() {
+        eprintln!("vetterd: admin: failed to set non-blocking on listener");
+        return;
+    }
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                if assert_peer_is_self(&stream).is_err() {
+                    eprintln!("vetterd: admin: rejected connection from foreign UID");
+                    continue;
+                }
+                let req: MgmtRequest = match read_frame(&mut stream) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("vetterd: admin: read error: {e}");
+                        continue;
+                    }
+                };
+                let resp = match req {
+                    MgmtRequest::ListPending => {
+                        let items = pending
+                            .pending_summaries()
+                            .into_iter()
+                            .map(|s| PendingItem {
+                                id: s.id,
+                                command: s.command,
+                                primary_verb: s.primary_verb,
+                                primary_target: s.primary_target,
+                                force_prompt: s.force_prompt,
+                            })
+                            .collect();
+                        MgmtResponse::PendingList { items }
+                    }
+                };
+                if let Err(e) = write_frame(&mut stream, &resp) {
+                    eprintln!("vetterd: admin: write error: {e}");
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                eprintln!("vetterd: admin: accept error: {e}");
+                return;
+            }
+        }
     }
 }
 

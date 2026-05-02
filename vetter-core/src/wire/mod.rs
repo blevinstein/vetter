@@ -265,6 +265,44 @@ pub fn read_decision<R: Read>(r: &mut R, expected_id: &str) -> Result<VetDecisio
     Ok(dec)
 }
 
+// ── Management channel ──────────────────────────────────────────────────────
+
+/// Compact summary of one pending prompt, serialised over the admin socket.
+/// Mirrors `vetterd::pending::PromptSummary` but lives in `vetter-core` so
+/// the `vet` CLI can decode it without depending on `vetterd`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingItem {
+    /// Correlation id, equal to [`VetRequest::id`].
+    pub id: String,
+    /// Stable parser identifier, e.g. `"curl"`.
+    pub command: String,
+    /// Display verb (e.g. `"GET"`, `"POST"`). Empty when the parser didn't
+    /// set one.
+    pub primary_verb: String,
+    /// Display target (typically a normalised URL).
+    pub primary_target: String,
+    /// True when the request arrived via `vet --dry-run`.
+    pub force_prompt: bool,
+}
+
+/// Request sent by `vet` to the admin socket. Uses a serde-tagged enum so
+/// additional management operations can be added in future without a version
+/// bump on the main socket protocol.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MgmtRequest {
+    /// Return all requests currently parked in the pending-prompt queue.
+    ListPending,
+}
+
+/// Response returned by `vetterd` on the admin socket.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MgmtResponse {
+    PendingList { items: Vec<PendingItem> },
+    Error { message: String },
+}
+
 /// Generate a fresh ULID-based correlation id. Time-sortable and
 /// monotonic per process; ideal for the audit log so entries appear
 /// in chronological order without needing a separate timestamp index.

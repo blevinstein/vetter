@@ -3,6 +3,29 @@
 Guidance for AI coding agents (Cursor, Claude Code, Codex, etc.)
 working on the `vetter` project. Humans should read this too.
 
+## Using `vet` while working on this repo
+
+This repo ships a skill that instructs agents to route certain commands
+through `vet` itself. Read and follow it before running any commands:
+
+```
+~/.claude/skills/use-vet/SKILL.md
+```
+
+In short: prefix `curl` calls with `vet` (e.g. `vet curl https://…`).
+If `vet` exits 78 (parse error / daemon down), retry without the prefix.
+If it exits 77 (denied), stop and tell the user.
+
+The skill lives outside this repo because it applies globally across all
+projects, not just `vetter`. The canonical source is kept in the repo at
+[`skills/use-vet/SKILL.md`](skills/use-vet/SKILL.md). New users should
+install it once:
+
+```bash
+mkdir -p ~/.claude/skills/use-vet
+cp skills/use-vet/SKILL.md ~/.claude/skills/use-vet/SKILL.md
+```
+
 ## What this project is
 
 `vetter` is a local security gate that sits between an LLM coding agent

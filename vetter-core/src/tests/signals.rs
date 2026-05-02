@@ -287,3 +287,66 @@ fn signal_effect_idx_is_valid_or_none() {
         }
     }
 }
+
+// -- ui_severity classification ----------------------------------
+
+/// Pin the Danger / Warn classification used by the macOS popover
+/// (and any future UI). Each kind is asserted explicitly so a future
+/// renaming or splitting of `SignalKind` requires re-considering the
+/// chip palette deliberately, not silently inheriting the default.
+#[test]
+fn ui_severity_classifies_each_signal_kind() {
+    use crate::parsers::BadgeSeverity::*;
+    let cases: &[(SignalKind, crate::parsers::BadgeSeverity)] = &[
+        (SignalKind::InsecureFlag, Danger),
+        (SignalKind::InsecureTls, Danger),
+        (SignalKind::CacertOverride, Danger),
+        (SignalKind::ResolveOverride, Danger),
+        (SignalKind::UnixSocket, Danger),
+        (SignalKind::PipeToShell, Danger),
+        (SignalKind::RawIpLiteral, Danger),
+        (SignalKind::WriteMethod, Warn),
+        (SignalKind::AuthHeader, Warn),
+        (SignalKind::NonStandardPort, Warn),
+        (SignalKind::IdnHost, Warn),
+        (SignalKind::FileOutsideCwd, Warn),
+        (SignalKind::FileReadOutsideCwd, Warn),
+    ];
+    for (kind, expected) in cases {
+        assert_eq!(
+            kind.ui_severity(),
+            *expected,
+            "ui_severity for {kind:?} regressed"
+        );
+    }
+}
+
+/// Belt-and-braces: nothing in the current taxonomy is ever rated
+/// `Info`. Anything new added later should default to `Info`-tier
+/// (no chip) until we explicitly promote it.
+#[test]
+fn no_current_signal_is_info_tier() {
+    use crate::parsers::BadgeSeverity;
+    let all = [
+        SignalKind::WriteMethod,
+        SignalKind::AuthHeader,
+        SignalKind::InsecureTls,
+        SignalKind::NonStandardPort,
+        SignalKind::IdnHost,
+        SignalKind::RawIpLiteral,
+        SignalKind::FileOutsideCwd,
+        SignalKind::FileReadOutsideCwd,
+        SignalKind::PipeToShell,
+        SignalKind::InsecureFlag,
+        SignalKind::ResolveOverride,
+        SignalKind::CacertOverride,
+        SignalKind::UnixSocket,
+    ];
+    for k in all {
+        assert_ne!(
+            k.ui_severity(),
+            BadgeSeverity::Info,
+            "{k:?} unexpectedly classified Info"
+        );
+    }
+}

@@ -16,6 +16,7 @@ fn summary(id: &str, target: &str) -> PromptSummary {
         primary_verb: "GET".into(),
         primary_target: target.into(),
         force_prompt: false,
+        signals: Vec::new(),
     }
 }
 

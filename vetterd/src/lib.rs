@@ -44,7 +44,7 @@ use vetter_core::matcher::{load_default, AllowlistStore, Decision};
 use vetter_core::parsers::{self, EnvSnapshot, ParseError, StdinHandle};
 use vetter_core::peer_cred::assert_peer_is_self;
 use vetter_core::pidfile;
-use vetter_core::render::{DefaultRenderer, PlainWriter, Renderer};
+use vetter_core::render::{AnsiWriter, DefaultRenderer, Renderer};
 use vetter_core::wire::{
     new_request_id, read_frame, read_request, write_frame, MgmtRequest, MgmtResponse, PendingItem,
     VetDecision, VetRequest, WireDecision, WireError, PROTOCOL_VERSION,
@@ -415,10 +415,12 @@ fn resolve_outcome(
         PolicyOutcome::Prompt(summary) => {
             let id = summary.id.clone();
             // Pre-render the §8.5 detail so the popover can display
-            // it verbatim without the AppKit thread reaching back
-            // into vetter-core. PlainWriter (no ANSI) keeps the
-            // bytes safe to drop into an NSTextView; the popover
-            // does its own monospaced styling.
+            // it without the AppKit thread reaching back into
+            // vetter-core. We emit ANSI escapes here (not plain) so
+            // the popover can re-style each span via
+            // `runloop::popover_attr` — same colour taxonomy as
+            // `vet --explain`'s TTY output, just translated into
+            // `NSAttributedString` attributes on the AppKit side.
             let rendered = render_detail(parsed);
             let (rx, hint) = ctx.pending.submit_with_render(summary.clone(), rendered);
             ctx.notifier.notify(&summary, hint);
@@ -447,13 +449,16 @@ fn resolve_outcome(
     }
 }
 
-/// Render the §8.5 detail block for `parsed` into a plain (no-ANSI)
-/// string. Called only on the prompt-class path: the popover view
-/// reads this verbatim, so any failure is silently swallowed and the
-/// caller falls back to the empty-detail card.
+/// Render the §8.5 detail block for `parsed` into an ANSI-escaped
+/// string. Called only on the prompt-class path: the popover parses
+/// the SGR escapes back into `NSAttributedString` attributes (see
+/// [`runloop::popover_attr`]) so each span keeps its colour /
+/// boldness / underline. Any render error is silently swallowed —
+/// the caller falls back to the empty-detail card, which the popover
+/// renders as a plain monospaced string.
 fn render_detail(parsed: &ParsedCommand) -> String {
     let mut buf = Vec::new();
-    let mut w = PlainWriter(&mut buf);
+    let mut w = AnsiWriter(&mut buf);
     if DefaultRenderer
         .render(parsed, Some(&Decision::Prompt), &mut w)
         .is_err()

@@ -52,6 +52,7 @@ use objc2_user_notifications::{
 use crate::pending::{PendingDecision, PendingQueue};
 
 mod popover;
+pub(crate) mod popover_attr;
 mod status_item;
 
 use popover::Popover;

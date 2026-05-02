@@ -403,7 +403,10 @@ fn scope_label(scope: &Scope) -> &'static str {
     scope.as_str()
 }
 
-fn signal_kind_label(k: SignalKind) -> &'static str {
+/// Short slug for `k` used by the §8.5 `Risk signals:` line and by
+/// the macOS popover's header chips. Stable across releases — agents
+/// and downstream tooling parse it.
+pub fn signal_kind_label(k: SignalKind) -> &'static str {
     match k {
         SignalKind::WriteMethod => "write-method",
         SignalKind::AuthHeader => "auth-header",

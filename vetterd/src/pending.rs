@@ -57,6 +57,18 @@ pub struct PromptSummary {
     /// path even if a permissive rule would auto-allow). Surfaced so
     /// the UI can label dry-run prompts distinctly.
     pub force_prompt: bool,
+    /// Risk-signal kinds attached to the parsed command. Surfaced
+    /// here (rather than re-parsing on the UI side) so the macOS
+    /// approver popover can render `Danger`/`Warn`-tier signal
+    /// chips on each card without dragging the parser registry into
+    /// the UI process.
+    ///
+    /// `#[serde(default)]` keeps the mock-socket protocol forward-
+    /// compatible: older mock harnesses (pre-popover-polish) ship
+    /// summaries without this field, deserialise to an empty list,
+    /// and skip the chip row entirely.
+    #[serde(default)]
+    pub signals: Vec<vetter_core::SignalKind>,
 }
 
 /// Decision posted back by the UI. Mirrors the wire's

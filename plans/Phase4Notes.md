@@ -224,3 +224,92 @@ exercised manually via the smoke test above before merge, *and*
 extracted into pure functions wherever feasible so the test suite
 can cover the not-AppKit half (e.g. queue → card-data lowering, but
 not the NSView assembly).
+
+## Visual conventions
+
+Pinned here so future tweaks to the popover preserve the existing
+language. The implementation lives in
+[`runloop::popover`](../vetterd/src/runloop/popover.rs) and
+[`runloop::popover_attr`](../vetterd/src/runloop/popover_attr.rs).
+
+### Body colouring (`Style` → `NSColor`)
+
+Daemon emits SGR escapes via
+[`vetter_core::render::AnsiWriter`](../vetter-core/src/render/mod.rs);
+the popover parses them back and stamps `NSColor` attributes. The
+mapping mirrors `ansi_for` 1:1 so `vet --explain` and the popover
+read identically.
+
+| `Style` (vetter-core) | SGR | `NSColor` (popover) |
+|---|---|---|
+| `Header` | `1` (bold) | label, bold monospaced |
+| `RuleLine`, `BodyMeta`, `Badge(Info)` | `90` (bright-black) | `secondaryLabelColor` |
+| `Method(Read)` (GET/HEAD) | `1;32` | `systemGreenColor`, bold |
+| `Method(Write)` (POST/PUT/PATCH) | `1;33` | `systemYellowColor`, bold |
+| `Method(Delete)` | `1;31` | `systemRedColor`, bold |
+| `Method(Other)` | `1;35` | `systemPurpleColor`, bold |
+| `HeaderName` | `94` (bright-blue) | `systemBlueColor` |
+| `RedactedHeader` | `31` | `systemRedColor` |
+| `Url` | `4;36` | `systemTealColor` + underline |
+| `Loopback` | `2;36` (cyan dim) | `secondaryLabelColor` |
+| `Badge(Warn)`, `SignalText`, `MatchNone` | `33` | `systemYellowColor` |
+| `Badge(Danger)`, `MatchDeny` | `1;31` | `systemRedColor`, bold |
+| `MatchOk` | `32` | `systemGreenColor` |
+
+Unknown SGR codes fall through unstyled — the parser is intentionally
+permissive so a future widening of `ansi_for` doesn't crash the
+popover (it just drops colour until the parser catches up).
+
+### Risk-signal chips on the header row
+
+- One chip per **distinct** `SignalKind` whose
+  [`ui_severity`](../vetter-core/src/signals/mod.rs) is `Warn` or
+  `Danger`. Multiple effects with the same kind dedupe to a single
+  chip.
+- Label = [`signal_kind_label`](../vetter-core/src/render/mod.rs)
+  (e.g. `auth-header`, `insecure-tls`, `pipe-to-shell`). Same slugs
+  the body's `Risk signals:` line emits, so users learning the
+  taxonomy from one surface recognise the other.
+- Colour: `Danger` → `systemRedColor`, `Warn` → `systemOrangeColor`.
+- Font: `boldSystemFontOfSize(10.0)` — small enough to fit several
+  chips next to a wide URL header.
+- `Info`-tier signals are intentionally **not** chipped; they live in
+  the body line only. Anything new added to `SignalKind` defaults to
+  no chip until its `ui_severity` is explicitly raised.
+
+### Dry-run treatment
+
+`PromptSummary.force_prompt` (set when `vet --dry-run` was used)
+swaps the bare card layout for an `NSBox` wrapper:
+
+- `NSBoxType::Custom`, `borderColor = systemYellowColor`,
+  `borderWidth = 1.5`, `cornerRadius = 6.0`.
+- `titlePosition = AtTop`, `title = "dry run"`.
+- The previous inline `dry run` `secondaryLabelColor` pill in
+  `header_row` is removed — the box title carries the message.
+
+Non-dry-run cards stay bare so the visual contrast between the two
+classes reads at a glance when both sit in the same popover.
+
+### Card chrome
+
+- Outer `CARD_SPACING = 16.0` (was 12) plus
+  `NSBoxType::Separator` rules between adjacent cards.
+- Each card stack carries `NSEdgeInsets` of `12, 12, 12, 12` so the
+  body view doesn't clip against the dry-run box border.
+- Header text uses `monospacedSystemFontOfSize_weight(13.0,
+  NSFontWeightSemibold)` so the verb / URL on the header reads in
+  lockstep with the body's monospaced font.
+
+### Approve / Reject buttons
+
+- Layout: **Reject** on the left, **Approve** on the right (canonical
+  macOS HIG for accept/cancel pairs).
+- **Approve** gets `setKeyEquivalent("\r")` → promotes it to the
+  system default button (accent-tinted, accepts `Return`).
+- **Reject** gets `setHasDestructiveAction(true)` → red tint on
+  macOS 11+, plus AppKit's accidental-press guard. Older systems
+  silently fall back to a regular bezel.
+- `Esc` is **not** rebound: the popover's `Transient` behavior
+  reserves it for dismissal, so the user can always back out without
+  resolving a card.

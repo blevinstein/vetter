@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use url::Host;
 
 use crate::parsers::{
-    Effect, FileRead, FileWrite, HttpRequest, ParsedCommand, ProcessSpawn, TlsPolicy,
+    BadgeSeverity, Effect, FileRead, FileWrite, HttpRequest, ParsedCommand, ProcessSpawn, TlsPolicy,
 };
 
 /// One risk observation about a `ParsedCommand`. Signals never auto-deny;
@@ -52,6 +52,46 @@ pub enum SignalKind {
     ResolveOverride,
     CacertOverride,
     UnixSocket,
+}
+
+impl SignalKind {
+    /// UI-tier severity for this signal kind.
+    ///
+    /// Used by the macOS approver popover (and any future UI) to
+    /// decide whether a signal warrants a header chip and which
+    /// colour to paint it. The taxonomy is intentionally narrower
+    /// than the [`BadgeSeverity`] of the per-effect badge:
+    ///
+    /// - [`BadgeSeverity::Danger`] for "this should not happen
+    ///   without a deliberate decision" (TLS verification
+    ///   disabled, custom resolver/CA, raw IP literal, pipe to a
+    ///   shell, unix-socket transport).
+    /// - [`BadgeSeverity::Warn`] for "worth a glance" (mutating
+    ///   HTTP method, auth header present, non-standard port,
+    ///   IDN/punycode host, file write/read outside cwd).
+    /// - [`BadgeSeverity::Info`] is reserved for future kinds —
+    ///   chips are only rendered for `Warn`/`Danger` so anything
+    ///   we add later defaults to "stays in the body, no chip".
+    ///
+    /// Pure function; no I/O.
+    pub fn ui_severity(&self) -> BadgeSeverity {
+        match self {
+            SignalKind::InsecureFlag
+            | SignalKind::InsecureTls
+            | SignalKind::CacertOverride
+            | SignalKind::ResolveOverride
+            | SignalKind::UnixSocket
+            | SignalKind::PipeToShell
+            | SignalKind::RawIpLiteral => BadgeSeverity::Danger,
+
+            SignalKind::WriteMethod
+            | SignalKind::AuthHeader
+            | SignalKind::NonStandardPort
+            | SignalKind::IdnHost
+            | SignalKind::FileOutsideCwd
+            | SignalKind::FileReadOutsideCwd => BadgeSeverity::Warn,
+        }
+    }
 }
 
 const STANDARD_PORTS: &[u16] = &[80, 443, 8080, 8443];

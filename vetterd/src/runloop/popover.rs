@@ -29,24 +29,34 @@ use objc2::sel;
 use objc2::DefinedClass;
 use objc2::MainThreadOnly;
 use objc2_app_kit::{
-    NSBezelStyle, NSButton, NSColor, NSFont, NSLayoutConstraint, NSPopover, NSPopoverBehavior,
-    NSPopoverDelegate, NSScrollView, NSStackView, NSStackViewDistribution, NSStatusBarButton,
-    NSTextField, NSTextView, NSUserInterfaceLayoutOrientation, NSView, NSViewController,
+    NSBezelStyle, NSBox, NSBoxType, NSButton, NSColor, NSFont, NSFontWeightSemibold,
+    NSLayoutConstraint, NSPopover, NSPopoverBehavior, NSPopoverDelegate, NSScrollView, NSStackView,
+    NSStackViewDistribution, NSStatusBarButton, NSTextField, NSTextView, NSTitlePosition,
+    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_foundation::{
-    ns_string, MainThreadMarker, NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge,
-    NSSize, NSString,
+    ns_string, MainThreadMarker, NSArray, NSEdgeInsets, NSObject, NSObjectProtocol, NSPoint,
+    NSRect, NSRectEdge, NSSize, NSString,
 };
 
-use super::AppDelegate;
+use super::{popover_attr, AppDelegate};
 use crate::pending::{PendingQueue, PromptSummary};
 
 /// Outer popover dimensions. Width is fixed; height grows with
 /// content up to this cap, then the inner scroll view scrolls.
 const POPOVER_WIDTH: f64 = 480.0;
 const POPOVER_HEIGHT: f64 = 500.0;
-const CARD_SPACING: f64 = 12.0;
+/// Outer gap between adjacent cards in the cards stack. Bumped from
+/// 12 → 16 once we started inserting `NSBoxType::Separator` lines
+/// between cards: the rule line wants a bit more breathing room
+/// either side or it visually crowds the buttons.
+const CARD_SPACING: f64 = 16.0;
 const CARD_PADDING: f64 = 12.0;
+/// Inset around each card's content (header / body / buttons). Pulls
+/// the body away from any wrapping `NSBox` border (dry-run case) and
+/// gives non-dry-run cards consistent breathing room without needing
+/// a wrapper view.
+const CARD_INSET: f64 = 12.0;
 const DETAIL_HEIGHT: f64 = 180.0;
 
 /// `NSBezelStyle::Rounded` is the historic name used by AppKit
@@ -358,6 +368,18 @@ impl PopoverController {
 
         let mut focused_view: Option<Retained<NSView>> = None;
         for (idx, (summary, rendered)) in entries.iter().enumerate() {
+            // Thin horizontal rule between adjacent cards.
+            // `NSBoxType::Separator` is exactly that: a 1pt
+            // separator line that respects the user's appearance
+            // (light/dark) without us picking a colour. We add it
+            // *before* every card except the first so the visual
+            // groove sits between cards rather than above the first
+            // one.
+            if idx > 0 {
+                let sep = NSBox::new(mtm);
+                sep.setBoxType(NSBoxType::Separator);
+                cards.addArrangedSubview(&sep);
+            }
             let card = self.build_card(mtm, idx, summary, rendered);
             if focused_id.is_some_and(|f| f == summary.id) {
                 focused_view = Some(card.clone());
@@ -382,8 +404,11 @@ impl PopoverController {
         summary: &PromptSummary,
         rendered: &str,
     ) -> Retained<NSView> {
-        // Header: "<command> <verb> <target>" with a "dry run" pill
-        // for force_prompt requests.
+        // Header: "<command> <verb> <target>". The inline "dry run"
+        // pill that used to live here is now absorbed by the outer
+        // `NSBox` wrapper (see end of this function); the box's
+        // yellow-bordered title is a louder cue than a grey
+        // secondary-label word in the same row.
         let header_text = if summary.primary_verb.is_empty() {
             format!("{}  {}", summary.command, summary.primary_target)
         } else {
@@ -393,23 +418,47 @@ impl PopoverController {
             )
         };
         let header = NSTextField::labelWithString(&NSString::from_str(&header_text), mtm);
-        header.setFont(Some(&NSFont::boldSystemFontOfSize(13.0)));
-        let dry = if summary.force_prompt {
-            let pill = NSTextField::labelWithString(ns_string!("dry run"), mtm);
-            pill.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-            pill.setTextColor(Some(&NSColor::secondaryLabelColor()));
-            Some(pill)
-        } else {
-            None
-        };
+        // Use `monospacedSystemFontOfSize:weight:` semibold so URLs /
+        // paths / methods in the header line up vertically with the
+        // monospaced body text below. `NSFontWeightSemibold` is a
+        // C `extern static` (unsafe to read) but holds a fixed
+        // CGFloat — caching is fine.
+        let semibold = unsafe { NSFontWeightSemibold };
+        header.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
+            13.0, semibold,
+        )));
 
         let header_row = NSStackView::new(mtm);
         header_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
         header_row.setSpacing(8.0);
         header_row.setDistribution(NSStackViewDistribution::Fill);
         header_row.addArrangedSubview(&header);
-        if let Some(p) = &dry {
-            header_row.addArrangedSubview(p);
+
+        // Risk-signal chips — one per `Warn`/`Danger`-tier signal.
+        // Info-tier kinds (none today) intentionally render only in
+        // the body's `Risk signals:` line so chip space is reserved
+        // for "actually look at this" cues. We dedupe by `SignalKind`
+        // because the analyzer emits one entry per effect (e.g. a
+        // POST + AuthHeader on the same request would otherwise paint
+        // two `auth-header` chips).
+        let mut seen: Vec<vetter_core::SignalKind> = Vec::new();
+        for kind in &summary.signals {
+            if seen.contains(kind) {
+                continue;
+            }
+            seen.push(*kind);
+            let severity = kind.ui_severity();
+            let color = match severity {
+                vetter_core::BadgeSeverity::Danger => NSColor::systemRedColor(),
+                vetter_core::BadgeSeverity::Warn => NSColor::systemOrangeColor(),
+                // Info-tier: skip entirely; the body line carries it.
+                vetter_core::BadgeSeverity::Info => continue,
+            };
+            let label = vetter_core::signal_kind_label(*kind);
+            let chip = NSTextField::labelWithString(&NSString::from_str(label), mtm);
+            chip.setFont(Some(&NSFont::boldSystemFontOfSize(10.0)));
+            chip.setTextColor(Some(&color));
+            header_row.addArrangedSubview(&chip);
         }
 
         // Body: read-only NSTextView in its own NSScrollView. The
@@ -427,20 +476,40 @@ impl PopoverController {
         if let Some(doc) = body_scroll.documentView() {
             // The document view returned from `scrollableTextView`
             // is an NSTextView; cast and configure as monospaced
-            // read-only.
+            // read-only. `richText = true` is required for the text
+            // storage to honour the per-span colour / font /
+            // underline attributes our ANSI translator stamps below;
+            // without it the view falls back to its single-font
+            // plain-text mode and ignores the NSColor runs.
             let tv: Retained<NSTextView> = unsafe { Retained::cast_unchecked(doc) };
             tv.setEditable(false);
             tv.setSelectable(true);
-            tv.setRichText(false);
+            tv.setRichText(true);
             tv.setDrawsBackground(true);
             tv.setBackgroundColor(&NSColor::textBackgroundColor());
             let font =
                 NSFont::userFixedPitchFontOfSize(11.0).unwrap_or(NSFont::systemFontOfSize(11.0));
             tv.setFont(Some(&font));
-            tv.setString(&NSString::from_str(rendered));
+
+            // Translate ANSI SGR escapes from `rendered` into
+            // `NSAttributedString` runs so the popover shows the
+            // same colour taxonomy as `vet --explain` on a TTY. If
+            // the text storage is unexpectedly absent we fall back
+            // to the plain string — strictly worse visually but
+            // the popover still works.
+            let attr = popover_attr::parse_ansi_to_attributed(rendered);
+            if let Some(storage) = unsafe { tv.textStorage() } {
+                storage.setAttributedString(&attr);
+            } else {
+                tv.setString(&NSString::from_str(rendered));
+            }
         }
 
-        // Approve / Reject row.
+        // Approve / Reject row. macOS HIG puts the destructive
+        // (Reject) on the *left* and the default / accept (Approve)
+        // on the *right*; we wire that up here. Approve also gets
+        // `Return` as its key equivalent so the user can tab into
+        // the popover and press Enter to allow.
         let approve = unsafe {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Approve"),
@@ -451,6 +520,9 @@ impl PopoverController {
         };
         approve.setBezelStyle(BEZEL_ROUNDED);
         approve.setTag(idx as isize);
+        // `\r` = Return. Promotes Approve to the system default
+        // button so it picks up the accent tint and accepts Enter.
+        approve.setKeyEquivalent(ns_string!("\r"));
         let reject = unsafe {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Reject"),
@@ -461,6 +533,10 @@ impl PopoverController {
         };
         reject.setBezelStyle(BEZEL_ROUNDED);
         reject.setTag(idx as isize);
+        // Tints the bezel red on macOS 11+ and trips AppKit's
+        // accidental-press guard. Older systems silently fall back
+        // to a regular bezel.
+        reject.setHasDestructiveAction(true);
 
         let buttons = NSStackView::new(mtm);
         buttons.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
@@ -469,11 +545,21 @@ impl PopoverController {
         buttons.addArrangedSubview(&reject);
         buttons.addArrangedSubview(&approve);
 
-        // Card container: vertical stack with header / body / buttons.
+        // Inner card container: vertical stack with header / body /
+        // buttons, padded by `CARD_INSET` on every side via
+        // `setEdgeInsets`. Insetting here (rather than wrapping in
+        // a second container view) keeps the dry-run `NSBox`
+        // wrapping cheap — the box just hosts this stack directly.
         let card = NSStackView::new(mtm);
         card.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         card.setSpacing(8.0);
         card.setDistribution(NSStackViewDistribution::Fill);
+        card.setEdgeInsets(NSEdgeInsets {
+            top: CARD_INSET,
+            left: CARD_INSET,
+            bottom: CARD_INSET,
+            right: CARD_INSET,
+        });
         card.addArrangedSubview(&header_row);
         card.addArrangedSubview(&body_scroll);
         card.addArrangedSubview(&buttons);
@@ -489,9 +575,27 @@ impl PopoverController {
             .heightAnchor()
             .constraintEqualToConstant(DETAIL_HEIGHT)]));
 
-        // Coerce the stack view into a plain NSView for return.
-        let view: Retained<NSView> = card.into_super();
-        view
+        if summary.force_prompt {
+            // Dry-run cards get a custom `NSBox` with a yellow
+            // border and a "dry run" title. This replaces the
+            // inline secondary-label pill that used to live in
+            // `header_row` — visually louder, and clearly scopes
+            // *which* card is the dry-run when several requests
+            // are queued up.
+            let box_ = NSBox::new(mtm);
+            box_.setBoxType(NSBoxType::Custom);
+            box_.setBorderColor(&NSColor::systemYellowColor());
+            box_.setBorderWidth(1.5);
+            box_.setCornerRadius(6.0);
+            box_.setTitlePosition(NSTitlePosition::AtTop);
+            box_.setTitle(ns_string!("dry run"));
+            box_.setContentView(Some(&card));
+            box_.into_super()
+        } else {
+            // Non-dry-run cards stay bare — visual contrast with
+            // dry-run cards reads at a glance.
+            card.into_super()
+        }
     }
 }
 

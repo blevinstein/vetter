@@ -27,7 +27,9 @@ pub use parsers::{
 pub use paths::{
     default_admin_socket_path, default_audit_path, default_pidfile_path, default_socket_path,
 };
-pub use render::{AnsiWriter, DefaultRenderer, PlainWriter, Renderer, Style, StyledWriter};
+pub use render::{
+    signal_kind_label, AnsiWriter, DefaultRenderer, PlainWriter, Renderer, Style, StyledWriter,
+};
 pub use signals::{analyze, RiskSignal, SignalKind};
 pub use wire::{
     new_request_id, read_decision, read_frame, read_request, write_frame, MgmtRequest,

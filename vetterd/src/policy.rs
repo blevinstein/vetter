@@ -67,6 +67,11 @@ fn prompt_summary(id: &str, parsed: &ParsedCommand, force_prompt: bool) -> Promp
         primary_verb: parsed.display_hints.primary_verb.clone(),
         primary_target: parsed.display_hints.primary_target.clone(),
         force_prompt,
+        // Project signals down to their `kind` — the popover only
+        // needs the kind for chip rendering / severity routing,
+        // not the per-effect detail string (which is already in
+        // the §8.5 body).
+        signals: parsed.signals.iter().map(|s| s.kind).collect(),
     }
 }
 

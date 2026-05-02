@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
+use vetter_core::peer_cred::assert_peer_is_self;
 use vetter_core::pidfile::{self, PidFileContents};
 use vetter_core::{default_pidfile_path, default_socket_path};
 
@@ -236,7 +237,15 @@ fn socket_alive(path: &Path) -> bool {
     if !path.exists() {
         return false;
     }
-    UnixStream::connect(path).is_ok()
+    let Ok(stream) = UnixStream::connect(path) else {
+        return false;
+    };
+    // A reachable socket is only "ours" if the peer runs as us; a
+    // same-UID hijacker would otherwise satisfy `connect` and trick
+    // `vet daemon start` into reporting success without a real
+    // vetterd. (Cross-UID attackers are blocked one layer up by the
+    // 0700 runtime dir.)
+    assert_peer_is_self(&stream).is_ok()
 }
 
 fn locate_vetterd() -> Result<PathBuf, String> {

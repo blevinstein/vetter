@@ -42,6 +42,17 @@ impl Drop for Guard {
     }
 }
 
+/// Force the platform-specific runtime-dir source off so tests can
+/// exercise the lower-priority `$TMPDIR` fallback regardless of the
+/// host environment. Returned guard restores the prior value on drop.
+fn unset_runtime_source() -> Vec<Guard> {
+    if cfg!(target_os = "macos") {
+        vec![Guard::unset("HOME")]
+    } else {
+        vec![Guard::unset("XDG_RUNTIME_DIR")]
+    }
+}
+
 #[test]
 fn socket_env_override_wins() {
     let _g = lock();
@@ -50,16 +61,45 @@ fn socket_env_override_wins() {
 }
 
 #[test]
-fn socket_falls_back_to_tmpdir_then_slash_tmp() {
+#[cfg(not(target_os = "macos"))]
+fn socket_prefers_xdg_runtime_dir() {
     let _g = lock();
     let _e = Guard::unset("VETTERD_SOCKET");
+    let _x = Guard::set("XDG_RUNTIME_DIR", "/run/user/1234");
     let _t = Guard::set("TMPDIR", "/some/tmp");
     assert_eq!(
         default_socket_path(),
-        PathBuf::from("/some/tmp/vetter.sock")
+        PathBuf::from("/run/user/1234/vetter/vetter.sock")
     );
-    let _t2 = Guard::unset("TMPDIR");
-    assert_eq!(default_socket_path(), PathBuf::from("/tmp/vetter.sock"));
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn socket_prefers_app_support_run_dir() {
+    let _g = lock();
+    let _e = Guard::unset("VETTERD_SOCKET");
+    let _h = Guard::set("HOME", "/Users/alice");
+    assert_eq!(
+        default_socket_path(),
+        PathBuf::from("/Users/alice/Library/Application Support/vetter/run/vetter.sock")
+    );
+}
+
+#[test]
+fn socket_falls_back_to_per_uid_tmpdir_subdir() {
+    let _g = lock();
+    let _e = Guard::unset("VETTERD_SOCKET");
+    let _runtime = unset_runtime_source();
+    let _t = Guard::set("TMPDIR", "/some/tmp");
+    let path = default_socket_path();
+    // Per-uid subdir keeps the daemon's 0700 chmod safely off of
+    // `/tmp` itself. `Path::starts_with` matches whole components,
+    // so compare strings to assert the `vetter-<uid>` prefix.
+    let s = path.to_string_lossy();
+    assert!(
+        s.starts_with("/some/tmp/vetter-") && s.ends_with("/vetter.sock"),
+        "expected per-uid subdir under $TMPDIR, got {s}"
+    );
 }
 
 #[test]
@@ -88,6 +128,7 @@ fn pidfile_defaults_to_socket_sibling() {
 fn pidfile_falls_back_to_tmpdir_when_socket_has_no_parent() {
     let _g = lock();
     let _e = Guard::unset("VETTERD_PIDFILE");
+    let _runtime = unset_runtime_source();
     let _t = Guard::set("TMPDIR", "/scratch");
     let sock = PathBuf::from("vetter.sock");
     assert_eq!(

@@ -12,6 +12,7 @@
 pub mod matcher;
 pub mod parsers;
 pub mod paths;
+pub mod peer_cred;
 pub mod pidfile;
 pub mod render;
 pub mod signals;

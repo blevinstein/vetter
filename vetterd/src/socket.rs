@@ -1,15 +1,19 @@
 //! Unix-socket listener with stale-socket cleanup and tight perms.
 //!
 //! The listener intentionally lives at a single fixed path per user
-//! (default `$TMPDIR/vetter.sock`, override `$VETTERD_SOCKET`). On
-//! startup we attempt to `connect` to any pre-existing file:
+//! (default `$XDG_RUNTIME_DIR/vetter/vetter.sock` on Linux,
+//! `~/Library/Application Support/vetter/run/vetter.sock` on macOS,
+//! override `$VETTERD_SOCKET`). On startup we attempt to `connect` to
+//! any pre-existing file:
 //!
 //! - connect succeeds  → another `vetterd` is alive; refuse to start.
 //! - connect refused / not a socket → orphan from a prior crash;
 //!   `unlink` and bind ours.
 //!
-//! Permissions are forced to `0o600` so other local users can't
-//! impersonate the approver; per-user daemon, per-user UI.
+//! The socket file is chmod 0600 and its parent dir is chmod 0700 so
+//! other local users can't impersonate the approver. Same-UID
+//! impersonation is closed by the peer-credential check the client
+//! runs on connect (see `vetter_core::peer_cred`).
 
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -41,6 +45,13 @@ pub fn listen(path: &Path) -> std::io::Result<UnixListener> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
+            // Force the parent dir to 0700. Even if it already
+            // existed (XDG_RUNTIME_DIR usually does, scratch
+            // tempdirs always do) we want to guarantee no other UID
+            // can drop a file alongside the socket and race the
+            // bind. Same-UID protection is the client's
+            // responsibility (peer-cred check on connect).
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
     }
     let listener = UnixListener::bind(path)?;

@@ -72,28 +72,26 @@ Two processes:
 - Renders the request locally for the user's reference (also useful when run
   outside an agent context).
 - Connects to `vetterd` over a Unix domain socket
-  (`$XDG_RUNTIME_DIR/vetter.sock`, falling back to `~/.vet/vetter.sock`).
+  (`$TMPDIR/vetter.sock` on macOS).
 - Sends a `VetRequest`, blocks on a `VetDecision`.
 - On `allow`, `execvp`s the underlying command, inheriting stdio so behavior
   is indistinguishable from running `curl` directly.
 - On `deny`, prints reason on stderr and exits with code `77` (sysexits
   `EX_NOPERM`).
-- If the daemon socket is missing, falls back to in-process evaluation +
-  blocking TTY prompt. This keeps `vet` usable on CI and SSH sessions, and
-  makes the daemon strictly an enhancement.
+- **Fails closed** if `vetterd` is not running: prints a clear "daemon not
+  running, run `vet daemon start`" message and exits non-zero. We do not
+  fall back to a TTY prompt — a blocking prompt in the agent's own
+  terminal would defeat the separate-channel guarantee, since the agent
+  can read its own stdout/stdin.
 
 ### `vetterd` (daemon, long-running, per-user)
 - Owns the allowlist files, the in-memory policy, the pending-request queue,
   and the platform-specific approval UI.
 - Listens on the Unix socket; one request → one decision.
 - Persists allowlist mutations atomically.
-- Surfaces pending approvals via:
-  - macOS: bundled menu-bar app with click-to-review window (notifications
-    too, see §7).
-  - Linux: libnotify with actions, fallback to `vetterd ui` TUI.
-  - Windows: WinRT toast w/ buttons, fallback TUI.
-- Optional read-only HTTP endpoint on `127.0.0.1` for richer review (browser
-  view of pending request with diffs, decoded body, etc.).
+- Surfaces pending approvals via the macOS native UI (§7). Other platforms
+  will reuse the same socket protocol when their UI is added; until then
+  `vet` is macOS-only.
 
 ### Wire protocol
 JSON over the Unix socket, length-prefixed. Versioned. Sketch:
@@ -134,6 +132,10 @@ vet allow rm <id>
 vet allow list [--scope project|user]
 vet doctor                       # check daemon, socket, parsers, signing
 vet daemon start|stop|status     # supervise vetterd
+
+There is intentionally **no `--interactive` / TTY prompt mode**. Approvals
+always go through the daemon's separate-channel UI; if the daemon is down,
+`vet` errors out.
 ```
 
 Conventions:
@@ -227,37 +229,41 @@ alongside the project.
 
 ---
 
-## 7. Approval UI
+## 7. Approval UI — macOS only for MVP
 
-The approver surface is the trickiest piece. Goal: zero context switches
-between IDE and approval — see what's pending, decide, get back.
+The approver surface is a separate-channel UI: a different process, a
+different window, owned by the human. The agent's terminal never sees it.
+For the MVP we ship one platform — macOS — and design the protocol so
+other platforms drop in later without rework.
 
-### Decision points
+### macOS
 
-- Notifications with action buttons on macOS require a properly bundled,
-  signed app using `UNUserNotificationCenter` (legacy `osascript display
-  notification` does not support buttons; `terminal-notifier` is dying).
-  → ship `vetterd` as a `.app` bundle with a menu-bar icon.
-- Click the menu-bar icon → popover lists pending requests with the §8
-  rendered summary, detail panel, and three actions:
-  `Approve`, `Allowlist…` (opens pattern picker), `Reject`.
-- Notifications are best-effort: they include a one-line summary and a
-  single "Review" action that opens the popover. We don't try to make
-  Approve/Reject work directly from the notification banner — too easy to
-  fat-finger, and the banner doesn't show enough context.
-- TUI fallback (`vet --interactive`) for SSH/CI/headless: blocks the CLI
-  with a colorised render and `[a]llow / [A]llowlist / [d]eny` keys.
+- `vetterd` is shipped as a code-signed, notarised `.app` bundle with a
+  menu-bar icon and no dock presence (`LSUIElement`).
+- Approval surface uses `UNUserNotificationCenter`, which requires the
+  bundled-app form (legacy `osascript display notification` doesn't
+  support action buttons; `terminal-notifier` is unmaintained).
+- Each pending request raises a notification with three actions:
+  `Approve`, `Allowlist…`, `Reject`. The `Allowlist…` action opens a
+  small window with the §5 generalisation choices.
+- Clicking the notification body (or the menu-bar icon) opens a popover
+  listing all currently-pending requests with the §8 rendered summary
+  and a detail view (full headers, decoded body, risk signals).
+- If multiple requests are queued, notifications coalesce into the
+  menu-bar popover after the first; we don't spam banners.
 
-### Cross-platform
+### Other platforms
 
-- Linux: `org.vetter.Vetterd` GTK menu-bar (or AppIndicator) + libnotify.
-- Windows: WinRT toast + tray icon.
-- All platforms get a local web UI at `http://127.0.0.1:<port>/pending`
-  as a uniform fallback that the user can keep open in a tab.
+Out of scope for MVP. `vet` will refuse to run on non-macOS with a clear
+"only macOS is supported in this release" message until we add a UI.
+The wire protocol (§3) is platform-agnostic, so adding Linux (libnotify
++ AppIndicator), Windows (WinRT toast + tray), or a localhost web UI
+later is a UI-only project — no daemon or CLI changes required.
 
 ### Audit log
 
-Every decision (auto or human) is appended to `~/.local/state/vet/audit.log`
+Every decision (auto or human) is appended to
+`~/Library/Logs/vetter/audit.log`
 as JSON lines. `vet allow list --history` surfaces this.
 
 ---
@@ -374,7 +380,9 @@ slower CLI cold start and worse parser ergonomics.)
 ### Phase 0 — Skeleton (1–2 days)
 - Cargo workspace: `vet` (cli), `vetterd` (daemon), `vetter-core` (parsers,
   policy, wire types).
-- CI: fmt, clippy, tests, cross-platform build matrix.
+- CI: fmt, clippy, tests; macOS build target only for MVP (Linux runner
+  for headless tests of `vetter-core` is fine, but no Linux/Windows
+  binary is shipped).
 - `vet doctor` stub.
 
 ### Phase 1 — Curl parser + standalone CLI (3–5 days)
@@ -383,31 +391,38 @@ slower CLI cold start and worse parser ergonomics.)
 - Renderer with color, redaction, signal flags.
 - `vet --explain curl …` works end-to-end with no daemon, no policy.
 
-### Phase 2 — Allowlist + TTY approval (3–5 days)
+### Phase 2 — Allowlist evaluation (3–5 days)
 - YAML schema + loader for project + user scope.
 - Rule matcher; unit + property tests.
-- TTY blocking prompt fallback.
-- `vet curl …` is now usable end-to-end, single-process.
+- `vet --explain curl …` reports the policy decision (allow/deny/prompt)
+  without yet being able to surface a prompt to a human.
 
 ### Phase 3 — Daemon + IPC (3–5 days)
-- `vetterd` skeleton, socket protocol, request queue.
-- `vet` switches from in-process eval to daemon eval, with TTY fallback
-  retained.
-- Audit log.
+- `vetterd` skeleton, socket protocol, request queue, audit log.
+- `vet` becomes a thin client of the daemon; fails closed if the socket
+  is missing.
+- Approver surface for this phase is a stub: any prompt-class decision
+  is auto-denied with a "no UI yet" reason. Lets us land and test the
+  whole pipeline before any Swift code exists.
 
-### Phase 4 — macOS approver UI (1–2 weeks)
-- Swift menu-bar `.app` bundle, `UNUserNotificationCenter` integration,
-  popover with pending list, detail view, action buttons.
-- Code signing + notarisation pipeline. (this is the long pole)
-- Local 127.0.0.1 web fallback.
+### Phase 4 — macOS approver UI (1–2 weeks, the long pole)
+- Swift menu-bar `.app` bundle, `LSUIElement`, no dock icon.
+- `UNUserNotificationCenter` integration with Approve / Allowlist… /
+  Reject actions.
+- Popover with pending list and detail view (renders §8 output).
+- Code signing + notarisation pipeline.
+- This is the MVP-complete milestone: with Phase 4 landed, an agent
+  harness with `vet *` allowlisted can do useful work end-to-end.
 
 ### Phase 5 — Pattern suggestions (2–4 days)
 - Generalisation engine (host, path-glob, method buckets).
-- UI affordance to pick a generalisation when allowlisting.
+- "Allowlist…" action opens the picker UI from Phase 4.
 
-### Phase 6 — Linux + Windows UI (1 week each, can be parallel)
-- libnotify + AppIndicator on Linux.
-- WinRT toast + tray icon on Windows.
+### Phase 6 — Other platforms (post-MVP, opportunistic)
+- Linux: libnotify + AppIndicator.
+- Windows: WinRT toast + tray.
+- localhost web UI (`http://127.0.0.1:<port>`) as a uniform option.
+- All three reuse the existing socket protocol; no daemon/CLI changes.
 
 ### Phase 7 — Additional command parsers
 - `wget`, `gh`, `aws`, `gcloud`, `ssh/scp`, `rm`, `git push`/`git remote`
@@ -430,14 +445,15 @@ slower CLI cold start and worse parser ergonomics.)
    match surface? Default off (most are non-sensitive), with an opt-in
    `query:` matcher.
 4. **Multi-user / shared dev box.** Daemon is per-user; sockets in
-   `$XDG_RUNTIME_DIR`. No cross-user policy.
+   `$TMPDIR` (macOS doesn't set `$XDG_RUNTIME_DIR`). No cross-user policy.
 5. **Latency budget.** Daemon round-trip target <30 ms on cache hit. Rust
    + Unix socket should be fine; needs a benchmark before we believe it.
 6. **Telemetry.** None by default. Opt-in local-only metrics for
    diagnosing the project's own behavior.
-7. **Distribution.** Homebrew tap for macOS, prebuilt binaries on GitHub
-   Releases, AUR for Arch, scoop for Windows. Notarised `.app` for the
-   daemon on macOS.
+7. **Distribution.** MVP is macOS only: Homebrew tap delivering the
+   notarised `.app` (which contains both `vet` and `vetterd`), with
+   symlinks into `/usr/local/bin` for the CLI. Linux/Windows packaging
+   waits until Phase 6.
 
 ---
 

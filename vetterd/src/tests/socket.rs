@@ -2,10 +2,11 @@
 //! `AGENTS.md`.
 
 use super::*;
+use crate::testutil::tmpdir;
 
 #[test]
 fn listen_creates_socket_with_0600_perms() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tmpdir("vetterd-socket-test-");
     let path = dir.path().join("a.sock");
     let _l = listen(&path).unwrap();
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -14,7 +15,7 @@ fn listen_creates_socket_with_0600_perms() {
 
 #[test]
 fn listen_replaces_orphaned_socket_file() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tmpdir("vetterd-socket-test-");
     let path = dir.path().join("orphan.sock");
     std::fs::write(&path, b"").unwrap();
     let _l = listen(&path).expect("orphan should be unlinked and rebound");
@@ -22,7 +23,7 @@ fn listen_replaces_orphaned_socket_file() {
 
 #[test]
 fn listen_refuses_when_live_peer_present() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tmpdir("vetterd-socket-test-");
     let path = dir.path().join("live.sock");
     let _alive = listen(&path).unwrap();
     let err = listen(&path).expect_err("second bind must fail");
@@ -31,7 +32,7 @@ fn listen_refuses_when_live_peer_present() {
 
 #[test]
 fn listen_creates_parent_dirs() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tmpdir("vetterd-socket-test-");
     let path = dir.path().join("nested/dir/a.sock");
     let _l = listen(&path).unwrap();
     assert!(path.exists());

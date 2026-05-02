@@ -206,5 +206,9 @@ pub(crate) fn cleanup_socket(p: &Path) {
 }
 
 #[cfg(test)]
+#[path = "tests/testutil.rs"]
+mod testutil;
+
+#[cfg(test)]
 #[path = "tests/lib.rs"]
 mod tests;

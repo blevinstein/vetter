@@ -2,11 +2,12 @@
 //! `AGENTS.md`.
 
 use super::*;
+use crate::testutil::tmpdir;
 use vetter_core::wire::WireDecision;
 
 #[test]
 fn handle_connection_evaluates_and_responds() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tmpdir("vetterd-lib-test-");
     let sock = dir.path().join("test.sock");
     let audit_path = dir.path().join("audit.log");
     let allowlist = load_default(None, None).unwrap();

@@ -235,4 +235,3 @@ fn matches_optional_path_glob(path: &str, pattern: Option<&str>) -> bool {
 #[cfg(test)]
 #[path = "../tests/matcher_decide.rs"]
 mod tests;
-

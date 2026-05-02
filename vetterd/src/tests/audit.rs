@@ -2,6 +2,7 @@
 //! `AGENTS.md`.
 
 use super::*;
+use crate::testutil::tmpdir;
 use vetter_core::wire::WireDecision;
 
 fn entry(id: &str, dec: WireDecision) -> AuditEntry {
@@ -19,7 +20,7 @@ fn entry(id: &str, dec: WireDecision) -> AuditEntry {
 
 #[test]
 fn append_writes_one_json_line_per_entry() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tmpdir("vetterd-audit-test-");
     let path = dir.path().join("audit.log");
     let log = AuditLog::open(&path).unwrap();
     log.append(&entry("a", WireDecision::Allow)).unwrap();
@@ -41,7 +42,7 @@ fn append_writes_one_json_line_per_entry() {
 
 #[test]
 fn open_creates_parent_dirs() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tmpdir("vetterd-audit-test-");
     let path = dir.path().join("a/b/c/audit.log");
     let _log = AuditLog::open(&path).unwrap();
     assert!(path.exists());
@@ -52,7 +53,7 @@ fn append_is_thread_safe() {
     use std::sync::Arc;
     use std::thread;
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tmpdir("vetterd-audit-test-");
     let path = dir.path().join("audit.log");
     let log = Arc::new(AuditLog::open(&path).unwrap());
     let mut handles = vec![];

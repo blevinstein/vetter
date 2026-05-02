@@ -51,6 +51,24 @@ configurations.
 
 ## Conventions
 
+- **Unit tests live in their own files**, never inline in the source
+  module. For each `<crate>/src/path/to/foo.rs` (or `foo/mod.rs`) that
+  needs unit tests, put the tests in `<crate>/src/tests/<flattened>.rs`
+  (e.g. `src/matcher/loader.rs` → `src/tests/matcher_loader.rs`,
+  `src/parsers/curl/state.rs` → `src/tests/parsers_curl_state.rs`),
+  and declare in the source file:
+  ```rust
+  #[cfg(test)]
+  #[path = "tests/foo.rs"]            // or "../tests/...", "../../tests/..."
+  mod tests;
+  ```
+  Inside the tests file, `super::*` resolves to the source module's
+  namespace, so private items remain reachable. **Do not** reintroduce
+  inline `#[cfg(test)] mod tests { ... }` blocks — having a single
+  discoverable `tests/` directory per crate keeps grep-for-test-name
+  cheap and the source files focused on production code.
+  Cross-crate or black-box tests still belong under `<crate>/tests/`
+  as Cargo integration tests.
 - Snapshot tests use `insta`. After intentional output changes, run
   `INSTA_UPDATE=always cargo test --workspace --all-features` and
   commit the regenerated `.snap` files alongside the code change.

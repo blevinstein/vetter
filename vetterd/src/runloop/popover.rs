@@ -31,9 +31,10 @@ use objc2::MainThreadOnly;
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSBezelStyle, NSBox,
     NSBoxType, NSButton, NSButtonType, NSColor, NSControlStateValueOff, NSFont,
-    NSFontWeightSemibold, NSLayoutConstraint, NSPopover, NSPopoverBehavior, NSPopoverDelegate,
-    NSScrollView, NSStackView, NSStackViewDistribution, NSStatusBarButton, NSTextField, NSTextView,
-    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
+    NSFontWeightSemibold, NSImage, NSImageView, NSLayoutAttribute, NSLayoutConstraint, NSPopover,
+    NSPopoverBehavior, NSPopoverDelegate, NSScrollView, NSStackView, NSStackViewDistribution,
+    NSStatusBarButton, NSTextField, NSTextView, NSUserInterfaceLayoutOrientation, NSView,
+    NSViewController,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSArray, NSEdgeInsets, NSObject, NSObjectProtocol, NSPoint,
@@ -104,6 +105,17 @@ impl Popover {
         cards.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         cards.setSpacing(CARD_SPACING);
         cards.setDistribution(NSStackViewDistribution::Fill);
+        // Pin the perpendicular alignment to `Leading` so every
+        // card's left edge lines up with every other card's,
+        // independent of intrinsic content width. The default
+        // (`CenterX`) was centring narrower cards in the cards
+        // stack, which made the resolved-card status icons land at
+        // varying x positions across cards — defeating the whole
+        // point of "scan the left edge to clock outcomes". Each
+        // card's width is also pinned in `refresh` so right edges
+        // align too and the pills row / dry-run pill have a
+        // consistent right-edge gutter.
+        cards.setAlignment(NSLayoutAttribute::Leading);
         // Inset the arranged cards horizontally so card content
         // doesn't run flush with the popover's rounded edges.
         // Vertical insets stay 0; the cards stack is pinned to the
@@ -560,14 +572,14 @@ impl PopoverController {
             if idx > 0 {
                 let sep = NSBox::new(mtm);
                 sep.setBoxType(NSBoxType::Separator);
-                cards.addArrangedSubview(&sep);
+                add_full_width_arranged(cards, &sep);
             }
             let card = self.build_card(mtm, idx, disclosure_idx, summary, rendered, None);
             disclosure_idx += 1;
             if focused_id.is_some_and(|f| f == summary.id) {
                 focused_view = Some(card.clone());
             }
-            cards.addArrangedSubview(&card);
+            add_full_width_arranged(cards, &card);
         }
 
         if !resolved.is_empty() {
@@ -578,17 +590,17 @@ impl PopoverController {
             if !entries.is_empty() {
                 let sep = NSBox::new(mtm);
                 sep.setBoxType(NSBoxType::Separator);
-                cards.addArrangedSubview(&sep);
+                add_full_width_arranged(cards, &sep);
             }
             let section_label = NSTextField::labelWithString(ns_string!("Recent"), mtm);
             section_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
             section_label.setFont(Some(&NSFont::boldSystemFontOfSize(11.0)));
-            cards.addArrangedSubview(&section_label);
+            add_full_width_arranged(cards, &section_label);
 
             for (idx, entry) in resolved.iter().enumerate() {
                 let sep = NSBox::new(mtm);
                 sep.setBoxType(NSBoxType::Separator);
-                cards.addArrangedSubview(&sep);
+                add_full_width_arranged(cards, &sep);
                 // `idx` is unused for resolved cards' buttons (the
                 // outcome is already final, so they have no
                 // Approve/Reject row); we still pass it so
@@ -605,7 +617,7 @@ impl PopoverController {
                     Some(&entry.decision),
                 );
                 disclosure_idx += 1;
-                cards.addArrangedSubview(&card);
+                add_full_width_arranged(cards, &card);
             }
         }
 
@@ -675,6 +687,19 @@ impl PopoverController {
         header_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
         header_row.setSpacing(8.0);
         header_row.setDistribution(NSStackViewDistribution::Fill);
+        // Resolved cards lead with a coloured status glyph (green
+        // check / red X) so the user can scan the left edge of the
+        // Recent stack and clock every past outcome at a glance —
+        // the older trailing "Allowed"/"Denied" text label put the
+        // status at the right edge where it competed with the URL
+        // for attention. Pending cards skip this icon (no decision
+        // yet) and lean on the Approve/Reject buttons at the
+        // bottom of the card to communicate state.
+        if let Some(decision) = outcome {
+            if let Some(icon) = build_outcome_icon(*decision, mtm) {
+                header_row.addArrangedSubview(&icon);
+            }
+        }
         header_row.addArrangedSubview(&command_label);
         header_row.addArrangedSubview(&url_view);
 
@@ -694,23 +719,6 @@ impl PopoverController {
                 mtm,
             );
             header_row.addArrangedSubview(&pill);
-        }
-
-        // For resolved cards, append an "Allowed" or "Denied" badge
-        // at the trailing end of the header row so the outcome is
-        // immediately scannable without reading the body.
-        if let Some(decision) = outcome {
-            let (badge_text, badge_color) = match decision {
-                vetter_core::wire::WireDecision::Allow
-                | vetter_core::wire::WireDecision::AllowOnce => {
-                    ("Allowed", NSColor::systemGreenColor())
-                }
-                vetter_core::wire::WireDecision::Deny => ("Denied", NSColor::systemRedColor()),
-            };
-            let badge = NSTextField::labelWithString(&NSString::from_str(badge_text), mtm);
-            badge.setFont(Some(&NSFont::boldSystemFontOfSize(11.0)));
-            badge.setTextColor(Some(&badge_color));
-            header_row.addArrangedSubview(&badge);
         }
 
         // Body: read-only NSTextView in its own NSScrollView. The
@@ -808,6 +816,17 @@ impl PopoverController {
         card.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         card.setSpacing(8.0);
         card.setDistribution(NSStackViewDistribution::Fill);
+        // Left-align every row inside the card. With the default
+        // `CenterX` alignment, narrow rows (header_row when the URL
+        // is short, pills row when only one chip is rendered)
+        // floated towards the card's centre, which dragged the
+        // resolved-card status icon away from the leading edge —
+        // so two cards with different content widths showed icons
+        // at different x positions even though the cards
+        // themselves were now full-width. `Leading` keeps each
+        // row's leading edge flush with the card's content
+        // gutter.
+        card.setAlignment(NSLayoutAttribute::Leading);
         card.setEdgeInsets(NSEdgeInsets {
             top: CARD_INSET,
             left: CARD_INSET,
@@ -1100,6 +1119,76 @@ fn measure_raw_body_height(tv: &NSTextView, width: f64) -> f64 {
     layout.ensureLayoutForTextContainer(&container);
     let used = layout.usedRectForTextContainer(&container);
     used.size.height + tv.textContainerInset().height * 2.0
+}
+
+/// Add `view` as an arranged subview of the cards stack and pin its
+/// width to the stack's width minus the horizontal margin on both
+/// sides.
+///
+/// `NSStackView` with `Leading` alignment and no width constraint
+/// lets each arranged subview stay at its intrinsic content width,
+/// which made cards (and separators) look like ragged-right islands
+/// on the dark popover background. Pinning width here forces every
+/// card to span the full content area so the right edge stays as
+/// straight as the left edge — and the per-card pills row / dry-
+/// run pill have a consistent right-edge gutter to push against.
+///
+/// Same idiom is used for the `NSBox` separators and the "Recent"
+/// section header so the dividing rules and label span the full
+/// width too, instead of shrinking to their intrinsic size and
+/// leaving an awkward leading-aligned stub.
+fn add_full_width_arranged(cards: &NSStackView, view: &NSView) {
+    cards.addArrangedSubview(view);
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[view
+        .widthAnchor()
+        .constraintEqualToAnchor_constant(&cards.widthAnchor(), -2.0 * CARDS_HORIZONTAL_MARGIN)]));
+}
+
+/// SF Symbol point size for the resolved-card status icon. Tuned to
+/// roughly match the cap height of the bold 13pt monospaced
+/// command label next to it so the icon and text baseline align.
+const OUTCOME_ICON_SIZE: f64 = 16.0;
+
+/// Build the leading status glyph for a resolved card: a green
+/// `checkmark.circle.fill` for Allow / AllowOnce, a red
+/// `xmark.circle.fill` for Deny.
+///
+/// Returns `None` when the running OS doesn't ship the requested SF
+/// Symbol (older macOS, future symbol renames). The caller treats
+/// the icon as decorative — its absence drops the card back to a
+/// text-only header without breaking layout.
+///
+/// Tinting goes through `setContentTintColor:`. SF Symbol images
+/// are templates, so the tint colour applies uniformly across the
+/// glyph regardless of the system theme — under the popover's
+/// pinned Dark Aqua appearance this gives a vivid green / red on
+/// the dark surface, exactly the "scan the left edge" affordance
+/// the resolved cards are tuned for.
+fn build_outcome_icon(
+    decision: vetter_core::wire::WireDecision,
+    mtm: MainThreadMarker,
+) -> Option<Retained<NSView>> {
+    let (symbol, color) = match decision {
+        vetter_core::wire::WireDecision::Allow | vetter_core::wire::WireDecision::AllowOnce => {
+            ("checkmark.circle.fill", NSColor::systemGreenColor())
+        }
+        vetter_core::wire::WireDecision::Deny => ("xmark.circle.fill", NSColor::systemRedColor()),
+    };
+    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(symbol),
+        Some(&NSString::from_str(match decision {
+            vetter_core::wire::WireDecision::Allow | vetter_core::wire::WireDecision::AllowOnce => {
+                "Allowed"
+            }
+            vetter_core::wire::WireDecision::Deny => "Denied",
+        })),
+    )?;
+    let view = NSImageView::imageViewWithImage(&image, mtm);
+    view.setContentTintColor(Some(&color));
+    view.setFrameSize(NSSize::new(OUTCOME_ICON_SIZE, OUTCOME_ICON_SIZE));
+    // NSImageView → NSControl → NSView. Two `into_super` hops to
+    // land on the storage type used by the rest of the header row.
+    Some(view.into_super().into_super())
 }
 
 /// Find the first `HttpRequest` effect in `summary.parsed`, paired

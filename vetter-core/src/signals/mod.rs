@@ -12,6 +12,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use url::Host;
 
+use crate::known_hosts::KnownHostsStore;
 use crate::parsers::{
     BadgeSeverity, Effect, FileRead, FileWrite, HttpRequest, ParsedCommand, ProcessSpawn, TlsPolicy,
 };
@@ -47,6 +48,11 @@ pub enum SignalKind {
     FileReadOutsideCwd,
     // --- generic over ProcessSpawn ---
     PipeToShell,
+    // --- known-hosts check ---
+    /// Host is not present in any layer of the known-hosts list. This signals
+    /// that the agent is reaching somewhere the user has not explicitly
+    /// recognised as familiar. Not an auto-deny; it requires human review.
+    UnknownHost,
     // --- parser-specific (curl, gh, ssh, ...) ---
     InsecureFlag,
     ResolveOverride,
@@ -89,7 +95,8 @@ impl SignalKind {
             | SignalKind::NonStandardPort
             | SignalKind::IdnHost
             | SignalKind::FileOutsideCwd
-            | SignalKind::FileReadOutsideCwd => BadgeSeverity::Warn,
+            | SignalKind::FileReadOutsideCwd
+            | SignalKind::UnknownHost => BadgeSeverity::Warn,
         }
     }
 }
@@ -322,6 +329,37 @@ fn pipes_to_shell(cmd: &str) -> bool {
 
 fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+/// Check each `Effect::HttpRequest` in `p` against the known-hosts store and
+/// emit a [`SignalKind::UnknownHost`] for any host that is not recognised.
+///
+/// Loopback addresses (`localhost`, `127.0.0.1`, `::1`) are always skipped —
+/// local dev traffic is never "unknown" in a meaningful sense.
+///
+/// This is a separate function from [`analyze`] because it requires external
+/// data (the store), so it cannot be a pure function over effects alone.
+/// Callers should extend `parsed.signals` with its output alongside
+/// `analyze(&parsed)`.
+pub fn check_known_hosts(p: &ParsedCommand, store: &KnownHostsStore) -> Vec<RiskSignal> {
+    let mut out = Vec::new();
+    for (idx, eff) in p.effects.iter().enumerate() {
+        if let Effect::HttpRequest(req) = eff {
+            if is_loopback_host(req.url.host()) {
+                continue;
+            }
+            if let Some(host) = req.url.host_str() {
+                if !store.contains(host) {
+                    out.push(RiskSignal {
+                        kind: SignalKind::UnknownHost,
+                        detail: format!("host {host} not in known-hosts list"),
+                        effect_idx: Some(idx),
+                    });
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

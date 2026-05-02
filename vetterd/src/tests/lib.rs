@@ -16,10 +16,12 @@ fn handle_connection_evaluates_and_responds() {
     let audit = Arc::new(AuditLog::open(&audit_path).unwrap());
     let pending = Arc::new(PendingQueue::new());
     let notifier: Arc<dyn crate::notifier::Notifier> = Arc::new(NoopNotifier);
+    let known_hosts = load_known_hosts_default(None).unwrap();
     let _ctx = Context {
         socket_path: sock,
         audit,
         allowlist,
+        known_hosts,
         pending,
         notifier,
     };

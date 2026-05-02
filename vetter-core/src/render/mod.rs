@@ -417,6 +417,7 @@ pub fn signal_kind_label(k: SignalKind) -> &'static str {
         SignalKind::FileOutsideCwd => "file-outside-cwd",
         SignalKind::FileReadOutsideCwd => "file-read-outside-cwd",
         SignalKind::PipeToShell => "pipe-to-shell",
+        SignalKind::UnknownHost => "unknown-host",
         SignalKind::InsecureFlag => "insecure-flag",
         SignalKind::ResolveOverride => "resolve-override",
         SignalKind::CacertOverride => "cacert-override",

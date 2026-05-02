@@ -37,12 +37,14 @@ model, and design rationale — read it before making non-trivial changes.
 
 | You want to... | Read |
 |---|---|
+| Get oriented quickly (crate map, key file paths) | [plans/RepoMap.md](plans/RepoMap.md) |
 | Understand the architecture, types, or rule model | [plans/Overview.md](plans/Overview.md) |
 | Find what the next task is | [TODO.md](TODO.md) |
 | Find what to test for a given component | [plans/TestingPlan.md](plans/TestingPlan.md) |
 | Understand the CLI surface and exit codes | [plans/Overview.md §4](plans/Overview.md) |
 | Understand the parser plugin contract | [plans/Overview.md §8](plans/Overview.md) |
 | Understand risk-signal heuristics | [plans/Overview.md §9](plans/Overview.md) |
+| Understand allowlist YAML schema, matcher, signals | [plans/RepoMap.md §2–5](plans/RepoMap.md) |
 
 If you're picking up a fresh task: open [TODO.md](TODO.md) first, find
 the in-progress (`[~]`) phase or the next not-started (`[ ]`) phase,
@@ -58,6 +60,10 @@ Rust workspace, `cargo` for everything:
   downstream consumer reads from.
 - `vet/` — primary CLI binary; agent harnesses allowlist `vet *`.
 - `vetterd/` — long-running per-user daemon (Phase 3+).
+
+For a detailed map of every submodule, key file paths, the allowlist
+YAML schema, curl parser internals, and signal types, see
+[plans/RepoMap.md](plans/RepoMap.md).
 
 ## How to build and test
 

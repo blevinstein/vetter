@@ -40,6 +40,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use vetter_core::known_hosts::{load_default as load_known_hosts_default, KnownHostsStore};
 use vetter_core::matcher::{load_default, AllowlistStore, Decision};
 use vetter_core::parsers::{self, EnvSnapshot, ParseError, StdinHandle};
 use vetter_core::peer_cred::assert_peer_is_self;
@@ -49,7 +50,7 @@ use vetter_core::wire::{
     new_request_id, read_frame, read_request, write_frame, MgmtRequest, MgmtResponse, PendingItem,
     VetDecision, VetRequest, WireDecision, WireError, PROTOCOL_VERSION,
 };
-use vetter_core::{analyze, ParsedCommand};
+use vetter_core::{analyze, check_known_hosts, ParsedCommand};
 
 pub use audit::{AuditEntry, AuditLog};
 pub use pending::{NotifyHint, PendingDecision, PendingQueue, PromptSummary};
@@ -60,6 +61,7 @@ pub struct Context {
     pub socket_path: PathBuf,
     pub audit: Arc<AuditLog>,
     pub allowlist: AllowlistStore,
+    pub known_hosts: KnownHostsStore,
     pub pending: Arc<PendingQueue>,
     pub notifier: Arc<dyn notifier::Notifier>,
 }
@@ -77,6 +79,8 @@ pub enum DaemonError {
     Pidfile(#[source] std::io::Error),
     #[error("allowlist: {0}")]
     Allowlist(#[from] vetter_core::matcher::LoadError),
+    #[error("known-hosts: {0}")]
+    KnownHosts(#[from] vetter_core::known_hosts::KnownHostsError),
     #[error("notifier: {0}")]
     Notifier(#[from] notifier::NotifierBuildError),
 }
@@ -115,6 +119,7 @@ pub fn run(
 
     let allowlist =
         load_default(None, allowlist_override.as_deref()).map_err(DaemonError::Allowlist)?;
+    let known_hosts = load_known_hosts_default(None).map_err(DaemonError::KnownHosts)?;
     let audit = Arc::new(AuditLog::open(&audit_path).map_err(DaemonError::Audit)?);
     let listener = socket::listen(&socket_path).map_err(DaemonError::Socket)?;
 
@@ -137,6 +142,7 @@ pub fn run(
         socket_path: socket_path.clone(),
         audit,
         allowlist,
+        known_hosts,
         pending: Arc::clone(&pending),
         notifier: Arc::clone(&notifier),
     });
@@ -355,7 +361,10 @@ pub fn handle_connection(
     let req = read_request(&mut stream)?;
 
     let (decision, reason, command_for_audit) = match parse_request(&req) {
-        Ok(parsed) => {
+        Ok(mut parsed) => {
+            parsed
+                .signals
+                .extend(check_known_hosts(&parsed, &ctx.known_hosts));
             let command_for_audit = parsed.command.clone();
             let outcome = evaluate(&parsed, &req.id, req.force_prompt, &ctx.allowlist);
             let (decision, reason) = resolve_outcome(outcome, &parsed, &req, ctx);

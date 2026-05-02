@@ -13,7 +13,7 @@ use std::process::ExitCode;
 
 use vetter_core::matcher::{self, Decision, LoadError};
 use vetter_core::{
-    analyze,
+    analyze, check_known_hosts, load_known_hosts_default,
     parsers::{self, EnvSnapshot, ParseError, StdinHandle},
     AnsiWriter, DefaultRenderer, PlainWriter, Renderer,
 };
@@ -59,6 +59,17 @@ pub fn run(argv: Vec<String>, quiet: bool, allowlist_override: Option<&Path>) ->
         }
     };
     parsed.signals.extend(analyze(&parsed));
+
+    let known_hosts = match load_known_hosts_default(env.cwd.as_deref()) {
+        Ok(kh) => kh,
+        Err(e) => {
+            eprintln!("vet: known-hosts load failed: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    parsed
+        .signals
+        .extend(check_known_hosts(&parsed, &known_hosts));
 
     let store = match matcher::load_default(env.cwd.as_deref(), allowlist_override) {
         Ok(s) => s,

@@ -47,6 +47,28 @@ describe a curl call that won't happen.
 **Fix**: dispatcher resolves argv[0] to a real path and refuses
 unknown inodes (or matches against an expected install path list).
 
+## T5 — Lookalike / homograph domain
+
+An adversarial prompt instructs the agent to `curl https://g0ogle.com/…`
+(or similar typosquat / homograph). The call may match a permissive
+allowlist rule (e.g. `host: "*.com"`) and auto-allow without the human
+ever noticing the substituted character.
+
+**Partial mitigation shipped**: the `UnknownHost` risk signal
+(`SignalKind::UnknownHost`, `plans/Overview.md` §9) fires whenever an
+`HttpRequest` targets a host absent from the layered known-hosts list
+(`~/.vet/known-hosts.yaml`, `<repo>/.vet/known-hosts.yaml`, built-in
+list). This surfaces a yellow warning badge in the render block and forces
+human attention on the pending-request popover, even when a permissive
+allow rule would otherwise auto-approve.
+
+Limitations: the signal is suppressed if the lookalike host happens to
+match a known-hosts glob (unlikely but possible), and it cannot catch
+attacks where the agent constructs the URL dynamically at runtime from
+substrings (the parser only sees the final URL). A full mitigation would
+require homograph-specific detection (Levenshtein distance to known hosts,
+Unicode confusable analysis) — that is future work.
+
 ---
 
 ## Sequencing

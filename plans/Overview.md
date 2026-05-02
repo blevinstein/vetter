@@ -215,6 +215,36 @@ Anything not listed in `headers_allow` (or set to `*`) is a mismatch
 deny on header surface**, because Authorization, Cookie, X-Api-Key, etc.
 are exactly what we want to scrutinise.
 
+### Known-hosts list
+
+Alongside the allowlist, `vet` maintains a **known-hosts list** — a
+catalogue of host patterns the user has declared "familiar". It lives in the
+same `.vet/` directory with the same layered discovery:
+
+- **Built-in** — baked into the binary; a curated short list of well-known
+  public APIs (npm, PyPI, crates.io, GitHub, major cloud platforms, LLM APIs).
+- **User scope** — `~/.vet/known-hosts.yaml`.
+- **Project scope** — `<repo>/.vet/known-hosts.yaml`.
+
+File format:
+
+```yaml
+hosts:
+  - pattern: "api.github.com"
+    note: "GitHub REST API"
+  - pattern: "*.googleapis.com"
+    note: "Google Cloud APIs"
+```
+
+Patterns follow the same glob rules as allowlist `url.host` fields: exact
+(case-insensitive) or leading `*.` wildcard for subdomains (the apex itself
+requires a separate entry).
+
+**Listing a host does not grant any permission.** The known-hosts list is
+purely a signal source. When an `HttpRequest` targets a host that is absent
+from all layers, the risk analyzer emits an `UnknownHost` signal (see §9) —
+a yellow warning that prompts human review without auto-denying.
+
 ### Pattern suggestions
 
 When a request reaches the human and they approve, the daemon proposes
@@ -518,6 +548,10 @@ Generic (over `Effect::HttpRequest`):
 - TLS off / verification disabled (`tls != Strict`, `http://` non-loopback)
 - non-standard ports
 - IDN / punycode hosts; raw IP literals
+- unknown host: the requested host is absent from every layer of the
+  known-hosts list (§5 "Known-hosts list"), signalling that the agent is
+  reaching somewhere the user has not explicitly recognised as familiar;
+  loopback addresses are always exempt
 
 Generic (over `Effect::FileWrite` / `FileRead`):
 - file upload of a path outside cwd

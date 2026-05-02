@@ -2,10 +2,19 @@
 //! `AGENTS.md`.
 
 use super::*;
+use vetter_core::known_hosts::KnownHostsStore;
 use vetter_core::matcher::rule::{HostPattern, HttpClause, Rule, RuleWhen, UrlClause};
 use vetter_core::{
     Body, DisplayHints, Effect, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy, WireDecision,
 };
+
+/// Tests do not exercise host-trust plumbing here; that's covered by
+/// dedicated tests below. Use an empty store as the neutral default
+/// so policy decisions don't accidentally depend on the built-in
+/// host list.
+fn empty_known_hosts() -> KnownHostsStore {
+    KnownHostsStore::default()
+}
 
 fn parsed_get(host: &str) -> ParsedCommand {
     ParsedCommand {
@@ -68,7 +77,13 @@ fn allow_rule_in_user_scope_returns_auto_allow_with_reason() {
         user: vec![allow_rule("yes", "example.test")],
         builtin: vec![],
     };
-    let outcome = evaluate(&parsed_get("example.test"), "id-1", false, &store);
+    let outcome = evaluate(
+        &parsed_get("example.test"),
+        "id-1",
+        false,
+        &store,
+        &empty_known_hosts(),
+    );
     match outcome {
         PolicyOutcome::Auto { decision, reason } => {
             assert_eq!(decision, WireDecision::Allow);
@@ -88,7 +103,13 @@ fn denylist_rule_returns_auto_deny_with_reason() {
         user: vec![allow_rule("would-allow", "example.test")],
         builtin: vec![],
     };
-    let outcome = evaluate(&parsed_get("example.test"), "id-2", false, &store);
+    let outcome = evaluate(
+        &parsed_get("example.test"),
+        "id-2",
+        false,
+        &store,
+        &empty_known_hosts(),
+    );
     match outcome {
         PolicyOutcome::Auto { decision, reason } => {
             assert_eq!(decision, WireDecision::Deny);
@@ -102,7 +123,13 @@ fn denylist_rule_returns_auto_deny_with_reason() {
 #[test]
 fn no_match_returns_prompt_with_summary() {
     let store = AllowlistStore::default();
-    let outcome = evaluate(&parsed_get("unknown.test"), "id-3", false, &store);
+    let outcome = evaluate(
+        &parsed_get("unknown.test"),
+        "id-3",
+        false,
+        &store,
+        &empty_known_hosts(),
+    );
     match outcome {
         PolicyOutcome::Prompt(s) => {
             assert_eq!(s.id, "id-3");
@@ -124,7 +151,13 @@ fn force_prompt_short_circuits_allow_rule_with_force_prompt_summary() {
         user: vec![allow_rule("would-allow", "example.test")],
         builtin: vec![],
     };
-    let outcome = evaluate(&parsed_get("example.test"), "id-4", true, &store);
+    let outcome = evaluate(
+        &parsed_get("example.test"),
+        "id-4",
+        true,
+        &store,
+        &empty_known_hosts(),
+    );
     match outcome {
         PolicyOutcome::Prompt(s) => {
             assert_eq!(s.id, "id-4");
@@ -149,12 +182,87 @@ fn force_prompt_does_not_short_circuit_denylist() {
         user: vec![allow_rule("would-allow", "example.test")],
         builtin: vec![],
     };
-    let outcome = evaluate(&parsed_get("example.test"), "id-5", false, &store);
+    let outcome = evaluate(
+        &parsed_get("example.test"),
+        "id-5",
+        false,
+        &store,
+        &empty_known_hosts(),
+    );
     matches!(
         outcome,
         PolicyOutcome::Auto {
             decision: WireDecision::Deny,
             ..
         }
+    );
+}
+
+// -- host_known plumbing ----------------------------------------
+
+/// `prompt_summary` should populate `host_known[i]` true iff
+/// `effects[i]` is an HttpRequest whose host the
+/// `KnownHostsStore` recognises. Loopback hosts also count as known.
+#[test]
+fn prompt_summary_marks_host_known_for_store_match() {
+    let store = AllowlistStore::default();
+    let known_hosts = KnownHostsStore {
+        builtin: vec![],
+        user: vec![vetter_core::known_hosts::KnownHostEntry {
+            pattern: "trusted.test".into(),
+            note: None,
+        }],
+        project: vec![],
+    };
+    let outcome = evaluate(
+        &parsed_get("trusted.test"),
+        "id-known",
+        false,
+        &store,
+        &known_hosts,
+    );
+    let summary = match outcome {
+        PolicyOutcome::Prompt(s) => s,
+        other => panic!("expected prompt, got {other:?}"),
+    };
+    assert_eq!(summary.host_known, vec![true]);
+    assert!(summary.parsed.is_some());
+}
+
+#[test]
+fn prompt_summary_marks_host_unknown_for_store_miss() {
+    let store = AllowlistStore::default();
+    let outcome = evaluate(
+        &parsed_get("never.heard.test"),
+        "id-unknown",
+        false,
+        &store,
+        &empty_known_hosts(),
+    );
+    let summary = match outcome {
+        PolicyOutcome::Prompt(s) => s,
+        other => panic!("expected prompt, got {other:?}"),
+    };
+    assert_eq!(summary.host_known, vec![false]);
+}
+
+#[test]
+fn prompt_summary_marks_loopback_as_known() {
+    let store = AllowlistStore::default();
+    let outcome = evaluate(
+        &parsed_get("localhost"),
+        "id-loop",
+        false,
+        &store,
+        &empty_known_hosts(),
+    );
+    let summary = match outcome {
+        PolicyOutcome::Prompt(s) => s,
+        other => panic!("expected prompt, got {other:?}"),
+    };
+    assert_eq!(
+        summary.host_known,
+        vec![true],
+        "loopback host should be flagged known even when the store is empty"
     );
 }

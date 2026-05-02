@@ -18,7 +18,7 @@ use crate::signals::{RiskSignal, SignalKind};
 
 mod redact;
 
-pub use redact::is_secret_header;
+pub use redact::{is_secret_header, redact_value};
 
 /// Style tag for a chunk of output. The writer implementation decides
 /// whether to translate it into ANSI escape codes.

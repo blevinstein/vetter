@@ -29,9 +29,10 @@ use objc2::sel;
 use objc2::DefinedClass;
 use objc2::MainThreadOnly;
 use objc2_app_kit::{
-    NSBezelStyle, NSBox, NSBoxType, NSButton, NSColor, NSFont, NSFontWeightSemibold,
-    NSLayoutConstraint, NSPopover, NSPopoverBehavior, NSPopoverDelegate, NSScrollView, NSStackView,
-    NSStackViewDistribution, NSStatusBarButton, NSTextField, NSTextView, NSTitlePosition,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSBezelStyle, NSBox,
+    NSBoxType, NSButton, NSButtonType, NSColor, NSControlStateValueOff, NSFont,
+    NSFontWeightSemibold, NSLayoutConstraint, NSPopover, NSPopoverBehavior, NSPopoverDelegate,
+    NSScrollView, NSStackView, NSStackViewDistribution, NSStatusBarButton, NSTextField, NSTextView,
     NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_foundation::{
@@ -39,7 +40,7 @@ use objc2_foundation::{
     NSRect, NSRectEdge, NSSize, NSString,
 };
 
-use super::{popover_attr, AppDelegate};
+use super::{popover_attr, popover_effects, popover_pills, popover_url, AppDelegate};
 use crate::pending::{PendingQueue, PromptSummary, ResolvedEntry};
 
 /// Outer popover dimensions. Width is fixed; height grows with
@@ -57,7 +58,17 @@ const CARD_PADDING: f64 = 12.0;
 /// gives non-dry-run cards consistent breathing room without needing
 /// a wrapper view.
 const CARD_INSET: f64 = 12.0;
-const DETAIL_HEIGHT: f64 = 180.0;
+/// Upper bound for the "Show raw" body. The body sizes itself to the
+/// rendered text (see `measure_raw_body_height`); this cap kicks in
+/// only when the command is unusually long (giant `--data-binary`
+/// payload, hundreds of headers, etc.) so a single huge card can't
+/// dominate the popover.
+const RAW_BODY_MAX_HEIGHT: f64 = 180.0;
+/// Lower bound for the "Show raw" body. Two lines worth of
+/// monospaced 11pt — enough to fit `curl https://…` or a short
+/// argv without horizontal scrolling, even when a system font
+/// substitution shrinks the line height a hair.
+const RAW_BODY_MIN_HEIGHT: f64 = 32.0;
 
 /// `NSBezelStyle::Rounded` is the historic name used by AppKit
 /// docs but is now flagged deprecated in favour of the literal
@@ -180,6 +191,18 @@ impl Popover {
         popover.setContentSize(NSSize::new(POPOVER_WIDTH, POPOVER_HEIGHT));
         popover.setContentViewController(Some(&vc));
 
+        // Force the entire popover (and every child view AppKit
+        // resolves through `effectiveAppearance`) into Dark Aqua.
+        // The pill colours we picked were calibrated on a dark
+        // surface — running them against a light-mode popover made
+        // the orange / yellow text hard to read regardless of pill
+        // background. Pinning the appearance gives the same look
+        // for users on Light, Dark, and Auto system themes.
+        if let Some(dark) = unsafe { NSAppearance::appearanceNamed(NSAppearanceNameDarkAqua) } {
+            popover.setAppearance(Some(&dark));
+            container.setAppearance(Some(&dark));
+        }
+
         let proto = objc2::runtime::ProtocolObject::from_ref(&*controller);
         popover.setDelegate(Some(proto));
 
@@ -237,13 +260,22 @@ impl Popover {
 /// Ivars on the popover's Obj-C controller. Card identifiers are
 /// stored in lockstep with the per-card buttons' `tag` values; the
 /// approve/reject selectors read `[sender tag]` and look up the id
-/// here.
+/// here. The `body_scrolls` vec is the same idea for the per-card
+/// "Show raw" disclosure: each pending card's body `NSScrollView`
+/// is parked at index `tag` so the disclosure action can flip its
+/// `setHidden` state without us having to construct a new
+/// closure-bearing target object per card.
 #[derive(Default)]
 pub struct PopoverControllerIvars {
     queue: std::sync::OnceLock<Arc<PendingQueue>>,
     cards: std::sync::OnceLock<Retained<NSStackView>>,
     /// Ids of currently-rendered cards, indexed by button tag.
     card_ids: Mutex<Vec<String>>,
+    /// Per-card raw-body `NSScrollView`s, indexed by button tag,
+    /// in the same order as `card_ids`. The "Show raw" disclosure
+    /// action toggles `setHidden` on the matching entry. Cleared
+    /// alongside `card_ids` on every refresh.
+    body_scrolls: Mutex<Vec<Retained<NSScrollView>>>,
 }
 
 define_class!(
@@ -289,6 +321,17 @@ define_class!(
         fn reject_clicked(&self, sender: Option<&NSButton>) {
             self.resolve_for_tag(sender, false);
         }
+
+        /// "Show raw" disclosure selector. Reads `sender.state` to
+        /// decide whether to unhide (state == On) or re-hide
+        /// (state == Off) the body `NSScrollView` parked at
+        /// `body_scrolls[sender.tag]`. We update *only* the matching
+        /// scroll view; the whole-popover refresh path doesn't call
+        /// us, so disclosure state is intentionally per-card.
+        #[unsafe(method(toggleRawDisclosure:))]
+        fn toggle_raw_disclosure(&self, sender: Option<&NSButton>) {
+            self.toggle_disclosure_for_tag(sender);
+        }
     }
 );
 
@@ -331,6 +374,37 @@ impl PopoverController {
         super::resolve(self.ivars_queue(), &id, allow);
     }
 
+    /// Toggle visibility of the raw-body `NSScrollView` parked at
+    /// `body_scrolls[sender.tag]`. The disclosure button is a
+    /// `PushOnPushOff`-typed `NSButton`; AppKit flips its state
+    /// before our action fires, so we just mirror it onto the
+    /// scroll view's hidden flag and rotate the chevron in the
+    /// title text to track the new state.
+    fn toggle_disclosure_for_tag(&self, sender: Option<&NSButton>) {
+        let Some(button) = sender else { return };
+        let tag = button.tag();
+        let off = NSControlStateValueOff;
+        let hide = button.state() == off;
+        let scroll = {
+            let g = self
+                .ivars()
+                .body_scrolls
+                .lock()
+                .expect("body_scrolls poisoned");
+            g.get(tag as usize).cloned()
+        };
+        if let Some(scroll) = scroll {
+            scroll.setHidden(hide);
+            // Rotate the chevron prefix so the button title tracks
+            // the disclosure state. `▸` for collapsed, `▾` for
+            // expanded — same convention as `NSOutlineView`.
+            let title = if hide { "▸ Show raw" } else { "▾ Hide raw" };
+            button.setTitle(&NSString::from_str(title));
+        } else {
+            eprintln!("vetterd: disclosure button tag {tag} out of range");
+        }
+    }
+
     /// Replace the cards stack with one card per pending entry
     /// followed by a "Recent" section for resolved entries.
     /// If `focused_id` is `Some` and matches a pending entry, that
@@ -371,6 +445,13 @@ impl PopoverController {
             g.clear();
             g.extend(entries.iter().map(|(s, _)| s.id.clone()));
         }
+        // Reset the disclosure registry; `build_card` will repopulate
+        // it (one entry per *pending* card, keyed by `idx == tag`).
+        self.ivars()
+            .body_scrolls
+            .lock()
+            .expect("body_scrolls poisoned")
+            .clear();
 
         if entries.is_empty() && resolved.is_empty() {
             let empty = NSTextField::labelWithString(ns_string!("No pending requests."), mtm);
@@ -379,6 +460,14 @@ impl PopoverController {
             return;
         }
 
+        // `disclosure_idx` is a *global* counter spanning both the
+        // pending and resolved sections — it indexes into the
+        // controller's `body_scrolls` registry so the per-card
+        // "Show raw" toggle action can find the right scroll view
+        // regardless of which section the card lives in. The
+        // per-section `idx` is still passed separately because
+        // pending cards' Approve/Reject buttons key off it.
+        let mut disclosure_idx = 0_usize;
         let mut focused_view: Option<Retained<NSView>> = None;
         for (idx, (summary, rendered)) in entries.iter().enumerate() {
             // Thin horizontal rule between adjacent cards.
@@ -387,7 +476,8 @@ impl PopoverController {
                 sep.setBoxType(NSBoxType::Separator);
                 cards.addArrangedSubview(&sep);
             }
-            let card = self.build_card(mtm, idx, summary, rendered, None);
+            let card = self.build_card(mtm, idx, disclosure_idx, summary, rendered, None);
+            disclosure_idx += 1;
             if focused_id.is_some_and(|f| f == summary.id) {
                 focused_view = Some(card.clone());
             }
@@ -413,16 +503,22 @@ impl PopoverController {
                 let sep = NSBox::new(mtm);
                 sep.setBoxType(NSBoxType::Separator);
                 cards.addArrangedSubview(&sep);
-                // `idx` is unused for resolved cards (no buttons → no
-                // tag) but `build_card` still needs it for the
-                // pending-card branch.
+                // `idx` is unused for resolved cards' buttons (the
+                // outcome is already final, so they have no
+                // Approve/Reject row); we still pass it so
+                // `build_card`'s signature stays uniform.
+                // `disclosure_idx` keeps climbing so this card's
+                // `Show raw` button lands on its own slot in
+                // `body_scrolls`.
                 let card = self.build_card(
                     mtm,
                     idx,
+                    disclosure_idx,
                     &entry.summary,
                     &entry.rendered,
                     Some(&entry.decision),
                 );
+                disclosure_idx += 1;
                 cards.addArrangedSubview(&card);
             }
         }
@@ -447,70 +543,71 @@ impl PopoverController {
         &self,
         mtm: MainThreadMarker,
         idx: usize,
+        disclosure_idx: usize,
         summary: &PromptSummary,
         rendered: &str,
         outcome: Option<&vetter_core::wire::WireDecision>,
     ) -> Retained<NSView> {
-        // Header: "<command> <verb> <target>". The inline "dry run"
-        // pill that used to live here is now absorbed by the outer
-        // `NSBox` wrapper (see end of this function); the box's
-        // yellow-bordered title is a louder cue than a grey
-        // secondary-label word in the same row.
-        let header_text = if summary.primary_verb.is_empty() {
-            format!("{}  {}", summary.command, summary.primary_target)
-        } else {
-            format!(
-                "{}  {} {}",
-                summary.command, summary.primary_verb, summary.primary_target
-            )
-        };
-        let header = NSTextField::labelWithString(&NSString::from_str(&header_text), mtm);
-        // Use `monospacedSystemFontOfSize:weight:` semibold so URLs /
-        // paths / methods in the header line up vertically with the
-        // monospaced body text below. `NSFontWeightSemibold` is a
-        // C `extern static` (unsafe to read) but holds a fixed
-        // CGFloat — caching is fine.
+        // Header row: `<command>  <smart URL row | fallback label>`.
+        //
+        // The leading `<command>` slug stays a bold monospaced label
+        // (so multiple cards line up vertically) and is followed by
+        // either the structured URL row from `popover_url` (when the
+        // first effect is an HttpRequest) or a fallback `verb target`
+        // label (for non-HttpRequest cards / legacy callers without
+        // `parsed`). The dry-run cue continues to live on the outer
+        // `NSBox` wrapper at the bottom of this function.
+        let command_label =
+            NSTextField::labelWithString(&NSString::from_str(&summary.command), mtm);
         let semibold = unsafe { NSFontWeightSemibold };
-        header.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
+        command_label.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
             13.0, semibold,
         )));
         // Resolved cards use a dimmer header colour to signal that
         // they are informational (no action required).
         if outcome.is_some() {
-            header.setTextColor(Some(&NSColor::secondaryLabelColor()));
+            command_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
         }
+
+        // Pick the smart URL row when we have a parsed HttpRequest;
+        // otherwise degrade to the plain verb/target label.
+        let url_view = first_http_request(summary)
+            .map(|(req, idx)| {
+                let host_known = summary.host_known.get(idx).copied().unwrap_or(false);
+                popover_url::build_url_row(req, host_known, mtm)
+            })
+            .unwrap_or_else(|| {
+                popover_url::build_fallback_row(
+                    "",
+                    &summary.primary_verb,
+                    &summary.primary_target,
+                    mtm,
+                )
+            });
 
         let header_row = NSStackView::new(mtm);
         header_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
         header_row.setSpacing(8.0);
         header_row.setDistribution(NSStackViewDistribution::Fill);
-        header_row.addArrangedSubview(&header);
+        header_row.addArrangedSubview(&command_label);
+        header_row.addArrangedSubview(&url_view);
 
-        // Risk-signal chips — one per `Warn`/`Danger`-tier signal.
-        // Info-tier kinds (none today) intentionally render only in
-        // the body's `Risk signals:` line so chip space is reserved
-        // for "actually look at this" cues. We dedupe by `SignalKind`
-        // because the analyzer emits one entry per effect (e.g. a
-        // POST + AuthHeader on the same request would otherwise paint
-        // two `auth-header` chips).
-        let mut seen: Vec<vetter_core::SignalKind> = Vec::new();
-        for kind in &summary.signals {
-            if seen.contains(kind) {
-                continue;
-            }
-            seen.push(*kind);
-            let severity = kind.ui_severity();
-            let color = match severity {
-                vetter_core::BadgeSeverity::Danger => NSColor::systemRedColor(),
-                vetter_core::BadgeSeverity::Warn => NSColor::systemOrangeColor(),
-                // Info-tier: skip entirely; the body line carries it.
-                vetter_core::BadgeSeverity::Info => continue,
-            };
-            let label = vetter_core::signal_kind_label(*kind);
-            let chip = NSTextField::labelWithString(&NSString::from_str(label), mtm);
-            chip.setFont(Some(&NSFont::boldSystemFontOfSize(10.0)));
-            chip.setTextColor(Some(&color));
-            header_row.addArrangedSubview(&chip);
+        // Dry-run pill — small yellow tinted-pill version of the
+        // "this is a `vet --dry-run` request" cue. Replaces the
+        // older yellow-`NSBox`-around-the-card treatment, which
+        // made dry-run cards visually inconsistent with regular
+        // ones. Uses the same `build_pill` recipe as the signal
+        // pills so the chrome stays uniform.
+        if summary.force_prompt {
+            let yellow = NSColor::systemYellowColor();
+            let pill = popover_pills::build_pill(
+                "dry run",
+                &yellow,
+                &popover_pills::pill_bg_for(&yellow),
+                "vet --dry-run: the agent asked for confirmation even though policy would auto-allow",
+                mtm,
+            );
+            header_row.addArrangedSubview(&pill);
         }
 
         // For resolved cards, append an "Allowed" or "Denied" badge
@@ -538,10 +635,19 @@ impl PopoverController {
         body_scroll.setHasHorizontalScroller(false);
         body_scroll.setBorderType(objc2_app_kit::NSBorderType::LineBorder);
         body_scroll.setDrawsBackground(true);
+        // Frame width matters for the text container's wrapping
+        // measurement below (see `measure_raw_body_height`); the
+        // height is provisional and replaced by an autolayout
+        // constraint at the end of `build_card`.
+        let body_width = POPOVER_WIDTH - CARD_PADDING * 2.0;
         body_scroll.setFrame(NSRect::new(
             NSPoint::new(0.0, 0.0),
-            NSSize::new(POPOVER_WIDTH - CARD_PADDING * 2.0, DETAIL_HEIGHT),
+            NSSize::new(body_width, RAW_BODY_MIN_HEIGHT),
         ));
+        // Measured after the attributed string is installed below;
+        // defaults to the minimum so a measurement failure still
+        // gives the user something visible to click into.
+        let mut content_height = RAW_BODY_MIN_HEIGHT;
         if let Some(doc) = body_scroll.documentView() {
             // The document view returned from `scrollableTextView`
             // is an NSTextView; cast and configure as monospaced
@@ -572,6 +678,7 @@ impl PopoverController {
             } else {
                 tv.setString(&NSString::from_str(rendered));
             }
+            content_height = measure_raw_body_height(&tv, body_width);
         }
 
         // Inner card container: vertical stack with header / body /
@@ -590,6 +697,104 @@ impl PopoverController {
             right: CARD_INSET,
         });
         card.addArrangedSubview(&header_row);
+
+        // Pills row — one tinted pill per `Warn`/`Danger`-tier
+        // signal kind, deduped on kind. The dedupe rule matters when
+        // a request emits the same kind on multiple effects (e.g. a
+        // POST + AuthHeader on the same HttpRequest would otherwise
+        // paint two `auth-header` pills); we keep the *first*
+        // matching `RiskSignal` so its `detail` powers the tooltip.
+        // Info-tier kinds (none today) intentionally don't get a
+        // pill — that's surfaced inside the "Show raw" disclosure
+        // body instead.
+        //
+        // Layout: a horizontal stack placed *below* the header row
+        // rather than inside it, so multi-pill cases don't
+        // crowd the command/url line. The row is hidden entirely
+        // when no pill ends up rendered (no Warn/Danger signals).
+        let mut pill_views: Vec<Retained<NSView>> = Vec::new();
+        let mut seen: Vec<vetter_core::SignalKind> = Vec::new();
+        for sig in &summary.signals {
+            let kind = sig.kind;
+            if seen.contains(&kind) {
+                continue;
+            }
+            seen.push(kind);
+            if let Some(pill) = popover_pills::build_signal_pill(kind, &sig.detail, mtm) {
+                pill_views.push(pill);
+            }
+        }
+        if !pill_views.is_empty() {
+            let pills_row = NSStackView::new(mtm);
+            pills_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+            pills_row.setSpacing(6.0);
+            pills_row.setDistribution(NSStackViewDistribution::Fill);
+            for pill in &pill_views {
+                pills_row.addArrangedSubview(pill);
+            }
+            // Trailing flexible spacer so pills bunch left rather
+            // than stretching to fill the card width.
+            let spacer = NSView::new(mtm);
+            pills_row.addArrangedSubview(&spacer);
+            card.addArrangedSubview(&pills_row);
+        }
+
+        // Per-effect native rows: headers (with redaction), body
+        // (typed per `Body` variant), auth, file ops, process
+        // spawns. Falls back to nothing when `parsed` is absent
+        // (legacy / mock callers); the "Show raw" disclosure below
+        // still surfaces the §8.5 layout in that case.
+        if let Some(parsed) = &summary.parsed {
+            for view in popover_effects::build_effect_views(parsed, mtm) {
+                card.addArrangedSubview(&view);
+            }
+        }
+
+        // "Show raw" disclosure — collapsed by default. Toggling
+        // unhides the existing ANSI-attributed `body_scroll` so the
+        // §8.5 layout stays one click away. We use a borderless
+        // `PushOnPushOff` button with a chevron prefix in the
+        // title rather than `NSBezelStyle::Disclosure` (which
+        // *hides* the button's title and shows only a small `>`
+        // triangle — the source of the "random `>` in the UI"
+        // confusion in the first round). The action handler swaps
+        // the title between `▸ Show raw` and `▾ Hide raw` so the
+        // chevron orientation tracks the disclosure state.
+        //
+        // Both pending and resolved cards get a disclosure now;
+        // the per-card `tag` is `disclosure_idx` (a global counter
+        // managed by `refresh`) and indexes into the controller's
+        // `body_scrolls` registry. This keeps "Recent" cards
+        // visually consistent with pending ones — they previously
+        // fell back to an always-on text view that dominated the
+        // card.
+        let raw_toggle = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                ns_string!("▸ Show raw"),
+                Some(&*(self as *const Self).cast::<AnyObject>()),
+                Some(sel!(toggleRawDisclosure:)),
+                mtm,
+            )
+        };
+        raw_toggle.setBordered(false);
+        raw_toggle.setButtonType(NSButtonType::PushOnPushOff);
+        raw_toggle.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        raw_toggle.setTag(disclosure_idx as isize);
+        card.addArrangedSubview(&raw_toggle);
+
+        // Hide the body by default. Register it in the
+        // controller's per-card registry so the toggle action
+        // can flip it. The `setHidden` call must come *before*
+        // the height constraint below so AppKit doesn't try to
+        // satisfy a nonzero size for a hidden view in the same
+        // layout pass.
+        body_scroll.setHidden(true);
+        self.ivars()
+            .body_scrolls
+            .lock()
+            .expect("body_scrolls poisoned")
+            .push(body_scroll.clone());
+
         card.addArrangedSubview(&body_scroll);
 
         // Pending cards get Approve/Reject buttons. Resolved cards
@@ -646,32 +851,88 @@ impl PopoverController {
         // basically zero. Without this constraint the §8.5 detail
         // collapses to a thin strip even when the outer cards stack
         // is correctly sized.
+        //
+        // The constant is the measured content height (clamped to
+        // `RAW_BODY_MIN_HEIGHT..=RAW_BODY_MAX_HEIGHT`) rather than a
+        // fixed `DETAIL_HEIGHT`. With `render_detail` reduced to
+        // just the shell-quoted argv, most cards now show 1–2 lines
+        // of monospaced text instead of a tall mostly-empty box;
+        // pathological commands still get a scroller via
+        // `setHasVerticalScroller(true)` once they exceed the cap.
+        let body_height = content_height.clamp(RAW_BODY_MIN_HEIGHT, RAW_BODY_MAX_HEIGHT);
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[body_scroll
             .heightAnchor()
-            .constraintEqualToConstant(DETAIL_HEIGHT)]));
+            .constraintEqualToConstant(body_height)]));
 
-        if summary.force_prompt {
-            // Dry-run cards get a custom `NSBox` with a yellow
-            // border and a "dry run" title. This replaces the
-            // inline secondary-label pill that used to live in
-            // `header_row` — visually louder, and clearly scopes
-            // *which* card is the dry-run when several requests
-            // are queued up.
-            let box_ = NSBox::new(mtm);
-            box_.setBoxType(NSBoxType::Custom);
-            box_.setBorderColor(&NSColor::systemYellowColor());
-            box_.setBorderWidth(1.5);
-            box_.setCornerRadius(6.0);
-            box_.setTitlePosition(NSTitlePosition::AtTop);
-            box_.setTitle(ns_string!("dry run"));
-            box_.setContentView(Some(&card));
-            box_.into_super()
-        } else {
-            // Non-dry-run cards stay bare — visual contrast with
-            // dry-run cards reads at a glance.
-            card.into_super()
-        }
+        // Dry-run cards used to be wrapped in a yellow `NSBox`, but
+        // that wrapper made the cards visually inconsistent
+        // (different sizing / inset only on dry-run cards) and
+        // produced the "sometimes a yellow box around stuff but not
+        // always" question in real usage. The cue now lives as a
+        // small yellow pill at the trailing end of the header row
+        // (added in the URL row construction above) so all cards
+        // share the same chrome and the dry-run indicator is just
+        // another tinted-pill atom in the existing visual
+        // vocabulary.
+        card.into_super()
     }
+}
+
+/// Measure the natural laid-out height of `tv` when wrapped to
+/// `width` points wide.
+///
+/// Used by `build_card` to size the "Show raw" body to its content
+/// (typically one or two lines of monospaced text now that
+/// `render_detail` returns just the shell-quoted argv) instead of a
+/// fixed `DETAIL_HEIGHT` that left every card with a tall mostly-
+/// empty box.
+///
+/// We push `width` into the layout's `NSTextContainer` first so the
+/// layout manager wraps to the same column we'll display at, then
+/// force layout (`ensureLayoutForTextContainer:`) before reading
+/// `usedRectForTextContainer:`. The text container's vertical inset
+/// (`textContainerInset.height`) is added on top × 2 so the bottom
+/// padding matches the top — `usedRect` reports just the glyph
+/// rectangle.
+///
+/// Returns `RAW_BODY_MIN_HEIGHT` when AppKit's layout objects are
+/// unexpectedly absent (shouldn't happen for a `scrollableTextView`
+/// but we'd rather show a small box than crash here). The caller
+/// clamps the returned value to `RAW_BODY_MIN/MAX_HEIGHT`.
+fn measure_raw_body_height(tv: &NSTextView, width: f64) -> f64 {
+    let container = match unsafe { tv.textContainer() } {
+        Some(c) => c,
+        None => return RAW_BODY_MIN_HEIGHT,
+    };
+    let layout = match unsafe { tv.layoutManager() } {
+        Some(l) => l,
+        None => return RAW_BODY_MIN_HEIGHT,
+    };
+    container.setContainerSize(NSSize::new(width, f64::MAX));
+    layout.ensureLayoutForTextContainer(&container);
+    let used = layout.usedRectForTextContainer(&container);
+    used.size.height + tv.textContainerInset().height * 2.0
+}
+
+/// Find the first `HttpRequest` effect in `summary.parsed`, paired
+/// with its index inside `parsed.effects` so the caller can index
+/// into `summary.host_known`.
+///
+/// Returns `None` when `parsed` is absent (legacy / mock callers
+/// that pre-date the `parsed` field) or when there is no
+/// HttpRequest effect (today: ProcessSpawn-only requests are
+/// theoretical; tomorrow: a future scp parser would land here).
+/// In both cases the caller falls back to the plain
+/// `verb target` label.
+fn first_http_request(summary: &PromptSummary) -> Option<(&vetter_core::HttpRequest, usize)> {
+    let parsed = summary.parsed.as_ref()?;
+    parsed.effects.iter().enumerate().find_map(|(i, eff)| {
+        if let vetter_core::Effect::HttpRequest(req) = eff {
+            Some((req, i))
+        } else {
+            None
+        }
+    })
 }
 
 trait PopoverIvarsAccess {

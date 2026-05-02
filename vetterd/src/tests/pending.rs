@@ -17,6 +17,8 @@ fn summary(id: &str, target: &str) -> PromptSummary {
         primary_target: target.into(),
         force_prompt: false,
         signals: Vec::new(),
+        parsed: None,
+        host_known: Vec::new(),
     }
 }
 
@@ -327,4 +329,74 @@ fn concurrent_submits_have_exactly_one_first() {
         "exactly one concurrent submit should observe an empty queue"
     );
     assert_eq!(q.len(), THREADS);
+}
+
+// -- PromptSummary serde round-trip ----------------------------
+
+/// The new `parsed`, `host_known`, and `signals` fields must
+/// survive a JSON round-trip; this is the contract the macOS
+/// notifier (and any future remote UI) reads from. Older mock
+/// notifiers that ignore the new fields keep working because all
+/// three carry `#[serde(default)]`; this test pins the *forward*
+/// direction (full → full) explicitly.
+#[test]
+fn prompt_summary_round_trips_through_serde_with_new_fields() {
+    use vetter_core::parsers::{
+        Body, DisplayHints, Effect, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy,
+    };
+    use vetter_core::signals::{RiskSignal, SignalKind};
+
+    let parsed = ParsedCommand {
+        command: "curl".into(),
+        argv: vec!["curl".into(), "https://example.test/".into()],
+        cwd: Some("/work".into()),
+        stdin_digest: None,
+        effects: vec![Effect::HttpRequest(HttpRequest {
+            method: HttpMethod::Get,
+            url: url::Url::parse("https://example.test/").unwrap(),
+            headers: vec![],
+            body: Body::None,
+            auth: None,
+            tls: TlsPolicy::Strict,
+            follow_redirects: false,
+            proxy: None,
+        })],
+        signals: vec![RiskSignal {
+            kind: SignalKind::UnknownHost,
+            detail: "host example.test not in known-hosts list".into(),
+            effect_idx: Some(0),
+        }],
+        display_hints: DisplayHints {
+            primary_verb: "GET".into(),
+            primary_target: "https://example.test/".into(),
+            badges: vec![],
+        },
+        extras: serde_json::Value::Null,
+    };
+
+    let original = PromptSummary {
+        id: "abc".into(),
+        command: "curl".into(),
+        primary_verb: "GET".into(),
+        primary_target: "https://example.test/".into(),
+        force_prompt: false,
+        signals: parsed.signals.clone(),
+        parsed: Some(parsed.clone()),
+        host_known: vec![false],
+    };
+
+    let json = serde_json::to_string(&original).expect("serialise");
+    let restored: PromptSummary = serde_json::from_str(&json).expect("deserialise");
+    assert_eq!(restored, original);
+
+    // Belt-and-braces: an older payload missing all three new
+    // fields still deserialises (the default empties / None apply).
+    let legacy = r#"{
+        "id":"x","command":"curl","primary_verb":"GET",
+        "primary_target":"https://example.test/","force_prompt":false
+    }"#;
+    let legacy_decoded: PromptSummary = serde_json::from_str(legacy).expect("legacy decode");
+    assert!(legacy_decoded.signals.is_empty());
+    assert!(legacy_decoded.parsed.is_none());
+    assert!(legacy_decoded.host_known.is_empty());
 }

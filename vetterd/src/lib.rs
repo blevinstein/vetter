@@ -41,11 +41,20 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use vetter_core::known_hosts::{load_default as load_known_hosts_default, KnownHostsStore};
-use vetter_core::matcher::{load_default, AllowlistStore, Decision};
+use vetter_core::matcher::{load_default, AllowlistStore};
 use vetter_core::parsers::{self, EnvSnapshot, ParseError, StdinHandle};
 use vetter_core::peer_cred::assert_peer_is_self;
 use vetter_core::pidfile;
-use vetter_core::render::{AnsiWriter, DefaultRenderer, Renderer};
+// `AnsiWriter` / `DefaultRenderer` / `Renderer` were used to build
+// the §8.5 detail block for the popover. The native UI now renders
+// every effect as its own AppKit row, so the popover's "Show raw"
+// disclosure only needs to surface the original argv. The rich
+// renderer is still reachable via `vet --explain` for the CLI; it's
+// just no longer the source of the popover body.
+//
+// We keep this `use` line empty rather than dropping the comment so
+// future readers searching for `Renderer` in vetterd land on the
+// rationale here.
 use vetter_core::wire::{
     new_request_id, read_frame, read_request, write_frame, MgmtRequest, MgmtResponse, PendingItem,
     VetDecision, VetRequest, WireDecision, WireError, PROTOCOL_VERSION,
@@ -366,7 +375,13 @@ pub fn handle_connection(
                 .signals
                 .extend(check_known_hosts(&parsed, &ctx.known_hosts));
             let command_for_audit = parsed.command.clone();
-            let outcome = evaluate(&parsed, &req.id, req.force_prompt, &ctx.allowlist);
+            let outcome = evaluate(
+                &parsed,
+                &req.id,
+                req.force_prompt,
+                &ctx.allowlist,
+                &ctx.known_hosts,
+            );
             let (decision, reason) = resolve_outcome(outcome, &parsed, &req, ctx);
             (decision, reason, command_for_audit)
         }
@@ -422,6 +437,11 @@ fn resolve_outcome(
     match outcome {
         PolicyOutcome::Auto { decision, reason } => (decision, reason),
         PolicyOutcome::Prompt(summary) => {
+            // Unbox once: the pending queue and notifier both want
+            // `PromptSummary` / `&PromptSummary`, not `Box<…>`.
+            // Boxing only matters at the `PolicyOutcome` boundary
+            // (clippy's `large_enum_variant` lint).
+            let summary: PromptSummary = *summary;
             let id = summary.id.clone();
             // Pre-render the §8.5 detail so the popover can display
             // it without the AppKit thread reaching back into
@@ -458,23 +478,67 @@ fn resolve_outcome(
     }
 }
 
-/// Render the §8.5 detail block for `parsed` into an ANSI-escaped
-/// string. Called only on the prompt-class path: the popover parses
-/// the SGR escapes back into `NSAttributedString` attributes (see
-/// [`runloop::popover_attr`]) so each span keeps its colour /
-/// boldness / underline. Any render error is silently swallowed —
-/// the caller falls back to the empty-detail card, which the popover
-/// renders as a plain monospaced string.
+/// Render the popover's "Show raw" body for `parsed` into an
+/// ANSI-escaped string.
+///
+/// The popover already lays the parsed command out as native AppKit
+/// rows (URL row, signal pills, per-effect rows). Echoing the §8.5
+/// detail block under "Show raw" was redundant — every line was
+/// already present above. We now emit *just* the original argv:
+/// command name in bold + each subsequent arg shell-quoted so the
+/// raw view stays a faithful, cut-and-pasteable representation of
+/// what the agent actually invoked, with no per-effect duplication.
+///
+/// Output goes through [`runloop::popover_attr`]'s SGR parser, so
+/// the bold escape on the command name comes through as the bold
+/// attribute on the rendered `NSAttributedString`.
 fn render_detail(parsed: &ParsedCommand) -> String {
-    let mut buf = Vec::new();
-    let mut w = AnsiWriter(&mut buf);
-    if DefaultRenderer
-        .render(parsed, Some(&Decision::Prompt), &mut w)
-        .is_err()
-    {
+    if parsed.argv.is_empty() {
         return String::new();
     }
-    String::from_utf8(buf).unwrap_or_default()
+    let mut out = String::with_capacity(parsed.argv.iter().map(|a| a.len() + 1).sum());
+    // SGR `1` = bold. `0` resets so the args after the command name
+    // render in the default monospaced weight.
+    out.push_str("\x1b[1m");
+    out.push_str(&parsed.argv[0]);
+    out.push_str("\x1b[0m");
+    for arg in &parsed.argv[1..] {
+        out.push(' ');
+        out.push_str(&shell_quote(arg));
+    }
+    out
+}
+
+/// Shell-quote `arg` for display in the popover's raw view.
+///
+/// Rules (intentionally narrow — the goal is "looks right when
+/// pasted back into a shell" not "round-trips through every shell"):
+/// - Empty argv entry → render as `''`.
+/// - Strictly POSIX-portable filename chars → no quoting.
+/// - Anything else → wrap in single quotes, escaping any embedded
+///   `'` as the standard `'\''` (close-quote, escaped-quote,
+///   re-open-quote) sequence.
+fn shell_quote(arg: &str) -> String {
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+    let safe = arg
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b':' | b','));
+    if safe {
+        return arg.to_string();
+    }
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('\'');
+    for ch in arg.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// Re-run the parser on `req.argv` using the request's `cwd` and the

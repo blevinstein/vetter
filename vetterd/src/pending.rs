@@ -41,7 +41,11 @@ use vetter_core::wire::WireDecision;
 /// passed verbatim into the notifier so every UI surface (real
 /// notification, mock control socket, future popover detail view)
 /// renders the same fields.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// `Eq` was dropped when `parsed: Option<ParsedCommand>` was added —
+// `ParsedCommand` carries `serde_json::Value` (no `Eq` impl) and
+// floats inside parser extras, so we only get `PartialEq`. Tests
+// that need equality use the partial form.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromptSummary {
     /// Correlation id, equal to [`vetter_core::wire::VetRequest::id`].
     pub id: String,
@@ -57,18 +61,45 @@ pub struct PromptSummary {
     /// path even if a permissive rule would auto-allow). Surfaced so
     /// the UI can label dry-run prompts distinctly.
     pub force_prompt: bool,
-    /// Risk-signal kinds attached to the parsed command. Surfaced
-    /// here (rather than re-parsing on the UI side) so the macOS
-    /// approver popover can render `Danger`/`Warn`-tier signal
-    /// chips on each card without dragging the parser registry into
-    /// the UI process.
+    /// Full risk-signal records attached to the parsed command —
+    /// kind, human detail, and (optional) effect index. Surfaced
+    /// here so the macOS approver popover can paint `Danger`/`Warn`
+    /// signal pills (kind → severity → colour) and feed the
+    /// per-pill tooltip text from `RiskSignal::detail` without
+    /// dragging the analyzer back into the UI process.
     ///
     /// `#[serde(default)]` keeps the mock-socket protocol forward-
-    /// compatible: older mock harnesses (pre-popover-polish) ship
+    /// compatible: older mock harnesses (pre-native-UI) ship
     /// summaries without this field, deserialise to an empty list,
-    /// and skip the chip row entirely.
+    /// and skip the pill row entirely. (Earlier versions of this
+    /// field carried `Vec<SignalKind>`; serde tolerates that schema
+    /// drift because the new wire form is a strict superset and the
+    /// in-tree mocks ignore unknown fields.)
     #[serde(default)]
-    pub signals: Vec<vetter_core::SignalKind>,
+    pub signals: Vec<vetter_core::RiskSignal>,
+    /// Full parsed command. `Some` on every prompt-class request
+    /// produced by the daemon (Phase 4 onward); `None` for legacy /
+    /// mock callers that pre-date this field, in which case the
+    /// popover degrades to "URL row from `primary_target` plus the
+    /// 'Show raw' disclosure". The native UI uses this to walk
+    /// `parsed.effects` and produce per-effect rows (headers,
+    /// body, auth, file ops, process spawns) without re-running
+    /// the parser on the UI side.
+    #[serde(default)]
+    pub parsed: Option<vetter_core::ParsedCommand>,
+    /// Per-effect host-trust hints, indexed by `parsed.effects`
+    /// position. Entry `i` is `true` iff `effects[i]` is an
+    /// `HttpRequest` whose host matched the daemon's
+    /// `KnownHostsStore` (loopback hosts also count as known —
+    /// they're "trusted local"). Non-HttpRequest effects get
+    /// `false`; the URL row falls back to a plain
+    /// `<verb> <target>` label for those slots.
+    ///
+    /// Computed daemon-side because the `KnownHostsStore` lives
+    /// behind the IPC boundary; the popover would otherwise need
+    /// to load the same YAML files itself.
+    #[serde(default)]
+    pub host_known: Vec<bool>,
 }
 
 /// A resolved request kept in the recent-history ring. Carries the

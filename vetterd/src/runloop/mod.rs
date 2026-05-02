@@ -53,6 +53,9 @@ use crate::pending::{PendingDecision, PendingQueue};
 
 mod popover;
 pub(crate) mod popover_attr;
+pub(crate) mod popover_effects;
+pub(crate) mod popover_pills;
+pub(crate) mod popover_url;
 mod status_item;
 
 use popover::Popover;

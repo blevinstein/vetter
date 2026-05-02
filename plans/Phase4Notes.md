@@ -227,10 +227,28 @@ not the NSView assembly).
 
 ## Visual conventions
 
+> **Native UI rewrite (PR N).** The popover no longer paints its
+> body as a single `NSTextView`. The card is now an `NSStackView` of
+> typed AppKit rows: command + smart URL row, signal pills (with
+> tooltips), per-effect rows (headers / body / auth / file ops /
+> process spawns), and a "Show raw" disclosure that keeps the
+> §8.5 `NSTextView` reachable underneath.
+>
+> See [plans/ApprovalUI.md](ApprovalUI.md) for the layout
+> catalogue: information hierarchy, host-trust palette, pill
+> recipe, effect-row token table, and the future-work list. The
+> tables in this section still document the body-colouring and
+> chip taxonomy as they apply *inside* the "Show raw"
+> disclosure (and to the analyzer / CLI renderer); they are not
+> superseded.
+
 Pinned here so future tweaks to the popover preserve the existing
 language. The implementation lives in
-[`runloop::popover`](../vetterd/src/runloop/popover.rs) and
-[`runloop::popover_attr`](../vetterd/src/runloop/popover_attr.rs).
+[`runloop::popover`](../vetterd/src/runloop/popover.rs),
+[`runloop::popover_attr`](../vetterd/src/runloop/popover_attr.rs),
+[`runloop::popover_pills`](../vetterd/src/runloop/popover_pills.rs),
+[`runloop::popover_url`](../vetterd/src/runloop/popover_url.rs), and
+[`runloop::popover_effects`](../vetterd/src/runloop/popover_effects.rs).
 
 ### Body colouring (`Style` → `NSColor`)
 

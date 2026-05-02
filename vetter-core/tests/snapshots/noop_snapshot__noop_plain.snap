@@ -1,0 +1,11 @@
+---
+source: vetter-core/tests/noop_snapshot.rs
+expression: out
+---
+ vet  noop
+ ─────────────────────────────────────────────────────────────────
+ GET  https://example.test/
+   User-Agent: vet-noop/0
+ ─────────────────────────────────────────────────────────────────
+   Risk signals: none
+   Match:        no rule

@@ -7,7 +7,39 @@ license.workspace = true
 repository.workspace = true
 description = "Shared core for vetter: parser plugin contract, parsed-command model, renderer, matcher, risk signals, and wire types."
 
+[features]
+default = []
+# Enables the noop parser used in integration tests. The release binaries
+# (`vet`, `vetterd`) intentionally do not turn this feature on.
+test-parsers = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+url = { workspace = true }
+anstyle = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+serde_json = { workspace = true }
+
+[[test]]
+name = "registry"
+path = "tests/registry.rs"
+required-features = ["test-parsers"]
+
+[[test]]
+name = "registry_duplicate"
+path = "tests/registry_duplicate.rs"
+required-features = ["test-parsers"]
+
+[[test]]
+name = "pipeline"
+path = "tests/pipeline.rs"
+required-features = ["test-parsers"]
+
+[[test]]
+name = "noop_snapshot"
+path = "tests/noop_snapshot.rs"
+required-features = ["test-parsers"]

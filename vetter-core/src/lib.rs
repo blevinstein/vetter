@@ -1,19 +1,25 @@
 //! `vetter-core` — shared library for the `vetter` project.
 //!
-//! Phase 0 only sets up the module structure that subsequent phases will
-//! flesh out:
-//!
-//! - [`parsers`] — `CommandParser` trait, `ParsedCommand`, `Effect`, registry (Phase 1a).
-//! - [`render`]  — generic renderer over `ParsedCommand` (Phase 1a).
-//! - [`matcher`] — rule matcher (Phase 2).
-//! - [`signals`] — generic risk-signal analyzer (Phase 1a / Phase 2).
-//! - [`wire`]    — JSON wire types for the `vet` ⇄ `vetterd` socket (Phase 3).
+//! Module map:
+//! - [`parsers`] — `CommandParser` trait, `ParsedCommand`, `Effect`, registry.
+//! - [`render`]  — generic renderer over `ParsedCommand`.
+//! - [`matcher`] — rule matcher (Phase 2; placeholder until then).
+//! - [`signals`] — generic risk-signal analyzer.
+//! - [`wire`]    — JSON wire types (Phase 3; placeholder until then).
 
 pub mod matcher;
 pub mod parsers;
 pub mod render;
 pub mod signals;
 pub mod wire;
+
+pub use parsers::{
+    Auth, Badge, BadgeSeverity, Body, CommandParser, CredentialUse, DisplayHints, Effect,
+    EnvSnapshot, FileRead, FileWrite, FormField, Header, HttpMethod, HttpRequest, NetworkOpen,
+    ParseError, ParsedCommand, ProcessSpawn, Sha256, StdinHandle, TlsPolicy, WriteSource,
+};
+pub use render::{AnsiWriter, DefaultRenderer, PlainWriter, Renderer, Style, StyledWriter};
+pub use signals::{analyze, RiskSignal, SignalKind};
 
 /// Returns the crate version. Used by `vet doctor` for diagnostics.
 pub fn version() -> &'static str {

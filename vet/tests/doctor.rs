@@ -13,7 +13,9 @@ fn doctor_runs_and_reports_stubs() {
         .success()
         .stdout(contains("daemon"))
         .stdout(contains("socket"))
-        .stdout(contains("parsers registered"))
+        // Phase 1a registers no parsers in release builds (noop is
+        // test-only). Phase 1b will land curl and bump this to `1`.
+        .stdout(contains("parsers registered . 0"))
         .stdout(contains("code signing"));
 }
 

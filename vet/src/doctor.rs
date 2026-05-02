@@ -12,7 +12,7 @@ pub fn run() -> ExitCode {
     println!("  daemon ............. not implemented (Phase 3; see plans/Overview.md §11)");
     println!("  socket ............. not implemented (Phase 3; see plans/Overview.md §11)");
     println!(
-        "  parsers registered . {}  (Phase 1a will register parsers)",
+        "  parsers registered . {}  (Phase 1b will register the curl parser)",
         vetter_core::parsers::registered_count()
     );
     println!("  code signing ....... not implemented (Phase 4; see plans/Overview.md §11)");

@@ -1,0 +1,49 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "-H",
+    "X-First: 1",
+    "-H",
+    "X-Second: 2",
+    "-H",
+    "X-Third: 3",
+    "https://example.test/"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "url": "https://example.test/",
+      "headers": [
+        {
+          "name": "X-First",
+          "value": "1"
+        },
+        {
+          "name": "X-Second",
+          "value": "2"
+        },
+        {
+          "name": "X-Third",
+          "value": "3"
+        }
+      ],
+      "body": {
+        "kind": "none"
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    }
+  ],
+  "signals": [],
+  "display_hints": {
+    "primary_verb": "GET",
+    "primary_target": "https://example.test/",
+    "badges": []
+  }
+}

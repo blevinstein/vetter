@@ -1,0 +1,11 @@
+---
+source: vetter-core/tests/curl_render_snapshot.rs
+expression: render_plain(&p)
+---
+ vet  curl
+ ─────────────────────────────────────────────────────────────────
+ GET  https://example.test/data.json
+   File write → /tmp/out.json
+ ─────────────────────────────────────────────────────────────────
+   Risk signals: none
+   Match:        no rule

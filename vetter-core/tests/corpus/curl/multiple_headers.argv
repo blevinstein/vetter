@@ -1,0 +1,8 @@
+# Multiple `-H` flags must be preserved in order.
+-H
+X-First: 1
+-H
+X-Second: 2
+-H
+X-Third: 3
+https://example.test/

@@ -1,0 +1,44 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "-d",
+    "@./payload.json",
+    "-H",
+    "Content-Type: application/json",
+    "https://example.test/submit"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "POST",
+      "url": "https://example.test/submit",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "body": {
+        "kind": "from_file",
+        "path": "./payload.json"
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    },
+    {
+      "kind": "file_read",
+      "path": "./payload.json"
+    }
+  ],
+  "signals": [],
+  "display_hints": {
+    "primary_verb": "POST",
+    "primary_target": "https://example.test/submit",
+    "badges": []
+  }
+}

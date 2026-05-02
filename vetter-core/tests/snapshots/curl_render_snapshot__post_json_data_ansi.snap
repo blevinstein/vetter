@@ -1,0 +1,14 @@
+---
+source: vetter-core/tests/curl_render_snapshot.rs
+expression: render_ansi(&p)
+---
+ vet  \e[1mcurl\e[0m
+\e[90m ─────────────────────────────────────────────────────────────────
+\e[0m \e[1m\e[33mPOST\e[0m  \e[4m\e[36mhttps://api.example.test/v1/widgets\e[0m
+   \e[94mContent-Type: \e[0mapplication/json
+\e[90m ─────────────────────────────────────────────────────────────────
+\e[0m   \e[90mBody  (application/json, 9 B)\e[0m
+   {"k":"v"}
+\e[90m ─────────────────────────────────────────────────────────────────
+\e[0m   \e[1mRisk signals: \e[0m\e[33mwrite-method\e[0m
+   \e[1mMatch:        \e[0m\e[33mno rule\e[0m

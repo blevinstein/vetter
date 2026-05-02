@@ -1,0 +1,4 @@
+# `-d` present without `-X`: method should default to POST.
+-d
+key=value
+https://example.test/submit

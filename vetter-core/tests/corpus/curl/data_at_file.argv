@@ -1,0 +1,6 @@
+# -d @file → Body::FromFile + FileRead effect; method defaults to POST.
+-d
+@./payload.json
+-H
+Content-Type: application/json
+https://example.test/submit

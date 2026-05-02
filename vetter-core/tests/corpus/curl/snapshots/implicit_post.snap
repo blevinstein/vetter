@@ -1,0 +1,43 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "-d",
+    "key=value",
+    "https://example.test/submit"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "POST",
+      "url": "https://example.test/submit",
+      "headers": [],
+      "body": {
+        "kind": "inline",
+        "bytes": [
+          107,
+          101,
+          121,
+          61,
+          118,
+          97,
+          108,
+          117,
+          101
+        ]
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    }
+  ],
+  "signals": [],
+  "display_hints": {
+    "primary_verb": "POST",
+    "primary_target": "https://example.test/submit",
+    "badges": []
+  }
+}

@@ -1,0 +1,4 @@
+# -T /path → FileRead effect; method defaults to PUT (curl semantics).
+-T
+/tmp/payload.bin
+https://example.test/uploads/payload.bin

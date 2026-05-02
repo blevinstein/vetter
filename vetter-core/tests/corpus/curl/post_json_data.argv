@@ -1,0 +1,8 @@
+# Explicit POST with JSON body and a Content-Type header.
+-X
+POST
+-H
+Content-Type: application/json
+-d
+{"k":"v"}
+https://api.example.test/v1/widgets

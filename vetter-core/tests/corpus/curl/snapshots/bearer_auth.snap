@@ -1,0 +1,41 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "-H",
+    "Authorization: Bearer tok-abc-1234567890wxyzf3a2",
+    "https://api.example.test/v1/me"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "url": "https://api.example.test/v1/me",
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer tok-abc-1234567890wxyzf3a2"
+        }
+      ],
+      "body": {
+        "kind": "none"
+      },
+      "auth": {
+        "kind": "bearer",
+        "token_redacted": true
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    }
+  ],
+  "signals": [],
+  "display_hints": {
+    "primary_verb": "GET",
+    "primary_target": "https://api.example.test/v1/me",
+    "badges": []
+  }
+}

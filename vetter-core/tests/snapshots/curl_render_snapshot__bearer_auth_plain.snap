@@ -1,0 +1,12 @@
+---
+source: vetter-core/tests/curl_render_snapshot.rs
+expression: out
+---
+ vet  curl
+ ─────────────────────────────────────────────────────────────────
+ GET  https://api.example.test/v1/me
+   Authorization: ••••f3a2    ← redacted, len 33
+   Auth: Bearer ••••
+ ─────────────────────────────────────────────────────────────────
+   Risk signals: auth-header
+   Match:        no rule

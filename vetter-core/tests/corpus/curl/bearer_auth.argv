@@ -1,0 +1,4 @@
+# Authorization: Bearer ... → Auth::Bearer; token is redacted in render.
+-H
+Authorization: Bearer tok-abc-1234567890wxyzf3a2
+https://api.example.test/v1/me

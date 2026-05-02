@@ -14,6 +14,8 @@ mod types;
 
 pub use types::*;
 
+pub mod curl;
+
 #[cfg(any(test, feature = "test-parsers"))]
 pub mod noop;
 

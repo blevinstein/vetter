@@ -19,6 +19,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
 anstyle = { workspace = true }
+sha2 = "0.10"
 
 [dev-dependencies]
 insta = { workspace = true }
@@ -43,3 +44,11 @@ required-features = ["test-parsers"]
 name = "noop_snapshot"
 path = "tests/noop_snapshot.rs"
 required-features = ["test-parsers"]
+
+[[test]]
+name = "curl_corpus"
+path = "tests/curl_corpus.rs"
+
+[[test]]
+name = "curl_render_snapshot"
+path = "tests/curl_render_snapshot.rs"

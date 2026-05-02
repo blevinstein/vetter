@@ -40,21 +40,22 @@ Status legend: `[x]` done · `[~]` in progress · `[ ]` not started.
 - [x] §2.1 type roundtrips, §2.2 registry dispatch, §2.3 noop snapshot
       (insta), §2.4 per-SignalKind tests
 
-## Phase 1b — Curl parser  `[ ] not started`
+## Phase 1b — Curl parser  `[~] in progress`
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §8.4, §11. Test plan:
 [plans/TestingPlan.md](plans/TestingPlan.md) §3.
 
-- [ ] `parsers/curl/` module with full argv parser covering the curl
+- [x] `parsers/curl/` module with full argv parser covering the curl
       flag set (`flags.rs`)
-- [ ] Emits `Effect::HttpRequest` (+ optional `FileWrite` for
+- [x] Emits `Effect::HttpRequest` (+ optional `FileWrite` for
       `-o`/`-O`/`-J`, `FileRead` for `-T <file>` and `-d @file`)
-- [ ] Curl-specific `RiskSignal`s pushed during parse: `--insecure` /
+- [x] Curl-specific `RiskSignal`s pushed during parse: `--insecure` /
       `-k`, `--cacert`, `--resolve`, `--unix-socket`
-- [ ] Refuses streaming bodies with `ParseError::StreamingUnsupported`
+- [x] Refuses streaming bodies with `ParseError::StreamingUnsupported`
       (`-T -`, chunked transfer, `-d @-` >1 MiB)
-- [ ] Snapshot fixture corpus in `vetter-core/tests/corpus/curl/` per
-      `TestingPlan.md` §3.1 (~25 fixtures incl. negative cases)
+- [x] Snapshot fixture corpus in `vetter-core/tests/corpus/curl/` per
+      `TestingPlan.md` §3.1 (minimum-viable subset of ~10 happy + 2
+      negative; expand toward the full ~25 in a later pass)
 - [ ] `vet --explain curl …` runs end-to-end against the Phase 1a
       renderer + analyzer with no daemon, no policy
 - [ ] CLI: TTY / `NO_COLOR` / `CLICOLOR_FORCE` detection chooses

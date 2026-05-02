@@ -1,0 +1,4 @@
+# -T - means upload from stdin (streaming) → StreamingUnsupported.
+-T
+-
+https://example.test/uploads/from-stdin

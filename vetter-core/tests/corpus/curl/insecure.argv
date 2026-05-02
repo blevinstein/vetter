@@ -1,0 +1,4 @@
+# -k disables TLS verification: TLS::InsecureSkipVerify, InsecureFlag signal,
+# and an `[insecure: -k]` badge.
+-k
+https://self-signed.example.test/

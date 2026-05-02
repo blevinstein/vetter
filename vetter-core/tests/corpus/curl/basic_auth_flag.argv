@@ -1,0 +1,4 @@
+# --user user:secret → Auth::Basic with redacted password.
+--user
+alice:secret
+https://example.test/protected

@@ -1,0 +1,36 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "-T",
+    "/tmp/payload.bin",
+    "https://example.test/uploads/payload.bin"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "PUT",
+      "url": "https://example.test/uploads/payload.bin",
+      "headers": [],
+      "body": {
+        "kind": "none"
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    },
+    {
+      "kind": "file_read",
+      "path": "/tmp/payload.bin"
+    }
+  ],
+  "signals": [],
+  "display_hints": {
+    "primary_verb": "PUT",
+    "primary_target": "https://example.test/uploads/payload.bin",
+    "badges": []
+  }
+}

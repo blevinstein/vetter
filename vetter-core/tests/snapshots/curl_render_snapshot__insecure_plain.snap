@@ -1,0 +1,10 @@
+---
+source: vetter-core/tests/curl_render_snapshot.rs
+expression: render_plain(&p)
+---
+ vet  curl
+ ─────────────────────────────────────────────────────────────────
+ GET  https://self-signed.example.test/  [insecure: -k]
+ ─────────────────────────────────────────────────────────────────
+   Risk signals: insecure-flag, insecure-tls
+   Match:        no rule

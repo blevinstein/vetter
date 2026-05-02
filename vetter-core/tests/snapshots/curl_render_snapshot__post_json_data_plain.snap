@@ -1,0 +1,14 @@
+---
+source: vetter-core/tests/curl_render_snapshot.rs
+expression: render_plain(&p)
+---
+ vet  curl
+ ─────────────────────────────────────────────────────────────────
+ POST  https://api.example.test/v1/widgets
+   Content-Type: application/json
+ ─────────────────────────────────────────────────────────────────
+   Body  (application/json, 9 B)
+   {"k":"v"}
+ ─────────────────────────────────────────────────────────────────
+   Risk signals: write-method
+   Match:        no rule

@@ -1,0 +1,4 @@
+# -o /path → FileWrite effect with WriteSource::RemoteHttp(url).
+-o
+/tmp/out.json
+https://example.test/data.json

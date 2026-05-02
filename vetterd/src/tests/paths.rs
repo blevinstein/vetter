@@ -42,6 +42,14 @@ impl Drop for Guard {
     }
 }
 
+fn unset_runtime_source() -> Vec<Guard> {
+    if cfg!(target_os = "macos") {
+        vec![Guard::unset("HOME")]
+    } else {
+        vec![Guard::unset("XDG_RUNTIME_DIR")]
+    }
+}
+
 #[test]
 fn socket_env_override_wins() {
     let _g = lock();
@@ -50,16 +58,17 @@ fn socket_env_override_wins() {
 }
 
 #[test]
-fn socket_falls_back_to_tmpdir_then_slash_tmp() {
+fn socket_falls_back_to_per_uid_tmpdir_subdir() {
     let _g = lock();
     let _e = Guard::unset("VETTERD_SOCKET");
+    let _runtime = unset_runtime_source();
     let _t = Guard::set("TMPDIR", "/some/tmp");
-    assert_eq!(
-        default_socket_path(),
-        PathBuf::from("/some/tmp/vetter.sock")
+    let path = default_socket_path();
+    let s = path.to_string_lossy();
+    assert!(
+        s.starts_with("/some/tmp/vetter-") && s.ends_with("/vetter.sock"),
+        "expected per-uid subdir under $TMPDIR, got {s}"
     );
-    let _t = Guard::unset("TMPDIR");
-    assert_eq!(default_socket_path(), PathBuf::from("/tmp/vetter.sock"));
 }
 
 #[test]

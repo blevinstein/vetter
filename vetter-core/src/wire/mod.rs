@@ -146,6 +146,15 @@ pub enum WireError {
     VersionMismatch { got: u32, want: u32 },
     #[error("decision id `{got}` does not match expected `{expected}`")]
     IdMismatch { got: String, expected: String },
+    /// Peer-credential check on the connected stream failed: the
+    /// process on the other end of the socket runs as a different UID
+    /// from us. Either the daemon path was hijacked by another user,
+    /// or `$VETTERD_SOCKET` points at a foreign service. Either way
+    /// `vet` aborts without sending the request body.
+    #[error(
+        "peer authentication failed: socket peer uid {peer} does not match expected uid {expected}"
+    )]
+    PeerAuth { expected: u32, peer: u32 },
 }
 
 /// Serialise `msg` to JSON, write a 4-byte big-endian length prefix,

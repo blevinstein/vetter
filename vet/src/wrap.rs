@@ -23,6 +23,7 @@ use std::process::{Command, ExitCode};
 
 use vetter_core::matcher::{self, LoadError};
 use vetter_core::parsers::{self, EnvSnapshot, ParseError, StdinHandle};
+use vetter_core::peer_cred::assert_peer_is_self;
 use vetter_core::wire::{
     new_request_id, read_decision, write_frame, VetRequest, WireDecision, WireError,
     PROTOCOL_VERSION,
@@ -154,6 +155,13 @@ fn round_trip(
     req: &VetRequest,
 ) -> Result<vetter_core::wire::VetDecision, WireError> {
     let mut s = UnixStream::connect(socket)?;
+    // Authenticate the peer BEFORE sending the request. The body
+    // contains argv, parsed effects, cwd, and a stdin digest — all of
+    // which leak to a hijacker in the same-UID-impersonation case
+    // covered by ThreatModel.md T1. `assert_peer_is_self` calls
+    // `getpeereid(2)` on the connected stream and bails with
+    // `WireError::PeerAuth` if the kernel reports a UID we don't own.
+    assert_peer_is_self(&s)?;
     write_frame(&mut s, req)?;
     read_decision(&mut s, &req.id)
 }
@@ -195,6 +203,13 @@ fn daemon_error(socket: &Path, e: &WireError) -> String {
                 socket.display()
             )
         }
+        WireError::PeerAuth { expected, peer } => format!(
+            "refusing to talk to {}: socket peer runs as uid {peer}, expected uid {expected}. \
+             Another process may have hijacked the daemon socket path; check `vet daemon status` \
+             and the contents of {}.",
+            socket.display(),
+            socket.display()
+        ),
         other => format!(
             "daemon protocol error talking to {}: {other}",
             socket.display()

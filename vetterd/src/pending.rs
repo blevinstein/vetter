@@ -28,7 +28,7 @@
 //! platform-agnostic — listeners are responsible for hopping to the
 //! correct thread.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -69,6 +69,18 @@ pub struct PromptSummary {
     /// and skip the chip row entirely.
     #[serde(default)]
     pub signals: Vec<vetter_core::SignalKind>,
+}
+
+/// A resolved request kept in the recent-history ring. Carries the
+/// original summary and rendered detail (so the popover can display
+/// the same card body as when the request was pending) plus the
+/// decision that was made.
+#[derive(Debug, Clone)]
+pub struct ResolvedEntry {
+    pub summary: PromptSummary,
+    /// Pre-rendered §8.5 detail (same string shown while pending).
+    pub rendered: String,
+    pub decision: WireDecision,
 }
 
 /// Decision posted back by the UI. Mirrors the wire's
@@ -141,8 +153,17 @@ pub struct PendingQueue {
 #[derive(Default)]
 struct Inner {
     entries: HashMap<String, Entry>,
+    /// Ring of recently-resolved requests, newest at index 0.
+    /// Capped at [`RESOLVED_CAP`]; oldest entry is evicted when full.
+    resolved: VecDeque<ResolvedEntry>,
     listener: Option<ChangeListener>,
 }
+
+/// Maximum number of resolved entries retained in memory. Oldest
+/// entries (furthest from the head of the deque) are evicted once
+/// this cap is reached. Sized to give a useful recent-history view
+/// without unbounded memory growth.
+pub const RESOLVED_CAP: usize = 20;
 
 /// Reason filed in the audit log when the daemon shuts down with a
 /// connection still parked on `submit`. Single source of truth so
@@ -210,10 +231,24 @@ impl PendingQueue {
     /// or never submitted). Callers can use the return value to log
     /// stale clicks. The change listener fires only when an entry
     /// was actually removed; spurious clicks don't redraw the UI.
+    ///
+    /// On a successful resolve the entry is pushed to the front of
+    /// the [`RESOLVED_CAP`]-sized history ring so the popover can
+    /// display recent decisions even when the pending queue is empty.
     pub fn resolve(&self, id: &str, decision: PendingDecision) -> bool {
         let (entry, listener) = {
             let mut g = self.inner.lock().expect("pending mutex poisoned");
             let removed = g.entries.remove(id);
+            if let Some(ref e) = removed {
+                g.resolved.push_front(ResolvedEntry {
+                    summary: e.summary.clone(),
+                    rendered: e.rendered.clone(),
+                    decision: decision.decision,
+                });
+                if g.resolved.len() > RESOLVED_CAP {
+                    g.resolved.pop_back();
+                }
+            }
             (removed, g.listener.clone())
         };
         match entry {
@@ -228,15 +263,16 @@ impl PendingQueue {
         }
     }
 
-    /// Drop every outstanding entry. Receivers wake with
-    /// `Err(RecvError)`. Used on daemon shutdown so blocked workers
-    /// don't hold connections open past the SIGTERM.
-    /// Fires the change listener iff the queue was non-empty.
+    /// Drop every outstanding entry and clear the resolved history.
+    /// Receivers wake with `Err(RecvError)`. Used on daemon shutdown
+    /// so blocked workers don't hold connections open past the SIGTERM.
+    /// Fires the change listener iff there were pending entries.
     pub fn cancel_all(&self) {
         let (had_entries, listener) = {
             let mut g = self.inner.lock().expect("pending mutex poisoned");
             let had = !g.entries.is_empty();
             g.entries.clear();
+            g.resolved.clear();
             (had, g.listener.clone())
         };
         if had_entries {
@@ -283,6 +319,34 @@ impl PendingQueue {
             .values()
             .map(|e| (e.summary.clone(), e.rendered.clone()))
             .collect()
+    }
+
+    /// Snapshot of recently-resolved entries, newest first. At most
+    /// [`RESOLVED_CAP`] entries are retained; the oldest are evicted
+    /// automatically on each new resolve.
+    pub fn resolved_entries(&self) -> Vec<ResolvedEntry> {
+        self.inner
+            .lock()
+            .expect("pending mutex poisoned")
+            .resolved
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Atomically snapshot both pending and resolved entries under a
+    /// single lock acquisition. Preferred over calling
+    /// [`Self::pending_entries`] and [`Self::resolved_entries`]
+    /// separately so the popover always gets a consistent view.
+    pub fn all_entries(&self) -> (Vec<(PromptSummary, String)>, Vec<ResolvedEntry>) {
+        let g = self.inner.lock().expect("pending mutex poisoned");
+        let pending = g
+            .entries
+            .values()
+            .map(|e| (e.summary.clone(), e.rendered.clone()))
+            .collect();
+        let resolved = g.resolved.iter().cloned().collect();
+        (pending, resolved)
     }
 
     /// Install a single observer fired after every state change.

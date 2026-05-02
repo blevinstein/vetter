@@ -473,12 +473,12 @@ impl AppDelegate {
     /// not consume the focused id; that's reserved for the
     /// click-through path which calls `show_popover_anchored`.
     fn refresh_ui(&self) {
-        let entries = self.ivars().queue().pending_entries();
+        let (pending, resolved) = self.ivars().queue().all_entries();
         if let Some(status) = self.ivars().status_item.get() {
-            status.set_pending_count(entries.len());
+            status.set_pending_count(pending.len());
         }
         if let Some(popover) = self.ivars().popover.get() {
-            popover.refresh(&entries, None);
+            popover.refresh(&pending, &resolved, None);
         }
     }
 
@@ -491,8 +491,8 @@ impl AppDelegate {
         if let (Some(popover), Some(status)) =
             (self.ivars().popover.get(), self.ivars().status_item.get())
         {
-            let entries = self.ivars().queue().pending_entries();
-            popover.refresh(&entries, focused.as_deref());
+            let (pending, resolved) = self.ivars().queue().all_entries();
+            popover.refresh(&pending, &resolved, focused.as_deref());
             popover.show_relative_to(status.button());
         }
     }
@@ -507,8 +507,8 @@ impl AppDelegate {
             if popover.is_shown() {
                 popover.close();
             } else {
-                let entries = self.ivars().queue().pending_entries();
-                popover.refresh(&entries, None);
+                let (pending, resolved) = self.ivars().queue().all_entries();
+                popover.refresh(&pending, &resolved, None);
                 popover.show_relative_to(status.button());
             }
         }

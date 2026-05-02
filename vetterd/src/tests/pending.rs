@@ -216,6 +216,76 @@ fn submit_marks_first_entry_as_empty_before() {
     );
 }
 
+// ─── Resolved history tests ───────────────────────────────────────────────
+
+#[test]
+fn resolve_populates_history() {
+    let q = PendingQueue::new();
+    let _rx = q.submit_with_render(summary("a", "https://a.test/"), "rendered-a".into());
+    assert!(q.resolve("a", PendingDecision::allow("ok")));
+
+    let hist = q.resolved_entries();
+    assert_eq!(hist.len(), 1);
+    assert_eq!(hist[0].summary.id, "a");
+    assert_eq!(hist[0].rendered, "rendered-a");
+    assert_eq!(hist[0].decision, WireDecision::Allow);
+}
+
+#[test]
+fn history_order_newest_first() {
+    let q = PendingQueue::new();
+    for id in ["first", "second", "third"] {
+        let _rx = q.submit(summary(id, "https://example.test/"));
+        q.resolve(id, PendingDecision::allow("ok"));
+    }
+    let hist = q.resolved_entries();
+    let ids: Vec<&str> = hist.iter().map(|e| e.summary.id.as_str()).collect();
+    assert_eq!(ids, vec!["third", "second", "first"]);
+}
+
+#[test]
+fn history_cap_respected() {
+    let q = PendingQueue::new();
+    for i in 0..RESOLVED_CAP + 5 {
+        let id = format!("id-{i}");
+        let _rx = q.submit(summary(&id, "https://example.test/"));
+        q.resolve(&id, PendingDecision::deny("ok"));
+    }
+    assert_eq!(q.resolved_entries().len(), RESOLVED_CAP);
+    // The most-recent entries should be kept; the oldest evicted.
+    let newest_id = format!("id-{}", RESOLVED_CAP + 4);
+    assert_eq!(q.resolved_entries()[0].summary.id, newest_id);
+}
+
+#[test]
+fn cancel_all_clears_resolved() {
+    let q = PendingQueue::new();
+    let _rx = q.submit(summary("a", "https://a.test/"));
+    q.resolve("a", PendingDecision::allow("ok"));
+    assert_eq!(q.resolved_entries().len(), 1);
+
+    // Submit a second entry so cancel_all has something pending to clear
+    // (the change listener fires only when there were pending entries).
+    let _rx2 = q.submit(summary("b", "https://b.test/"));
+    q.cancel_all();
+    assert!(q.resolved_entries().is_empty());
+}
+
+#[test]
+fn all_entries_returns_consistent_snapshot() {
+    let q = PendingQueue::new();
+    let _rx_a = q.submit_with_render(summary("a", "https://a.test/"), "rendered-a".into());
+    let _rx_b = q.submit_with_render(summary("b", "https://b.test/"), "rendered-b".into());
+    q.resolve("a", PendingDecision::deny("rejected"));
+
+    let (pending, resolved) = q.all_entries();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].0.id, "b");
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].summary.id, "a");
+    assert_eq!(resolved[0].decision, WireDecision::Deny);
+}
+
 /// Race regression: when N threads call `submit_with_render`
 /// concurrently against an initially-empty queue, exactly one
 /// observes `was_empty_before == true`. Without the

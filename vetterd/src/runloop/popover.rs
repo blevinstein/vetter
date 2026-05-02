@@ -40,7 +40,7 @@ use objc2_foundation::{
 };
 
 use super::{popover_attr, AppDelegate};
-use crate::pending::{PendingQueue, PromptSummary};
+use crate::pending::{PendingQueue, PromptSummary, ResolvedEntry};
 
 /// Outer popover dimensions. Width is fixed; height grows with
 /// content up to this cap, then the inner scroll view scrolls.
@@ -189,15 +189,22 @@ impl Popover {
         }
     }
 
-    /// Rebuild the card list from `entries`. If `focused_id` is
-    /// `Some`, scroll the matching card into view after the layout
-    /// settles — used by the notification click-through path so the
-    /// banner the user just tapped is the one they see first when
-    /// the popover opens. `None` means leave the scroll position
-    /// alone (the queue change-listener path uses this so the
-    /// popover doesn't bounce while the user is reading).
-    pub fn refresh(&self, entries: &[(PromptSummary, String)], focused_id: Option<&str>) {
-        self.controller.refresh(entries, focused_id);
+    /// Rebuild the card list from `entries` (pending) and `resolved`
+    /// (recently decided). Pending cards appear first with
+    /// Approve/Reject buttons; resolved cards follow with an outcome
+    /// badge and no action buttons.
+    ///
+    /// If `focused_id` is `Some`, scroll the matching pending card
+    /// into view after the layout settles — used by the notification
+    /// click-through path so the banner the user just tapped is the
+    /// one they see first. `None` leaves the scroll position alone.
+    pub fn refresh(
+        &self,
+        entries: &[(PromptSummary, String)],
+        resolved: &[ResolvedEntry],
+        focused_id: Option<&str>,
+    ) {
+        self.controller.refresh(entries, resolved, focused_id);
     }
 
     pub fn is_shown(&self) -> bool {
@@ -263,8 +270,8 @@ define_class!(
             // No focused id here: this fires on *every* show, and
             // the click-through path has already done its own
             // refresh-with-focus before triggering the show.
-            let entries = self.ivars().queue().pending_entries();
-            self.refresh(&entries, None);
+            let (entries, resolved) = self.ivars().queue().all_entries();
+            self.refresh(&entries, &resolved, None);
         }
     }
 
@@ -324,11 +331,17 @@ impl PopoverController {
         super::resolve(self.ivars_queue(), &id, allow);
     }
 
-    /// Replace the cards stack with one card per pending entry.
-    /// If `focused_id` is `Some` and matches an entry, that card's
-    /// view is scrolled into view after the layout pass.
+    /// Replace the cards stack with one card per pending entry
+    /// followed by a "Recent" section for resolved entries.
+    /// If `focused_id` is `Some` and matches a pending entry, that
+    /// card's view is scrolled into view after the layout pass.
     /// Runs on the main thread.
-    fn refresh(&self, entries: &[(PromptSummary, String)], focused_id: Option<&str>) {
+    fn refresh(
+        &self,
+        entries: &[(PromptSummary, String)],
+        resolved: &[ResolvedEntry],
+        focused_id: Option<&str>,
+    ) {
         let mtm = MainThreadMarker::new()
             .expect("PopoverController::refresh must be called on the main thread");
 
@@ -351,15 +364,15 @@ impl PopoverController {
             existing.objectAtIndex(i).removeFromSuperview();
         }
 
-        // Update tags-id mapping atomically before we install the
-        // new buttons.
+        // Tag-to-id mapping covers only pending cards; resolved cards
+        // have no action buttons and therefore no tags.
         {
             let mut g = self.ivars().card_ids.lock().expect("card_ids poisoned");
             g.clear();
             g.extend(entries.iter().map(|(s, _)| s.id.clone()));
         }
 
-        if entries.is_empty() {
+        if entries.is_empty() && resolved.is_empty() {
             let empty = NSTextField::labelWithString(ns_string!("No pending requests."), mtm);
             empty.setAlignment(objc2_app_kit::NSTextAlignment::Center);
             cards.addArrangedSubview(&empty);
@@ -369,22 +382,49 @@ impl PopoverController {
         let mut focused_view: Option<Retained<NSView>> = None;
         for (idx, (summary, rendered)) in entries.iter().enumerate() {
             // Thin horizontal rule between adjacent cards.
-            // `NSBoxType::Separator` is exactly that: a 1pt
-            // separator line that respects the user's appearance
-            // (light/dark) without us picking a colour. We add it
-            // *before* every card except the first so the visual
-            // groove sits between cards rather than above the first
-            // one.
             if idx > 0 {
                 let sep = NSBox::new(mtm);
                 sep.setBoxType(NSBoxType::Separator);
                 cards.addArrangedSubview(&sep);
             }
-            let card = self.build_card(mtm, idx, summary, rendered);
+            let card = self.build_card(mtm, idx, summary, rendered, None);
             if focused_id.is_some_and(|f| f == summary.id) {
                 focused_view = Some(card.clone());
             }
             cards.addArrangedSubview(&card);
+        }
+
+        if !resolved.is_empty() {
+            // "Recent" header sits between the pending block and the
+            // resolved block (or at the very top when nothing is
+            // pending). Drop a separator before it whenever pending
+            // cards precede it so the two sections read distinctly.
+            if !entries.is_empty() {
+                let sep = NSBox::new(mtm);
+                sep.setBoxType(NSBoxType::Separator);
+                cards.addArrangedSubview(&sep);
+            }
+            let section_label = NSTextField::labelWithString(ns_string!("Recent"), mtm);
+            section_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+            section_label.setFont(Some(&NSFont::boldSystemFontOfSize(11.0)));
+            cards.addArrangedSubview(&section_label);
+
+            for (idx, entry) in resolved.iter().enumerate() {
+                let sep = NSBox::new(mtm);
+                sep.setBoxType(NSBoxType::Separator);
+                cards.addArrangedSubview(&sep);
+                // `idx` is unused for resolved cards (no buttons → no
+                // tag) but `build_card` still needs it for the
+                // pending-card branch.
+                let card = self.build_card(
+                    mtm,
+                    idx,
+                    &entry.summary,
+                    &entry.rendered,
+                    Some(&entry.decision),
+                );
+                cards.addArrangedSubview(&card);
+            }
         }
 
         // Trigger a layout pass so frame data is current, then ask
@@ -397,12 +437,19 @@ impl PopoverController {
         }
     }
 
+    /// Build a single card view.
+    ///
+    /// `outcome` distinguishes card types:
+    /// - `None` → pending card: Approve/Reject buttons, normal colours.
+    /// - `Some(decision)` → resolved card: outcome badge, no buttons,
+    ///   secondary-colour header text.
     fn build_card(
         &self,
         mtm: MainThreadMarker,
         idx: usize,
         summary: &PromptSummary,
         rendered: &str,
+        outcome: Option<&vetter_core::wire::WireDecision>,
     ) -> Retained<NSView> {
         // Header: "<command> <verb> <target>". The inline "dry run"
         // pill that used to live here is now absorbed by the outer
@@ -427,6 +474,11 @@ impl PopoverController {
         header.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
             13.0, semibold,
         )));
+        // Resolved cards use a dimmer header colour to signal that
+        // they are informational (no action required).
+        if outcome.is_some() {
+            header.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        }
 
         let header_row = NSStackView::new(mtm);
         header_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
@@ -459,6 +511,23 @@ impl PopoverController {
             chip.setFont(Some(&NSFont::boldSystemFontOfSize(10.0)));
             chip.setTextColor(Some(&color));
             header_row.addArrangedSubview(&chip);
+        }
+
+        // For resolved cards, append an "Allowed" or "Denied" badge
+        // at the trailing end of the header row so the outcome is
+        // immediately scannable without reading the body.
+        if let Some(decision) = outcome {
+            let (badge_text, badge_color) = match decision {
+                vetter_core::wire::WireDecision::Allow
+                | vetter_core::wire::WireDecision::AllowOnce => {
+                    ("Allowed", NSColor::systemGreenColor())
+                }
+                vetter_core::wire::WireDecision::Deny => ("Denied", NSColor::systemRedColor()),
+            };
+            let badge = NSTextField::labelWithString(&NSString::from_str(badge_text), mtm);
+            badge.setFont(Some(&NSFont::boldSystemFontOfSize(11.0)));
+            badge.setTextColor(Some(&badge_color));
+            header_row.addArrangedSubview(&badge);
         }
 
         // Body: read-only NSTextView in its own NSScrollView. The
@@ -505,50 +574,10 @@ impl PopoverController {
             }
         }
 
-        // Approve / Reject row. macOS HIG puts the destructive
-        // (Reject) on the *left* and the default / accept (Approve)
-        // on the *right*; we wire that up here. Approve also gets
-        // `Return` as its key equivalent so the user can tab into
-        // the popover and press Enter to allow.
-        let approve = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("Approve"),
-                Some(&*(self as *const Self).cast::<AnyObject>()),
-                Some(sel!(approveClicked:)),
-                mtm,
-            )
-        };
-        approve.setBezelStyle(BEZEL_ROUNDED);
-        approve.setTag(idx as isize);
-        // `\r` = Return. Promotes Approve to the system default
-        // button so it picks up the accent tint and accepts Enter.
-        approve.setKeyEquivalent(ns_string!("\r"));
-        let reject = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("Reject"),
-                Some(&*(self as *const Self).cast::<AnyObject>()),
-                Some(sel!(rejectClicked:)),
-                mtm,
-            )
-        };
-        reject.setBezelStyle(BEZEL_ROUNDED);
-        reject.setTag(idx as isize);
-        // Tints the bezel red on macOS 11+ and trips AppKit's
-        // accidental-press guard. Older systems silently fall back
-        // to a regular bezel.
-        reject.setHasDestructiveAction(true);
-
-        let buttons = NSStackView::new(mtm);
-        buttons.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-        buttons.setSpacing(8.0);
-        buttons.setDistribution(NSStackViewDistribution::Fill);
-        buttons.addArrangedSubview(&reject);
-        buttons.addArrangedSubview(&approve);
-
         // Inner card container: vertical stack with header / body /
-        // buttons, padded by `CARD_INSET` on every side via
-        // `setEdgeInsets`. Insetting here (rather than wrapping in
-        // a second container view) keeps the dry-run `NSBox`
+        // (optional) buttons, padded by `CARD_INSET` on every side
+        // via `setEdgeInsets`. Insetting here (rather than wrapping
+        // in a second container view) keeps the dry-run `NSBox`
         // wrapping cheap — the box just hosts this stack directly.
         let card = NSStackView::new(mtm);
         card.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
@@ -562,7 +591,53 @@ impl PopoverController {
         });
         card.addArrangedSubview(&header_row);
         card.addArrangedSubview(&body_scroll);
-        card.addArrangedSubview(&buttons);
+
+        // Pending cards get Approve/Reject buttons. Resolved cards
+        // already carry an outcome badge in the header; no further
+        // action is possible so we omit the button row entirely.
+        if outcome.is_none() {
+            // Approve / Reject row. macOS HIG puts the destructive
+            // (Reject) on the *left* and the default / accept
+            // (Approve) on the *right*; we wire that up here.
+            // Approve also gets `Return` as its key equivalent so
+            // the user can tab into the popover and press Enter to
+            // allow.
+            let approve = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    ns_string!("Approve"),
+                    Some(&*(self as *const Self).cast::<AnyObject>()),
+                    Some(sel!(approveClicked:)),
+                    mtm,
+                )
+            };
+            approve.setBezelStyle(BEZEL_ROUNDED);
+            approve.setTag(idx as isize);
+            // `\r` = Return. Promotes Approve to the system default
+            // button so it picks up the accent tint and accepts Enter.
+            approve.setKeyEquivalent(ns_string!("\r"));
+            let reject = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    ns_string!("Reject"),
+                    Some(&*(self as *const Self).cast::<AnyObject>()),
+                    Some(sel!(rejectClicked:)),
+                    mtm,
+                )
+            };
+            reject.setBezelStyle(BEZEL_ROUNDED);
+            reject.setTag(idx as isize);
+            // Tints the bezel red on macOS 11+ and trips AppKit's
+            // accidental-press guard. Older systems silently fall
+            // back to a regular bezel.
+            reject.setHasDestructiveAction(true);
+
+            let buttons = NSStackView::new(mtm);
+            buttons.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+            buttons.setSpacing(8.0);
+            buttons.setDistribution(NSStackViewDistribution::Fill);
+            buttons.addArrangedSubview(&reject);
+            buttons.addArrangedSubview(&approve);
+            card.addArrangedSubview(&buttons);
+        }
 
         // Pin the body's height. `body_scroll` carries a `setFrame`
         // size, but once it's an arranged subview of an autolayout

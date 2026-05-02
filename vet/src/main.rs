@@ -15,6 +15,7 @@ mod allow;
 mod color;
 mod doctor;
 mod explain;
+mod wrap;
 
 /// Exit code for "config / not yet implemented" per `plans/Overview.md` §4.
 const EXIT_CONFIG: u8 = 78;
@@ -130,19 +131,12 @@ fn main() -> ExitCode {
                 allow::list(scope, history, cli.allowlist.as_deref())
             }
         },
-        Command::Daemon { .. } => not_implemented("`vet daemon`", "Phase 3"),
+        Command::Daemon { .. } => not_implemented("`vet daemon`", "Phase 3b"),
         Command::Wrap(argv) => {
-            if cli.dry_run {
-                return not_implemented("`--dry-run`", "Phase 3 (daemon)");
-            }
             if cli.explain {
                 return explain::run(argv, cli.quiet, cli.allowlist.as_deref());
             }
-            let cmd = argv.first().map(String::as_str).unwrap_or("<command>");
-            not_implemented(
-                &format!("wrapping `{cmd}` without --explain (the daemon is required to exec)"),
-                "Phase 3 (daemon)",
-            )
+            wrap::run(argv, cli.dry_run, cli.quiet, cli.allowlist.as_deref())
         }
     }
 }

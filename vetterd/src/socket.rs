@@ -24,10 +24,7 @@ pub fn listen(path: &Path) -> std::io::Result<UnixListener> {
             Ok(_) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::AddrInUse,
-                    format!(
-                        "another vetterd is already listening on {}",
-                        path.display()
-                    ),
+                    format!("another vetterd is already listening on {}", path.display()),
                 ));
             }
             Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {

@@ -23,3 +23,6 @@ sha2 = "0.10"
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
+# Build vetterd as a sibling test artefact so wrap-mode integration
+# tests can spawn it via `assert_cmd::cargo_bin!("vetterd")`.
+vetterd = { path = "../vetterd" }

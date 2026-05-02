@@ -57,10 +57,7 @@ impl AuditLog {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self {
             file: Mutex::new(file),
             path: path.to_path_buf(),
@@ -121,7 +118,10 @@ mod tests {
         let parsed2: AuditEntry = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(parsed2.id, "b");
         assert_eq!(parsed2.decision, WireDecision::Deny);
-        assert!(body.ends_with('\n'), "missing terminating newline: {body:?}");
+        assert!(
+            body.ends_with('\n'),
+            "missing terminating newline: {body:?}"
+        );
     }
 
     #[test]

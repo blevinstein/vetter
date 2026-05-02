@@ -35,9 +35,9 @@ pub fn default_audit_path() -> Result<PathBuf, PathError> {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME").ok_or(PathError::HomeUnset)?;
-        return Ok(PathBuf::from(home)
+        Ok(PathBuf::from(home)
             .join("Library/Logs/vetter")
-            .join("audit.log"));
+            .join("audit.log"))
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -110,7 +110,10 @@ mod tests {
         let _g = lock();
         let _e = Guard::unset("VETTERD_SOCKET");
         let _t = Guard::set("TMPDIR", "/some/tmp");
-        assert_eq!(default_socket_path(), PathBuf::from("/some/tmp/vetter.sock"));
+        assert_eq!(
+            default_socket_path(),
+            PathBuf::from("/some/tmp/vetter.sock")
+        );
         let _t = Guard::unset("TMPDIR");
         assert_eq!(default_socket_path(), PathBuf::from("/tmp/vetter.sock"));
     }

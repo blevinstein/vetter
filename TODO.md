@@ -80,26 +80,28 @@ Roadmap: [plans/Overview.md](plans/Overview.md) §5. Test plan:
 - [x] Negative tests: host-suffix confusion, path traversal, denylist
       overrides allow at every layer
 
-## Phase 3 — Daemon + IPC  `[ ] not started`
+## Phase 3 — Daemon + IPC  `[~] in progress`
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §3, §11. Test plan:
 [plans/TestingPlan.md](plans/TestingPlan.md) §5, §6.
 
-- [ ] `vetterd` socket listener at `$TMPDIR/vetter.sock`; one
+Phase 3a (spine) landed; remaining boxes are Phase 3b polish.
+
+- [x] `vetterd` socket listener at `$TMPDIR/vetter.sock`; one
       request → one decision; length-prefixed JSON
-- [ ] `VetRequest` / `VetDecision` wire types in `vetter-core::wire`
+- [x] `VetRequest` / `VetDecision` wire types in `vetter-core::wire`
       with `v` field for version negotiation
-- [ ] Pending-request queue; concurrent clients get independent
+- [x] Pending-request queue; concurrent clients get independent
       decisions
-- [ ] `vet` becomes a thin client; fails closed (exit non-zero) when
+- [x] `vet` becomes a thin client; fails closed (exit non-zero) when
       the socket is missing — no TTY fallback
-- [ ] Audit log at `~/Library/Logs/vetter/audit.log` (JSON lines),
+- [x] Audit log at `~/Library/Logs/vetter/audit.log` (JSON lines),
       flushed before decision returns
-- [ ] Stub UI for prompt-class decisions: auto-deny with reason
+- [x] Stub UI for prompt-class decisions: auto-deny with reason
       `"no UI yet"`
 - [ ] `vet daemon start|stop|status` controls supervise `vetterd`
 - [ ] Atomic allowlist writes (temp + rename); §5.3 crash test
-- [ ] §4.9 fail-closed test (no exec on deny / missing socket)
+- [x] §4.9 fail-closed test (no exec on deny / missing socket)
 - [ ] §6.3 protocol fuzzing entry
 
 ## Phase 4 — macOS approver UI  `[ ] not started`  (MVP milestone)

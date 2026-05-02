@@ -163,20 +163,28 @@ fn explain_redacts_bearer_token_in_render() {
 }
 
 #[test]
-fn non_explain_wrap_still_not_implemented() {
-    let (mut cmd, _scratch) = vet_nocolor_clean();
-    cmd.args(["curl", "https://example.test/"])
+fn non_explain_wrap_fails_closed_without_daemon() {
+    // Phase 3a wires wrap mode through to the daemon. With no daemon
+    // listening (we point the socket at a guaranteed-missing path),
+    // the thin client must fail-closed: exit 78, never exec.
+    let (mut cmd, scratch) = vet_nocolor_clean();
+    let socket = scratch.path().join("missing.sock");
+    cmd.env("VETTERD_SOCKET", &socket)
+        .args(["curl", "https://example.test/"])
         .assert()
         .code(78)
-        .stderr(contains("not implemented"))
-        .stderr(contains("Phase 3"));
+        .stderr(contains("vetterd is not reachable"));
 }
 
 #[test]
-fn dry_run_routes_to_not_implemented() {
-    let (mut cmd, _scratch) = vet_nocolor_clean();
-    cmd.args(["--dry-run", "curl", "https://example.test/"])
+fn dry_run_without_daemon_also_fails_closed() {
+    // --dry-run still has to talk to the daemon (it's the daemon
+    // that interprets force_prompt). With no daemon, fail-closed.
+    let (mut cmd, scratch) = vet_nocolor_clean();
+    let socket = scratch.path().join("missing.sock");
+    cmd.env("VETTERD_SOCKET", &socket)
+        .args(["--dry-run", "curl", "https://example.test/"])
         .assert()
         .code(78)
-        .stderr(contains("not implemented"));
+        .stderr(contains("vetterd is not reachable"));
 }

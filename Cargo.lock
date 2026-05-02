@@ -1110,6 +1110,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "vetter-core",
+ "vetterd",
 ]
 
 [[package]]

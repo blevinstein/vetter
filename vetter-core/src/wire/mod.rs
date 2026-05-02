@@ -190,7 +190,11 @@ pub fn read_frame<R: Read, T: DeserializeOwned>(r: &mut R) -> Result<T, WireErro
     Ok(msg)
 }
 
-fn read_exact_or_truncated<R: Read>(r: &mut R, buf: &mut [u8], expected: u32) -> Result<(), WireError> {
+fn read_exact_or_truncated<R: Read>(
+    r: &mut R,
+    buf: &mut [u8],
+    expected: u32,
+) -> Result<(), WireError> {
     let mut read = 0usize;
     while read < buf.len() {
         match r.read(&mut buf[read..]) {
@@ -336,7 +340,10 @@ mod tests {
         write_frame(&mut buf, &req).unwrap();
         let mut cur = Cursor::new(buf);
         let err = read_request(&mut cur).unwrap_err();
-        assert!(matches!(err, WireError::VersionMismatch { got: 99, want: 1 }));
+        assert!(matches!(
+            err,
+            WireError::VersionMismatch { got: 99, want: 1 }
+        ));
     }
 
     #[test]

@@ -168,35 +168,50 @@ Conventions:
    from the UI. Discarded on daemon restart.
 5. **Denylist** — same shape, takes precedence over allows at every layer.
 
-### Rule shape (curl example)
+### Rule shape
+
+Rules match on **effects** (see §8.2), not on a command-specific shape.
+That means the same rule can cover any command that emits an
+`HttpRequest` effect (curl, wget, gh, …). An optional top-level
+`command:` field can narrow a rule to one parser when needed.
 
 ```yaml
 rules:
   - id: github-readonly
-    command: curl
+    # No `command:` — applies to any parser whose effects match.
     when:
-      method: [GET, HEAD]
-      url:
-        scheme: https
-        host: api.github.com
-        path: "/repos/**"
-      headers_allow: [Accept, User-Agent, Authorization]
-      no_body: true
+      http:
+        method: [GET, HEAD]
+        url:
+          scheme: https
+          host: api.github.com
+          path: "/repos/**"
+        headers_allow: [Accept, User-Agent, Authorization]
+        no_body: true
     note: "Read-only GitHub API calls"
     created_by: alice
     created_at: 2026-04-30T18:11Z
 
   - id: localhost-dev
-    command: curl
     when:
-      url:
-        host: ["localhost", "127.0.0.1", "::1"]
-        port: [3000, 8000, 8080]
+      http:
+        url:
+          host: ["localhost", "127.0.0.1", "::1"]
+          port: [3000, 8000, 8080]
     note: "Local dev servers"
+
+  - id: scoped-curl-only
+    command: curl              # narrow when we genuinely mean curl
+    when:
+      http: { method: [GET] }
 ```
 
-A rule matches iff every populated `when` field matches. Anything not
-listed in `headers_allow` (or set to `*`) is a mismatch — i.e. **default-
+`when` clauses are keyed by effect kind (`http:`, `file_write:`,
+`file_read:`, `process_spawn:`, …). A rule matches iff *every*
+populated effect-clause finds *at least one* matching effect in the
+parsed command, and any populated `command:` filter agrees.
+Anything not listed in `headers_allow` (or set to `*`) is a mismatch
+— i.e. **default-
 deny on header surface**, because Authorization, Cookie, X-Api-Key, etc.
 are exactly what we want to scrutinise.
 
@@ -276,49 +291,184 @@ as JSON lines. `vet allow list --history` surfaces this.
 
 ## 8. Command parsers
 
-Parser plugins implement:
+The parser layer is the project's most important extension point. Adding
+a new command (wget, gh, aws, ssh, …) should require **only** a new
+parser plugin — the renderer, the rule matcher, the risk analyzer, the
+audit log, and the UI all consume one shared output type and need no
+per-command code.
+
+### 8.1 Plugin contract
+
+A parser is the *only* per-command code. It owns argv → structured
+output and nothing else.
 
 ```rust
-trait CommandParser {
-    fn name(&self) -> &str;            // "curl"
-    fn parse(&self, argv: &[String], stdin: Option<&[u8]>) -> Parsed;
-    fn render(&self, p: &Parsed, w: &mut dyn StyledWriter) -> fmt::Result;
-    fn match_rule(&self, p: &Parsed, rule: &RuleWhen) -> bool;
+pub trait CommandParser: Send + Sync {
+    /// Stable identifier ("curl", "wget", "gh", …). Appears in rules,
+    /// audit logs, and the wire protocol.
+    fn name(&self) -> &'static str;
+
+    /// True if this parser handles the given argv[0] (incl. basenames
+    /// like "/opt/homebrew/bin/curl"). Plugins may also accept aliases
+    /// (e.g. a future gh plugin returning true for both "gh" and "hub").
+    fn handles(&self, argv0: &str) -> bool;
+
+    /// Parse argv into the shared output model. Returning Err means
+    /// the invocation is unparseable; `vet` then refuses to run it
+    /// rather than guessing — refusing is safer than mis-vetting.
+    fn parse(
+        &self,
+        argv: &[String],
+        stdin: StdinHandle,    // bounded reader; see §8 streaming note
+        env: &EnvSnapshot,     // read-only; parsers may inspect e.g.
+                               //   CURL_HOME, AWS_PROFILE
+    ) -> Result<ParsedCommand, ParseError>;
 }
 ```
 
-### curl parser (MVP)
+Plugins are registered via a small static registry:
 
-Normalises curl argv into:
-
+```rust
+pub fn register(parser: Box<dyn CommandParser>);
+pub fn dispatch(argv: &[String]) -> Option<&dyn CommandParser>;
 ```
-Parsed::Curl {
-    method: Method,            // GET inferred from absence of -X/-d/-T
-    url: Url,                  // scheme/host/port/path/query split
-    headers: Vec<Header>,      // -H values, plus implicit (Content-Type from
-                               //   -d, User-Agent if not overridden)
-    body: BodyKind,            // None / Inline(bytes) / FromFile(path) /
-                               //   FromStdin(digest) / Form(fields)
-    auth: AuthKind,            // None / Basic / Bearer-from-header /
-                               //   --user / netrc
-    follow_redirects: bool,
-    insecure: bool,            // -k / --insecure
-    output: OutputKind,        // stdout / file / -O / -J
-    upload_file: Option<Path>, // -T
-    proxy: Option<Url>,
-    pipes_to_shell: bool,      // best-effort: detect "| sh" sibling
-                               //   when invoked via a shell wrapper
-    raw_argv: Vec<String>,     // for display fallback
+
+For MVP we register parsers explicitly in `vetter-core::parsers::all()`;
+no dynamic loading. (Dynamic loading is a future option but adds a
+trust-boundary problem we don't need yet.)
+
+### 8.2 Shared output model — `ParsedCommand`
+
+Every parser produces the same shape. The shape is built around
+**effects** — concrete, normalized things the command will do — plus
+metadata for display and a small command-specific escape hatch.
+
+```rust
+pub struct ParsedCommand {
+    pub command: &'static str,            // parser.name()
+    pub argv: Vec<String>,                // raw, preserved for display
+    pub stdin_digest: Option<Sha256>,
+    pub effects: Vec<Effect>,             // the heart of the model
+    pub signals: Vec<RiskSignal>,         // pre-computed by the parser
+    pub display_hints: DisplayHints,      // method/target/etc. for the
+                                          //   header line in the UI
+    pub extras: serde_json::Value,        // command-specific extras
+                                          //   (raw, for the detail view)
 }
 ```
+
+The point of `effects` is that downstream consumers — the rule matcher,
+the risk analyzer, the renderer's "summary" view — never branch on
+`command`. They iterate effects.
+
+```rust
+pub enum Effect {
+    HttpRequest(HttpRequest),
+    FileWrite(FileWrite),     // -o /path, -O, scp dst, gh pr download
+    FileRead(FileRead),       // -d @file, -T file, scp src
+    ProcessSpawn(ProcessSpawn), // ssh remote command, gh codespace ssh
+    CredentialUse(CredentialUse), // --user, ~/.netrc, AWS_PROFILE…
+    Network(NetworkOpen),     // raw socket-y things (ssh, nc) where
+                              //   "HTTP request" doesn't apply
+}
+
+pub struct HttpRequest {
+    pub method: HttpMethod,
+    pub url: Url,             // scheme/host/port/path/query split
+    pub headers: Vec<Header>, // includes parser-inferred (e.g. curl's
+                              //   implicit Content-Type from -d)
+    pub body: Body,           // None / Inline(bytes) /
+                              //   FromFile(PathBuf) /
+                              //   FromStdin(Sha256, len) /
+                              //   Form(Vec<FormField>)
+    pub auth: Option<Auth>,   // Basic / Bearer / Header(name) / Netrc
+    pub tls: TlsPolicy,       // Strict / InsecureSkipVerify / Plaintext
+    pub follow_redirects: bool,
+    pub proxy: Option<Url>,
+}
+
+pub struct FileWrite {
+    pub path: PathBuf,        // absolute, normalized
+    pub source: WriteSource,  // RemoteHttp(Url) / Stdin / Literal(bytes)
+    pub overwrite: bool,
+}
+
+// … FileRead, ProcessSpawn, etc. follow the same pattern.
+
+pub struct RiskSignal {
+    pub kind: SignalKind,     // enum: WriteMethod, AuthHeader,
+                              //   InsecureTls, PipeToShell, …
+    pub detail: String,       // human-readable specific (e.g.
+                              //   "Authorization header present")
+    pub effect_idx: Option<usize>, // which effect raised this
+}
+
+pub struct DisplayHints {
+    pub primary_verb: String,    // "POST", "scp →", "ssh"
+    pub primary_target: String,  // "https://api.example.com/v1/users/42"
+    pub badges: Vec<Badge>,      // "[insecure: -k]", "[stdin]", …
+}
+```
+
+Why both `effects` and `extras`:
+- `effects` is the **structured surface** that policy and analysis run
+  on. Anything we want to write a generic rule against goes here.
+- `extras` is a **lossless escape hatch** for command-specific detail
+  the renderer's detail view can show but policy doesn't reason about
+  (e.g. curl's `--write-out` format string, gh's repo-context flags).
+  Keeping it free-form means parsers can ship richer detail without
+  forcing a core-type change every time.
+
+This shape is also the wire format: `ParsedCommand` `serde`-derives
+JSON and is what the CLI sends to the daemon (§3 `VetRequest.parsed`).
+
+### 8.3 Downstream consumers (all command-agnostic)
+
+```rust
+// Renderer: turns ParsedCommand into the colorised UI block (§8.5).
+//   The summary header is built from DisplayHints; the body iterates
+//   effects with per-Effect-variant renderers in vetter-core. Parsers
+//   never render anything.
+pub trait Renderer {
+    fn render(&self, p: &ParsedCommand, w: &mut dyn StyledWriter);
+}
+
+// Matcher: rule WHEN clauses are written against effects.
+//   "method: POST, host: api.github.com" matches any ParsedCommand
+//   whose effects contain an HttpRequest matching the predicate —
+//   curl, wget, gh-with-an-http-effect, all handled identically.
+pub trait Matcher {
+    fn matches(&self, p: &ParsedCommand, rule: &RuleWhen) -> bool;
+}
+
+// Risk analyzer: pure function over effects.
+pub fn analyze(p: &ParsedCommand) -> Vec<RiskSignal>;
+```
+
+Adding wget therefore touches one file (`parsers/wget.rs`) plus its
+test fixtures. No core changes.
+
+### 8.4 curl parser (MVP)
+
+The first concrete `CommandParser`. Responsibilities:
+
+- Argv parser covering the curl flag set we care about (full list lives
+  in `parsers/curl/flags.rs`; snapshot-tested against a corpus of real
+  invocations harvested from agent transcripts).
+- Emits a single `Effect::HttpRequest` (plus an `Effect::FileWrite` if
+  `-o`/`-O`/`-J` is used, plus an `Effect::FileRead` for `-T <file>`
+  or `-d @file`).
+- Populates `signals` with curl-specific cues that the generic analyzer
+  can't see: `--insecure`/`-k`, `--cacert` overrides, `--resolve`
+  spoofing, etc.
 
 **Streaming bodies are refused for MVP.** If stdin is a pipe whose total
 size we cannot read into memory cheaply (cap: 1 MiB), or if `-T -` /
-chunked-transfer flags are used, `vet` errors out with a clear
-"streaming requests are not supported yet" message and exits non-zero.
-Lifting this restriction is left to a future phase.
+chunked-transfer flags are used, the parser returns `ParseError::
+StreamingUnsupported`; `vet` exits non-zero with a clear message.
+Lifting this is a future phase.
 
-### Render layout (consistent regardless of curl flag order)
+### 8.5 Render layout (consistent regardless of curl flag order)
 
 ```
  vet  curl
@@ -349,19 +499,32 @@ Color scheme (rough):
 
 ## 9. Safety signal heuristics
 
-These never auto-deny by themselves; they bias the UI toward "human must
-look" by suppressing auto-allow even if a permissive rule exists, unless
-the rule explicitly opts in.
+Implemented as a pure function over `ParsedCommand.effects`, so signals
+are command-agnostic by default. A parser may push extra
+command-specific signals during `parse()` (e.g. curl's `--resolve`
+spoofing).
 
+Signals never auto-deny by themselves; they bias the UI toward "human
+must look" by suppressing auto-allow even if a permissive rule exists,
+unless the rule explicitly opts in.
+
+Generic (over `Effect::HttpRequest`):
 - write methods: POST/PUT/PATCH/DELETE
-- auth-bearing headers: `Authorization`, `Cookie`, `X-*-Token`, `X-Api-Key`,
-  `Proxy-Authorization`
-- file uploads: `-T`, `-F file=@…`, `--data-binary @…`
-- output to disk: `-o`, `-O`, `-J` outside cwd
-- TLS off / verification disabled: `-k`, `--insecure`, `http://` non-loopback
-- pipe to shell pattern (parent shell command contains `| sh|bash|zsh`)
+- auth-bearing headers: `Authorization`, `Cookie`, `X-*-Token`,
+  `X-Api-Key`, `Proxy-Authorization`
+- TLS off / verification disabled (`tls != Strict`, `http://` non-loopback)
 - non-standard ports
 - IDN / punycode hosts; raw IP literals
+
+Generic (over `Effect::FileWrite` / `FileRead`):
+- file upload of a path outside cwd
+- output to disk outside cwd
+
+Generic (over `Effect::ProcessSpawn`):
+- pipe to shell pattern (parent shell command contains `| sh|bash|zsh`)
+
+Curl-specific (parser-pushed): `--insecure`/`-k`, `--cacert` overrides,
+`--resolve` host pinning, `--unix-socket`.
 
 ---
 
@@ -390,18 +553,32 @@ slower CLI cold start and worse parser ergonomics.)
 ## 11. Roadmap
 
 ### Phase 0 — Skeleton (1–2 days)
-- Cargo workspace: `vet` (cli), `vetterd` (daemon), `vetter-core` (parsers,
-  policy, wire types).
+- Cargo workspace: `vet` (cli), `vetterd` (daemon), `vetter-core`
+  (shared output model, plugin registry, renderer, matcher, signals,
+  wire types).
 - CI: fmt, clippy, tests; macOS build target only for MVP (Linux runner
   for headless tests of `vetter-core` is fine, but no Linux/Windows
   binary is shipped).
 - `vet doctor` stub.
 
-### Phase 1 — Curl parser + standalone CLI (3–5 days)
+### Phase 1a — Plugin scaffolding (2–3 days)
+- `CommandParser` trait, `ParsedCommand`, `Effect` enum + variants,
+  `RiskSignal`, `DisplayHints`, `StdinHandle`, `EnvSnapshot` (all in
+  `vetter-core`).
+- Static parser registry + dispatch.
+- Generic renderer that walks `effects` and produces the §8.5 layout
+  from any `ParsedCommand` (no curl-specific code).
+- Generic risk analyzer (§9 generic items only).
+- A trivial `noop` parser used in tests to exercise the whole pipeline
+  without depending on the curl parser.
+
+### Phase 1b — Curl parser (3–5 days)
 - Full curl argv parser w/ snapshot tests against a corpus of real
   invocations harvested from agent transcripts.
-- Renderer with color, redaction, signal flags.
-- `vet --explain curl …` works end-to-end with no daemon, no policy.
+- Emits `Effect::HttpRequest` (+ optional `FileWrite`/`FileRead`) and
+  curl-specific `RiskSignal`s.
+- `vet --explain curl …` works end-to-end with no daemon, no policy,
+  using the Phase 1a renderer and analyzer unchanged.
 
 ### Phase 2 — Allowlist evaluation (3–5 days)
 - YAML schema + loader for project + user scope.
@@ -439,7 +616,12 @@ slower CLI cold start and worse parser ergonomics.)
 ### Phase 7 — Additional command parsers
 - `wget`, `gh`, `aws`, `gcloud`, `ssh/scp`, `rm`, `git push`/`git remote`
   (mostly to gate `git push` to unfamiliar remotes).
-- Each is roughly 1–3 days for parser + render + signals + tests.
+- Each is one new file implementing `CommandParser`, plus snapshot
+  fixtures and any command-specific signal additions. No core changes.
+  Budget: 1–3 days each. The first one (`wget`) doubles as a check
+  that the Phase 1a interface generalised correctly; if it forces
+  changes to `Effect`/`ParsedCommand`, that's a useful signal we
+  under-designed and should fix before the rest land.
 
 ---
 

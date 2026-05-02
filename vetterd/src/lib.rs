@@ -40,9 +40,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use vetter_core::matcher::{load_default, AllowlistStore};
+use vetter_core::matcher::{load_default, AllowlistStore, Decision};
 use vetter_core::parsers::{self, EnvSnapshot, ParseError, StdinHandle};
 use vetter_core::pidfile;
+use vetter_core::render::{DefaultRenderer, PlainWriter, Renderer};
 use vetter_core::wire::{
     new_request_id, read_request, write_frame, VetDecision, VetRequest, WireDecision, WireError,
     PROTOCOL_VERSION,
@@ -271,7 +272,7 @@ pub fn handle_connection(
         Ok(parsed) => {
             let command_for_audit = parsed.command.clone();
             let outcome = evaluate(&parsed, &req.id, req.force_prompt, &ctx.allowlist);
-            let (decision, reason) = resolve_outcome(outcome, &req, ctx);
+            let (decision, reason) = resolve_outcome(outcome, &parsed, &req, ctx);
             (decision, reason, command_for_audit)
         }
         Err(e) => {
@@ -319,6 +320,7 @@ pub fn handle_connection(
 /// back to deny so the agent never hangs forever).
 fn resolve_outcome(
     outcome: PolicyOutcome,
+    parsed: &ParsedCommand,
     _req: &VetRequest,
     ctx: &Context,
 ) -> (WireDecision, String) {
@@ -326,7 +328,13 @@ fn resolve_outcome(
         PolicyOutcome::Auto { decision, reason } => (decision, reason),
         PolicyOutcome::Prompt(summary) => {
             let id = summary.id.clone();
-            let rx = ctx.pending.submit(summary.clone());
+            // Pre-render the §8.5 detail so the popover can display
+            // it verbatim without the AppKit thread reaching back
+            // into vetter-core. PlainWriter (no ANSI) keeps the
+            // bytes safe to drop into an NSTextView; the popover
+            // does its own monospaced styling.
+            let rendered = render_detail(parsed);
+            let rx = ctx.pending.submit_with_render(summary.clone(), rendered);
             ctx.notifier.notify(&summary);
             match rx.recv() {
                 Ok(dec) => (dec.decision, dec.reason),
@@ -351,6 +359,22 @@ fn resolve_outcome(
             }
         }
     }
+}
+
+/// Render the §8.5 detail block for `parsed` into a plain (no-ANSI)
+/// string. Called only on the prompt-class path: the popover view
+/// reads this verbatim, so any failure is silently swallowed and the
+/// caller falls back to the empty-detail card.
+fn render_detail(parsed: &ParsedCommand) -> String {
+    let mut buf = Vec::new();
+    let mut w = PlainWriter(&mut buf);
+    if DefaultRenderer
+        .render(parsed, Some(&Decision::Prompt), &mut w)
+        .is_err()
+    {
+        return String::new();
+    }
+    String::from_utf8(buf).unwrap_or_default()
 }
 
 /// Re-run the parser on `req.argv` using the request's `cwd` and the

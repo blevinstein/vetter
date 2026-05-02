@@ -57,6 +57,13 @@ pub struct PromptSummary {
     pub primary_target: String,
     #[serde(default)]
     pub force_prompt: bool,
+    /// The pre-rendered §8.5 detail block — what the macOS popover
+    /// shows in its body NSTextView. Empty when the daemon called
+    /// the legacy `submit` instead of `submit_with_render` (no
+    /// known producer does that today; tests that want to assert
+    /// the popover contract should still pin this to non-empty).
+    #[serde(default)]
+    pub rendered: String,
 }
 
 #[derive(Default)]

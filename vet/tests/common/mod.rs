@@ -67,6 +67,8 @@ struct PromptSummary {
     primary_target: String,
     #[serde(default)]
     force_prompt: bool,
+    #[serde(default)]
+    rendered: String,
 }
 
 #[derive(Default)]

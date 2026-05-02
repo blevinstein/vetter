@@ -109,20 +109,23 @@ Phase 3a (spine) landed; remaining boxes are Phase 3b polish.
 Roadmap: [plans/Overview.md](plans/Overview.md) §7. Operational notes
 + manual smoke procedure: [plans/Phase4Notes.md](plans/Phase4Notes.md).
 
-PR 1 (this PR) lands the approve/reject happy path: an all-in-Rust
+PR 1 lands the approve/reject happy path: an all-in-Rust
 `Vetter.app` bundle, `UNUserNotificationCenter` notifications with
 Approve / Reject buttons, and the full pending-queue → notifier round
-trip. Allowlist…, the popover detail view, coalescing, and notarised
-distribution are deferred to follow-on PRs.
+trip. PR 2 adds the menu-bar shield icon, a pending-count badge, an
+`NSPopover` listing every pending request with §8.5 detail and
+per-card Approve / Reject, and click-through routing from the
+notification body into that popover. Allowlist…, banner coalescing,
+and notarised distribution are still deferred.
 
 - [x] All-in-Rust menu-bar `.app` bundle, `LSUIElement`, no dock icon
       (`tools/build-app.sh`,
       [vetterd/resources/Info.plist.template](vetterd/resources/Info.plist.template),
-      [vetterd/src/runloop.rs](vetterd/src/runloop.rs))
+      [vetterd/src/runloop/mod.rs](vetterd/src/runloop/mod.rs))
 - [x] `UNUserNotificationCenter` integration: Approve / Reject
       actions wired through
       [vetterd/src/notifier/mac.rs](vetterd/src/notifier/mac.rs) +
-      [vetterd/src/runloop.rs](vetterd/src/runloop.rs)
+      [vetterd/src/runloop/mod.rs](vetterd/src/runloop/mod.rs)
 - [x] Pending-queue spine + `Notifier` trait + `MockNotifier` for
       test-driven coverage
       ([vetterd/src/pending.rs](vetterd/src/pending.rs),
@@ -137,14 +140,23 @@ distribution are deferred to follow-on PRs.
 - [x] Ad-hoc code-signed `.app` for local dev (`tools/build-app.sh`)
 - [x] Manual smoke procedure documented
       ([plans/Phase4Notes.md](plans/Phase4Notes.md))
+- [x] Menu-bar shield icon with pending-count badge updated by the
+      `PendingQueue` change listener
+      ([vetterd/src/runloop/status_item.rs](vetterd/src/runloop/status_item.rs))
+- [x] Popover listing pending requests with §8.5 rendered summary
+      and detail view, plus per-card Approve / Reject
+      ([vetterd/src/runloop/popover.rs](vetterd/src/runloop/popover.rs))
+- [x] Notification body click-through routes to the popover
+      (focused-id auto-scroll); request stays pending until the user
+      Approves / Rejects in the popover
+- [x] Banner removed via `removeDeliveredNotificationsWithIdentifiers:`
+      on every resolve path so Notification Center stays clean
 - [ ] `Allowlist…` action (Phase 5 territory anyway)
-- [ ] Popover listing pending requests with §8.5 rendered summary
-      and detail view
 - [ ] Notification coalescing into menu-bar after the first banner
 - [ ] Real Developer-ID signing + notarisation pipeline; Homebrew tap
 - [ ] Full §7 cross-cutting security property suite passes
 - [ ] E2E happy-path + deny-path tests against the signed bundle
-      (PR 1 covers them via `MockNotifier`; signed-app E2E waits on
+      (PR 1/2 cover them via `MockNotifier`; signed-app E2E waits on
       the notarisation pipeline)
 
 ## Phase 5 — Pattern suggestions  `[ ] not started`

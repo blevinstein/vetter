@@ -127,6 +127,40 @@ fn prompt_summary_carries_command_verb_and_target() {
     assert!(!s.force_prompt);
 }
 
+/// The §8.5 detail string the macOS popover renders is computed by
+/// the daemon at submit time and threaded through both the
+/// `PendingQueue` and the `MockNotifier` wire payload. This test
+/// pins that contract so a regression in either path (the renderer
+/// failing silently, or the queue dropping `rendered`) shows up
+/// without a manual smoke test.
+#[test]
+fn rendered_detail_reaches_the_notifier_payload() {
+    let d = Daemon::spawn(ALLOWLIST);
+    d.ui.set_default(MockResponse::allow("approved"));
+    let req = make_req(curl_get("https://api.example.test/v1/users"), false);
+    round_trip(&d.socket, &req);
+
+    let summaries = d.ui.wait_for_observed(1, Duration::from_secs(2));
+    let s = &summaries[0];
+    assert!(
+        !s.rendered.is_empty(),
+        "rendered detail should not be empty for a prompt-class request"
+    );
+    // The renderer's §8.5 layout always echoes the parsed command
+    // plus the primary target; pin those rather than the entire
+    // string so layout tweaks don't churn this test.
+    assert!(
+        s.rendered.contains("curl"),
+        "rendered detail should mention `curl`: {}",
+        s.rendered
+    );
+    assert!(
+        s.rendered.contains("api.example.test"),
+        "rendered detail should include the target host: {}",
+        s.rendered
+    );
+}
+
 /// On daemon shutdown, any worker still blocked on the pending queue
 /// must wake and write a deny-frame — agents wired to `vet` rely on
 /// "the daemon never lets vet hang forever" to keep their TUIs

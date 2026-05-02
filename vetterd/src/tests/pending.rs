@@ -1,6 +1,7 @@
 //! Tests for [`crate::pending`]. Layout convention is described in
 //! `AGENTS.md`.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -95,6 +96,85 @@ fn pending_summaries_lists_outstanding_entries() {
         .collect();
     targets.sort();
     assert_eq!(targets, vec!["https://a.test/", "https://b.test/"]);
+}
+
+#[test]
+fn pending_entries_carries_rendered_detail() {
+    let q = PendingQueue::new();
+    let _rx_a = q.submit_with_render(summary("a", "https://a.test/"), "rendered-a".into());
+    let _rx_b = q.submit(summary("b", "https://b.test/"));
+    let mut got: Vec<(String, String)> = q
+        .pending_entries()
+        .into_iter()
+        .map(|(s, r)| (s.id, r))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("a".into(), "rendered-a".into()),
+            ("b".into(), String::new()),
+        ]
+    );
+}
+
+#[test]
+fn change_listener_fires_on_submit_and_resolve() {
+    let q = Arc::new(PendingQueue::new());
+    let count = Arc::new(AtomicUsize::new(0));
+    let count2 = Arc::clone(&count);
+    q.set_change_listener(move || {
+        count2.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let _rx = q.submit(summary("a", "https://a.test/"));
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+
+    let _rx = q.submit(summary("b", "https://b.test/"));
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+
+    assert!(q.resolve("a", PendingDecision::allow("ok")));
+    assert_eq!(count.load(Ordering::SeqCst), 3);
+
+    // Resolving an unknown id must NOT fire the listener.
+    assert!(!q.resolve("ghost", PendingDecision::deny("nope")));
+    assert_eq!(count.load(Ordering::SeqCst), 3);
+
+    q.cancel_all();
+    assert_eq!(count.load(Ordering::SeqCst), 4);
+
+    // cancel_all on an empty queue is a no-op for the listener.
+    q.cancel_all();
+    assert_eq!(count.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn change_listener_does_not_deadlock_under_contention() {
+    // Listener that re-enters the queue's read-only API: a real
+    // implementation (the popover refresh path) does exactly this
+    // — it calls `pending_entries` from inside the callback. The
+    // queue must have released its lock before invoking the listener.
+    let q = Arc::new(PendingQueue::new());
+    let q_for_cb = Arc::clone(&q);
+    q.set_change_listener(move || {
+        let _entries = q_for_cb.pending_entries();
+    });
+
+    let mut handles = Vec::new();
+    for i in 0..16 {
+        let q = Arc::clone(&q);
+        handles.push(thread::spawn(move || {
+            let id = format!("id-{i}");
+            let _rx = q.submit(summary(&id, "https://a.test/"));
+            // small jitter to interleave threads
+            thread::sleep(Duration::from_millis(2));
+            q.resolve(&id, PendingDecision::allow("ok"));
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(q.len(), 0);
 }
 
 #[test]

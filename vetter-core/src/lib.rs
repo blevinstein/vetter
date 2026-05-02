@@ -6,9 +6,13 @@
 //! - [`matcher`] — rule matcher (Phase 2; placeholder until then).
 //! - [`signals`] — generic risk-signal analyzer.
 //! - [`wire`]    — JSON wire types (Phase 3; placeholder until then).
+//! - [`paths`]   — shared socket / pidfile resolution used by both
+//!   `vet` and `vetterd`.
 
 pub mod matcher;
 pub mod parsers;
+pub mod paths;
+pub mod pidfile;
 pub mod render;
 pub mod signals;
 pub mod wire;
@@ -19,6 +23,7 @@ pub use parsers::{
     HttpRequest, NetworkOpen, ParseError, ParsedCommand, ProcessSpawn, Sha256, StdinHandle,
     TlsPolicy, WriteSource,
 };
+pub use paths::{default_pidfile_path, default_socket_path};
 pub use render::{AnsiWriter, DefaultRenderer, PlainWriter, Renderer, Style, StyledWriter};
 pub use signals::{analyze, RiskSignal, SignalKind};
 pub use wire::{

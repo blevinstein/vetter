@@ -28,6 +28,7 @@ fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
 fn vetterd_starts_listens_and_cleans_up_on_sigterm() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("smoke.sock");
+    let pidfile = dir.path().join("smoke.pid");
     let audit = dir.path().join("audit.log");
     let allow = dir.path().join("allow.yaml");
     std::fs::write(&allow, "rules: []\ndeny: []\n").unwrap();
@@ -35,6 +36,7 @@ fn vetterd_starts_listens_and_cleans_up_on_sigterm() {
     let bin = assert_cmd::cargo::cargo_bin("vetterd");
     let mut child = Command::new(bin)
         .env("VETTERD_SOCKET", &socket)
+        .env("VETTERD_PIDFILE", &pidfile)
         .env("VETTER_AUDIT_LOG", &audit)
         .env("VETTER_ALLOWLIST", &allow)
         .stdout(Stdio::null())
@@ -46,6 +48,24 @@ fn vetterd_starts_listens_and_cleans_up_on_sigterm() {
         wait_for_socket(&socket, Duration::from_secs(5)),
         "socket never appeared at {}",
         socket.display()
+    );
+    assert!(
+        pidfile.exists(),
+        "pidfile must exist while daemon is running ({})",
+        pidfile.display()
+    );
+    let pid_body = std::fs::read_to_string(&pidfile).expect("read pidfile");
+    let recorded_pid: u32 = pid_body
+        .lines()
+        .next()
+        .expect("pidfile non-empty")
+        .trim()
+        .parse()
+        .expect("pidfile pid line parses as u32");
+    assert_eq!(
+        recorded_pid,
+        child.id(),
+        "pidfile records the wrong pid: {pid_body:?}"
     );
 
     unsafe {
@@ -73,5 +93,9 @@ fn vetterd_starts_listens_and_cleans_up_on_sigterm() {
     assert!(
         !socket.exists(),
         "socket file should be removed on clean shutdown"
+    );
+    assert!(
+        !pidfile.exists(),
+        "pidfile should be removed on clean shutdown"
     );
 }

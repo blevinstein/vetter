@@ -99,7 +99,7 @@ Phase 3a (spine) landed; remaining boxes are Phase 3b polish.
       flushed before decision returns
 - [x] Stub UI for prompt-class decisions: auto-deny with reason
       `"no UI yet"`
-- [ ] `vet daemon start|stop|status` controls supervise `vetterd`
+- [x] `vet daemon start|stop|status` controls supervise `vetterd`
 - [ ] Atomic allowlist writes (temp + rename); §5.3 crash test
 - [x] §4.9 fail-closed test (no exec on deny / missing socket)
 - [ ] §6.3 protocol fuzzing entry

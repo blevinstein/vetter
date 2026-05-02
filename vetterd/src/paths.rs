@@ -1,26 +1,17 @@
 //! Default path resolution for the daemon.
 //!
-//! These are the paths the binary uses when no `VETTERD_SOCKET` /
-//! `VETTER_AUDIT_LOG` env override is set. Kept in their own module so
-//! tests can drive the resolution without spawning the binary.
+//! The socket and pidfile defaults live in [`vetter_core::paths`] so
+//! both `vet` and `vetterd` resolve identically. The audit-log path
+//! is daemon-only and stays here.
 
 use std::path::PathBuf;
+
+pub use vetter_core::paths::{default_pidfile_path, default_socket_path};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PathError {
     #[error("$HOME is not set; cannot resolve audit log path")]
     HomeUnset,
-}
-
-/// `$VETTERD_SOCKET` if set, else `$TMPDIR/vetter.sock`, else
-/// `/tmp/vetter.sock`. Resolution mirrors what `vet` does on the
-/// client side.
-pub fn default_socket_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("VETTERD_SOCKET") {
-        return PathBuf::from(p);
-    }
-    let dir = std::env::var_os("TMPDIR").unwrap_or_else(|| std::ffi::OsString::from("/tmp"));
-    PathBuf::from(dir).join("vetter.sock")
 }
 
 /// `$VETTER_AUDIT_LOG` if set, else

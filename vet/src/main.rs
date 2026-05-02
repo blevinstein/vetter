@@ -1,10 +1,8 @@
 //! `vet` — primary CLI entry point.
 //!
-//! Phase 0 lays in the full clap subcommand surface from
-//! `plans/Overview.md` §4 so later phases can fill in handlers without
-//! reshaping the CLI. Only `doctor` runs real logic; everything else
-//! exits 78 (config error per §4 conventions) with a `not implemented`
-//! message that names the roadmap phase that will land it.
+//! Lays out the full clap subcommand surface from `plans/Overview.md`
+//! §4 and dispatches to the per-command handler modules. Each handler
+//! returns its own `ExitCode` so this file stays a thin router.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -13,12 +11,10 @@ use clap::{Parser, Subcommand};
 
 mod allow;
 mod color;
+mod daemon;
 mod doctor;
 mod explain;
 mod wrap;
-
-/// Exit code for "config / not yet implemented" per `plans/Overview.md` §4.
-const EXIT_CONFIG: u8 = 78;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -131,7 +127,11 @@ fn main() -> ExitCode {
                 allow::list(scope, history, cli.allowlist.as_deref())
             }
         },
-        Command::Daemon { .. } => not_implemented("`vet daemon`", "Phase 3b"),
+        Command::Daemon { action } => match action {
+            DaemonAction::Start => daemon::start(),
+            DaemonAction::Stop => daemon::stop(),
+            DaemonAction::Status => daemon::status(),
+        },
         Command::Wrap(argv) => {
             if cli.explain {
                 return explain::run(argv, cli.quiet, cli.allowlist.as_deref());
@@ -139,9 +139,4 @@ fn main() -> ExitCode {
             wrap::run(argv, cli.dry_run, cli.quiet, cli.allowlist.as_deref())
         }
     }
-}
-
-fn not_implemented(what: &str, phase: &str) -> ExitCode {
-    eprintln!("vet: {what} is not implemented yet (lands in {phase}; see plans/Overview.md §11).");
-    ExitCode::from(EXIT_CONFIG)
 }

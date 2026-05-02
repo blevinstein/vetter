@@ -18,7 +18,7 @@
 use std::io::{self, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitCode};
 
 use vetter_core::matcher::{self, LoadError};
@@ -27,7 +27,9 @@ use vetter_core::wire::{
     new_request_id, read_decision, write_frame, VetRequest, WireDecision, WireError,
     PROTOCOL_VERSION,
 };
-use vetter_core::{analyze, AnsiWriter, DefaultRenderer, ParsedCommand, PlainWriter, Renderer};
+use vetter_core::{
+    analyze, default_socket_path, AnsiWriter, DefaultRenderer, ParsedCommand, PlainWriter, Renderer,
+};
 
 use crate::color::{self, Style};
 
@@ -108,7 +110,7 @@ pub fn run(
         force_prompt: dry_run,
     };
 
-    let socket_path = resolve_socket_path();
+    let socket_path = default_socket_path();
     let dec = match round_trip(&socket_path, &req) {
         Ok(d) => d,
         Err(e) => {
@@ -156,17 +158,6 @@ fn round_trip(
     read_decision(&mut s, &req.id)
 }
 
-/// `$VETTERD_SOCKET` if set, else `$TMPDIR/vetter.sock`, else
-/// `/tmp/vetter.sock`. Mirrors the resolution `vetterd` uses on the
-/// listener side so client + daemon agree without a config file.
-fn resolve_socket_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("VETTERD_SOCKET") {
-        return PathBuf::from(p);
-    }
-    let dir = std::env::var_os("TMPDIR").unwrap_or_else(|| std::ffi::OsString::from("/tmp"));
-    PathBuf::from(dir).join("vetter.sock")
-}
-
 fn detect_agent(env: &EnvSnapshot) -> Option<String> {
     // Best-effort sniff. Each agent harness sets at least one
     // distinctive env var; we just return the first that hits.
@@ -200,7 +191,7 @@ fn daemon_error(socket: &Path, e: &WireError) -> String {
             ) =>
         {
             format!(
-                "vetterd is not reachable at {}. Start it with `vetterd` (Phase 3b will add `vet daemon start`).",
+                "vetterd is not reachable at {}. Start it with `vet daemon start`.",
                 socket.display()
             )
         }

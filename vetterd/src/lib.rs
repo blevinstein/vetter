@@ -24,8 +24,10 @@ pub mod socket;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use vetter_core::matcher::{load_default, AllowlistStore};
+use vetter_core::pidfile;
 use vetter_core::wire::{
     new_request_id, read_request, write_frame, VetDecision, WireError, PROTOCOL_VERSION,
 };
@@ -49,6 +51,8 @@ pub enum DaemonError {
     Socket(#[source] std::io::Error),
     #[error("audit log: {0}")]
     Audit(#[source] std::io::Error),
+    #[error("pidfile: {0}")]
+    Pidfile(#[source] std::io::Error),
     #[error("allowlist: {0}")]
     Allowlist(#[from] vetter_core::matcher::LoadError),
 }
@@ -67,6 +71,15 @@ pub fn run(
     let audit = Arc::new(AuditLog::open(&audit_path).map_err(DaemonError::Audit)?);
     let listener = socket::listen(&socket_path).map_err(DaemonError::Socket)?;
 
+    // Pidfile is co-located with the socket by default. Written
+    // *after* the listener binds so a pidfile's existence implies the
+    // socket is also live; removed alongside the socket on shutdown so
+    // `vet daemon status` never sees a stale pid + missing socket
+    // pair on a clean exit.
+    let pidfile_path = paths::default_pidfile_path(&socket_path);
+    pidfile::write(&pidfile_path, std::process::id(), SystemTime::now())
+        .map_err(DaemonError::Pidfile)?;
+
     let ctx = Arc::new(Context {
         socket_path: socket_path.clone(),
         audit,
@@ -80,9 +93,10 @@ pub fn run(
 
     let result = accept_loop(listener, ctx, shutdown);
 
-    // Best-effort cleanup. If the file isn't ours (someone replaced
-    // it under us) we still don't want to crash on shutdown.
+    // Best-effort cleanup. If either file isn't ours (someone
+    // replaced it under us) we still don't want to crash on shutdown.
     let _ = std::fs::remove_file(&socket_path);
+    pidfile::remove(&pidfile_path);
 
     result
 }

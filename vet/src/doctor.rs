@@ -7,9 +7,10 @@
 //! signal, not the exit code, since `vet doctor` is run interactively.
 
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
+
+use vetter_core::{default_pidfile_path, default_socket_path};
 
 pub fn run() -> ExitCode {
     let names = vetter_core::parsers::registered_names();
@@ -19,10 +20,17 @@ pub fn run() -> ExitCode {
         names.join(", ")
     };
 
-    let socket_path = resolve_socket_path();
+    let socket_path = default_socket_path();
     let socket_status = match probe_socket(&socket_path) {
         Ok(()) => format!("reachable ({})", socket_path.display()),
         Err(e) => format!("not reachable at {}: {e}", socket_path.display()),
+    };
+
+    let pidfile_path = default_pidfile_path(&socket_path);
+    let pidfile_status = if pidfile_path.exists() {
+        format!("present ({})", pidfile_path.display())
+    } else {
+        format!("absent ({})", pidfile_path.display())
     };
 
     println!("vet doctor (vetter-core {})", vetter_core::version());
@@ -31,17 +39,10 @@ pub fn run() -> ExitCode {
         "  socket ............. path = {} (override: $VETTERD_SOCKET)",
         socket_path.display()
     );
+    println!("  pidfile ............ {pidfile_status}");
     println!("  parsers registered . {}  ({summary})", names.len());
     println!("  code signing ....... not implemented (Phase 4; see plans/Overview.md §11)");
     ExitCode::SUCCESS
-}
-
-fn resolve_socket_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("VETTERD_SOCKET") {
-        return PathBuf::from(p);
-    }
-    let dir = std::env::var_os("TMPDIR").unwrap_or_else(|| std::ffi::OsString::from("/tmp"));
-    PathBuf::from(dir).join("vetter.sock")
 }
 
 fn probe_socket(p: &std::path::Path) -> std::io::Result<()> {

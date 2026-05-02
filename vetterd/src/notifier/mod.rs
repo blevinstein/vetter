@@ -19,11 +19,14 @@
 //!   workhorse for automated coverage.
 //!
 //! Both implementations are constructed at daemon startup based on the
-//! `VETTERD_NOTIFIER` env variable (`mac` default, `mock` for tests).
+//! `VETTERD_NOTIFIER` env variable. The default on macOS is `mac` —
+//! the daemon expects to run inside a code-signed `Vetter.app` bundle
+//! and refuses to start otherwise. Tests and non-macOS targets opt
+//! into `noop` (or `mock`) explicitly.
 
 use std::sync::Arc;
 
-use crate::pending::{PendingQueue, PromptSummary};
+use crate::pending::{NotifyHint, PendingQueue, PromptSummary};
 use crate::PlatformDriver;
 
 #[cfg(target_os = "macos")]
@@ -42,7 +45,12 @@ pub trait Notifier: Send + Sync {
     /// or post to a runloop; what it must not do is call
     /// [`PendingQueue::submit`] (already done by the caller) or block
     /// the calling thread waiting for the user.
-    fn notify(&self, summary: &PromptSummary);
+    ///
+    /// `hint` carries advice computed inside the queue's critical
+    /// section. The Mac notifier consumes
+    /// [`NotifyHint::was_empty_before`] to coalesce banner spam; the
+    /// mock and noop implementations ignore it.
+    fn notify(&self, summary: &PromptSummary, hint: NotifyHint);
 
     /// Optional graceful shutdown hook. The default is a no-op; the
     /// mock implementation overrides this so its background reader
@@ -61,21 +69,27 @@ pub fn boxed<N: Notifier + 'static>(n: N) -> Arc<dyn Notifier> {
 /// itself plus the [`PlatformDriver`] the caller should run on the
 /// main thread.
 ///
-/// - `mac` (the bundle's launchd plist sets this) → [`mac::MacNotifier`]
-///   + [`PlatformDriver::AppKit`].
-/// - `mock` → [`mock::MockNotifier`]; requires `VETTERD_NOTIFIER_SOCKET`.
-///   Driver is [`PlatformDriver::None`] (accept loop on main thread).
-/// - `noop` → [`NoopNotifier`]. Driver is [`PlatformDriver::None`].
+/// - `mac` (default on macOS) yields [`mac::MacNotifier`] +
+///   [`PlatformDriver::AppKit`]. Refuses to install if the
+///   executable is not inside a code-signed `.app` bundle (see
+///   [`mac::MacNotifier::install`]).
+/// - `mock` yields [`mock::MockNotifier`]; requires
+///   `VETTERD_NOTIFIER_SOCKET`. Driver is [`PlatformDriver::None`]
+///   (accept loop on main thread).
+/// - `noop` yields [`NoopNotifier`]. Driver is
+///   [`PlatformDriver::None`].
 ///
-/// Default when unset: `noop` (so existing tests / non-bundle
-/// invocations don't accidentally try to launch AppKit, which would
-/// crash a headless CI worker). The bundle's launchd plist sets
-/// `VETTERD_NOTIFIER=mac` explicitly.
+/// Default when unset: `mac` on macOS, `noop` everywhere else. We
+/// fail closed: a daemon that can't bring up its UI crashes at
+/// startup so the operator gets an exit-78 instead of a silently
+/// half-running daemon that hangs every prompt-class request. Tests
+/// and non-bundle dev workflows on macOS must set
+/// `VETTERD_NOTIFIER=noop` (or `mock`) explicitly.
 pub fn build_from_env(
     queue: Arc<PendingQueue>,
 ) -> Result<(Arc<dyn Notifier>, PlatformDriver), NotifierBuildError> {
     let kind = std::env::var("VETTERD_NOTIFIER").ok();
-    let kind = kind.as_deref().unwrap_or("noop");
+    let kind = kind.as_deref().unwrap_or(default_kind());
     match kind {
         "mock" => {
             let sock = std::env::var_os("VETTERD_NOTIFIER_SOCKET").ok_or(
@@ -101,6 +115,17 @@ pub fn build_from_env(
     }
 }
 
+/// Default `VETTERD_NOTIFIER` value when the env var is unset.
+/// macOS expects the bundled UI; every other target falls back to
+/// `noop` so non-mac CI smoke checks still come up.
+const fn default_kind() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "mac"
+    } else {
+        "noop"
+    }
+}
+
 /// Errors returned by [`from_env`]. `vetterd::main` translates these
 /// into an exit-78 message.
 #[derive(Debug, thiserror::Error)]
@@ -122,5 +147,5 @@ pub enum NotifierBuildError {
 pub struct NoopNotifier;
 
 impl Notifier for NoopNotifier {
-    fn notify(&self, _summary: &PromptSummary) {}
+    fn notify(&self, _summary: &PromptSummary, _hint: NotifyHint) {}
 }

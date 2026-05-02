@@ -39,6 +39,12 @@ fn vetterd_starts_listens_and_cleans_up_on_sigterm() {
         .env("VETTERD_PIDFILE", &pidfile)
         .env("VETTER_AUDIT_LOG", &audit)
         .env("VETTER_ALLOWLIST", &allow)
+        // Smoke test only cares about lifecycle (bind / pidfile /
+        // SIGTERM / cleanup). The macOS-default `mac` notifier
+        // would refuse to start because the cargo-built binary
+        // doesn't live in a `.app` bundle; pin `noop` so the test
+        // exercises the same accept-loop path on every platform.
+        .env("VETTERD_NOTIFIER", "noop")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

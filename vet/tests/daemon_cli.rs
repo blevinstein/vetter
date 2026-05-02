@@ -50,7 +50,15 @@ impl Scratch {
         cmd.env("VETTERD_BIN", &vetterd_bin)
             .env("VETTERD_PIDFILE", &self.pidfile)
             .env("VETTER_AUDIT_LOG", &self.audit)
-            .env("VETTER_ALLOWLIST", &self.allowlist);
+            .env("VETTER_ALLOWLIST", &self.allowlist)
+            // `vet daemon start` inherits the parent process env when
+            // it spawns `vetterd`, so this propagates through to the
+            // daemon. Without it the macOS-default `mac` notifier
+            // would refuse the cargo-built binary (not inside a
+            // `.app`) and `daemon start` would report "vetterd
+            // exited before binding socket". These tests only
+            // exercise the supervision plumbing, not the UI.
+            .env("VETTERD_NOTIFIER", "noop");
         cmd
     }
 }

@@ -51,7 +51,7 @@ use vetter_core::wire::{
 use vetter_core::{analyze, ParsedCommand};
 
 pub use audit::{AuditEntry, AuditLog};
-pub use pending::{PendingDecision, PendingQueue, PromptSummary};
+pub use pending::{NotifyHint, PendingDecision, PendingQueue, PromptSummary};
 pub use policy::{evaluate, PolicyOutcome};
 
 /// Per-process context shared by every connection worker.
@@ -334,8 +334,8 @@ fn resolve_outcome(
             // bytes safe to drop into an NSTextView; the popover
             // does its own monospaced styling.
             let rendered = render_detail(parsed);
-            let rx = ctx.pending.submit_with_render(summary.clone(), rendered);
-            ctx.notifier.notify(&summary);
+            let (rx, hint) = ctx.pending.submit_with_render(summary.clone(), rendered);
+            ctx.notifier.notify(&summary, hint);
             match rx.recv() {
                 Ok(dec) => (dec.decision, dec.reason),
                 Err(_) => {

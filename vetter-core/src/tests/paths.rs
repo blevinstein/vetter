@@ -136,3 +136,34 @@ fn pidfile_falls_back_to_tmpdir_when_socket_has_no_parent() {
         PathBuf::from("/scratch/vetter.pid")
     );
 }
+
+#[test]
+fn audit_env_override_wins() {
+    let _g = lock();
+    let _e = Guard::set("VETTER_AUDIT_LOG", "/explicit/audit.log");
+    assert_eq!(
+        default_audit_path().unwrap(),
+        PathBuf::from("/explicit/audit.log")
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn audit_defaults_to_library_logs_on_macos() {
+    let _g = lock();
+    let _e = Guard::unset("VETTER_AUDIT_LOG");
+    let _h = Guard::set("HOME", "/Users/alice");
+    assert_eq!(
+        default_audit_path().unwrap(),
+        PathBuf::from("/Users/alice/Library/Logs/vetter/audit.log")
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn audit_returns_home_unset_when_home_is_missing_on_macos() {
+    let _g = lock();
+    let _e = Guard::unset("VETTER_AUDIT_LOG");
+    let _h = Guard::unset("HOME");
+    assert!(matches!(default_audit_path(), Err(PathError::HomeUnset)));
+}

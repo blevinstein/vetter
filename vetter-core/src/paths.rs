@@ -1,15 +1,22 @@
 //! Default path resolution shared between `vet` and `vetterd`.
 //!
-//! Both binaries need to agree on where the Unix socket and the
-//! supervisor pidfile live; previously each had its own copy of the
-//! resolution logic. Centralising here means `vet daemon start`,
-//! `vet daemon status`, and `vetterd` itself read the exact same
-//! environment.
-//!
-//! The audit-log path remains in `vetterd::paths` because only the
-//! daemon ever needs it.
+//! All three runtime files (socket, pidfile, audit log) live here so
+//! `vet`, `vetterd`, and `vet doctor` resolve identically. Previously
+//! the audit path lived in `vetterd::paths` (daemon-only); `vet
+//! doctor` now needs it too to validate the audit-dir-writable check
+//! without the daemon, so the resolution moved up.
 
 use std::path::{Path, PathBuf};
+
+/// Errors raised resolving paths that depend on environment we
+/// can't fall back from. Today only `default_audit_path` returns
+/// this — the socket / pidfile resolvers always succeed because they
+/// have a `$TMPDIR` last-resort fallback.
+#[derive(Debug, thiserror::Error)]
+pub enum PathError {
+    #[error("$HOME is not set; cannot resolve audit log path")]
+    HomeUnset,
+}
 
 /// Resolution order for the daemon socket:
 /// 1. `$VETTERD_SOCKET` if set (test/install override).
@@ -99,6 +106,38 @@ fn platform_runtime_dir() -> Option<PathBuf> {
         return None;
     }
     Some(xdg.join("vetter"))
+}
+
+/// `$VETTER_AUDIT_LOG` if set, else
+/// `~/Library/Logs/vetter/audit.log` on macOS,
+/// `$XDG_STATE_HOME/vetter/audit.log` (default
+/// `~/.local/state/vetter/audit.log`) elsewhere.
+pub fn default_audit_path() -> Result<PathBuf, PathError> {
+    if let Some(p) = std::env::var_os("VETTER_AUDIT_LOG") {
+        return Ok(PathBuf::from(p));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME").ok_or(PathError::HomeUnset)?;
+        Ok(PathBuf::from(home)
+            .join("Library/Logs/vetter")
+            .join("audit.log"))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(state) = std::env::var_os("XDG_STATE_HOME") {
+            let p = PathBuf::from(state);
+            if !p.as_os_str().is_empty() {
+                return Ok(p.join("vetter").join("audit.log"));
+            }
+        }
+        let home = std::env::var_os("HOME").ok_or(PathError::HomeUnset)?;
+        Ok(PathBuf::from(home)
+            .join(".local/state/vetter")
+            .join("audit.log"))
+    }
 }
 
 #[cfg(test)]

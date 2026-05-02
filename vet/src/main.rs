@@ -117,7 +117,7 @@ fn main() -> ExitCode {
     vetter_core::parsers::register_builtins();
     let cli = Cli::parse();
     match cli.command {
-        Command::Doctor => doctor::run(),
+        Command::Doctor => doctor::run(cli.allowlist.as_deref()),
         Command::Allow { action } => match action {
             AllowAction::Add { pattern, scope } => {
                 allow::add(&pattern, scope, cli.allowlist.as_deref())

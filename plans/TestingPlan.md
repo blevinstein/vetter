@@ -354,11 +354,51 @@ Integration tests that spawn the `vet` binary:
 
 ### 4.7 `vet doctor`
 
-- Reports daemon running/stopped.
-- Reports socket path and whether it is accessible.
-- Reports which parsers are registered.
-- Reports code-signing status (macOS).
-- Exits 0 if all checks pass, non-zero if any check fails.
+Each check yields one of `OK` / `WARN` / `ERROR` / `INFO` / `SKIP`.
+`vet doctor` exits `78` if any check is `ERROR`, else `0`. `WARN`
+does not change the exit code (so the developer's daily `vet doctor`
+stays exit-0 if the daemon is healthy but, say, the audit dir has
+slightly loose perms).
+
+Required rows, in order:
+
+- **daemon** — walks pidfile → live-PID → socket → peer-cred:
+  - both pidfile + socket absent → `INFO not running`.
+  - socket present without pidfile → `ERROR orphan socket`.
+  - pidfile parses but PID is dead (`kill(pid, 0) == ESRCH`) →
+    `ERROR stale pidfile`.
+  - pidfile + live PID but socket unreachable →
+    `ERROR pidfile points at live pid but socket is unreachable`.
+  - all of the above plus peer-cred mismatch on `connect()` →
+    `ERROR socket peer uid=<N>, expected uid=<M>`.
+  - all checks pass → `OK pid=<N>, uptime=<…>, peer_uid=<N>`.
+- **socket** — `metadata.mode() & 0o777 == 0o600` and owner is the
+  current uid; mode mismatch is `WARN`, foreign owner is `ERROR`.
+  `SKIP` if absent.
+- **socket parent dir** — same shape, expected mode `0o700`.
+  Foreign owner is `ERROR` (the parent dir is the cross-user
+  containment boundary). `INFO` if absent (will be created on next
+  `vet daemon start`).
+- **pidfile** — `OK present` / `INFO absent`; the substantive errors
+  are already raised by the daemon row.
+- **audit log** — `OpenOptions::append + create` succeeds → `OK`,
+  else `ERROR <os error>`.  `vet doctor` does **not** create parent
+  directories — that's the daemon's job; missing parents should
+  surface as a clear error.
+- **allowlist (user)** — `SKIP` if absent, `OK <N rules, M deny>` if
+  parses, `ERROR` with path + parse error otherwise.
+- **allowlist (project)** — `SKIP` if no `.vet/allowlist.yaml` is
+  found walking up from cwd; otherwise same shape as user.
+- **allowlist (override)** — only printed when `--allowlist <path>`
+  was given. Same shape as user.
+- **parsers registered** — `OK <count> (<names>)`. An empty registry
+  is `ERROR` (binary likely misbuilt).
+- **code signing** — `SKIP` until the notarisation pipeline lands.
+
+Test matrix lives in [`vet/tests/doctor.rs`](../vet/tests/doctor.rs):
+clean state, real running daemon, stale pidfile, orphan socket,
+loose parent perms, malformed allowlist override, unwritable audit
+dir.
 
 ### 4.8 `vet daemon start/stop/status`
 

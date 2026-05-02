@@ -152,7 +152,10 @@ and notarised distribution are still deferred.
 - [x] Banner removed via `removeDeliveredNotificationsWithIdentifiers:`
       on every resolve path so Notification Center stays clean
 - [ ] `Allowlist…` action (Phase 5 territory anyway)
-- [ ] Notification coalescing into menu-bar after the first banner
+- [x] Notification coalescing into menu-bar after the first banner
+      ([vetterd/src/notifier/mac.rs](vetterd/src/notifier/mac.rs)
+      consumes `NotifyHint::was_empty_before` from
+      [vetterd/src/pending.rs](vetterd/src/pending.rs))
 - [ ] Real Developer-ID signing + notarisation pipeline; Homebrew tap
 - [ ] Full §7 cross-cutting security property suite passes
 - [ ] E2E happy-path + deny-path tests against the signed bundle
@@ -242,8 +245,11 @@ machine". Per-threat detail in
       enum variants rejected) in `plans/Overview.md` §3
 - [ ] Hash the loaded ruleset; record digest in each audit row so
       decisions remain replayable after `allowlist.yaml` edits
-- [ ] Expand `vet doctor` checks: socket perms, audit dir writable,
+- [x] Expand `vet doctor` checks: socket perms, audit dir writable,
       allowlist parses, daemon reachable
+      ([vet/src/doctor.rs](vet/src/doctor.rs) walks the
+      pidfile → live-PID → socket → peer-cred state machine and
+      reports OK/WARN/ERROR/INFO/SKIP per row; exit 78 on any error)
 - [ ] CI: `cargo-deny check` (advisories, bans, sources, licenses)
       and `cargo-audit`
 - [ ] Forward stdin bytes for parsers that read stdin (curl `-d @-`)

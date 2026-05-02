@@ -44,7 +44,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use vetter_core::wire::WireDecision;
 
-use crate::pending::{PendingDecision, PendingQueue, PromptSummary};
+use crate::pending::{NotifyHint, PendingDecision, PendingQueue, PromptSummary};
 
 use super::Notifier;
 
@@ -131,7 +131,11 @@ fn io_err<E: std::fmt::Display>(e: E) -> std::io::Error {
 }
 
 impl Notifier for MockNotifier {
-    fn notify(&self, summary: &PromptSummary) {
+    fn notify(&self, summary: &PromptSummary, _hint: NotifyHint) {
+        // The mock surfaces every prompt unconditionally so tests
+        // see one observation per submit; coalescing is a Mac-only
+        // UX detail and would make `daemon_e2e_prompt.rs` flaky
+        // under concurrent prompts.
         let socket = self.socket.clone();
         let queue = Arc::clone(&self.queue);
         let summary = summary.clone();

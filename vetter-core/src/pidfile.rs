@@ -87,6 +87,28 @@ pub fn remove(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
+/// `kill(pid, 0)` liveness probe: returns `true` if a signal *could*
+/// be delivered to `pid` — i.e. the process exists and the caller has
+/// permission to signal it. Returns `false` on `ESRCH` ("no such
+/// process") and conservatively returns `true` on other errno values
+/// (e.g. `EPERM`, which means the process is alive but owned by
+/// another uid). Used by `vet daemon stop|status` and `vet doctor` to
+/// distinguish a stale pidfile from a live daemon.
+pub fn is_pid_alive(pid: u32) -> bool {
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    let rc = unsafe { kill(pid as i32, 0) };
+    if rc == 0 {
+        return true;
+    }
+    let err = io::Error::last_os_error();
+    // ESRCH (3 on Linux + macOS) is the only "definitely dead" answer;
+    // every other errno (EPERM, EINVAL, …) means we can't say the
+    // process is gone, so keep the caller honest by returning true.
+    err.raw_os_error() != Some(3)
+}
+
 fn invalid(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("pidfile: {msg}"))
 }

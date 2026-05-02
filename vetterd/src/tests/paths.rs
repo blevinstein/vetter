@@ -1,5 +1,9 @@
-//! Tests for [`crate::paths`]. Layout convention is described in
-//! `AGENTS.md`.
+//! Tests for [`crate::paths`]. The path resolvers themselves live
+//! in `vetter_core::paths` (with a full test suite there); this
+//! module asserts the daemon's re-exports stay aligned with the
+//! environment the daemon binary actually reads from.
+//!
+//! Layout convention is described in `AGENTS.md`.
 
 use super::*;
 

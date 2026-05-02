@@ -182,3 +182,78 @@ fn shutdown_reason_is_a_human_string() {
     // Lock the constant down: tests across the workspace assert on it.
     assert!(SHUTDOWN_REASON.contains("shut"));
 }
+
+/// Pins the contract the macOS notifier coalescing relies on: the
+/// hint returned by `submit_with_render` is `was_empty_before == true`
+/// only for the request that takes the queue out of the empty state.
+#[test]
+fn submit_marks_first_entry_as_empty_before() {
+    let q = PendingQueue::new();
+
+    let (rx_a, hint_a) = q.submit_with_render(summary("a", "https://a.test/"), "rendered-a".into());
+    assert!(hint_a.was_empty_before, "first submit must be `first`");
+
+    let (_rx_b, hint_b) =
+        q.submit_with_render(summary("b", "https://b.test/"), "rendered-b".into());
+    assert!(
+        !hint_b.was_empty_before,
+        "second submit during a burst must coalesce"
+    );
+
+    // Drain both entries so the queue is empty again, then confirm
+    // the next submit is a fresh "first".
+    assert!(q.resolve("a", PendingDecision::allow("ok-a")));
+    let _ = rx_a.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(q.resolve("b", PendingDecision::deny("ok-b")));
+    assert!(q.is_empty());
+
+    let (_rx_c, hint_c) =
+        q.submit_with_render(summary("c", "https://c.test/"), "rendered-c".into());
+    assert!(
+        hint_c.was_empty_before,
+        "post-drain submit must be `first` again"
+    );
+}
+
+/// Race regression: when N threads call `submit_with_render`
+/// concurrently against an initially-empty queue, exactly one
+/// observes `was_empty_before == true`. Without the
+/// "compute-hint-inside-the-critical-section" property the value
+/// is racy and the macOS notifier could either drop the only
+/// banner (both threads see "not empty") or emit two (both threads
+/// see "empty").
+#[test]
+fn concurrent_submits_have_exactly_one_first() {
+    const THREADS: usize = 32;
+
+    let q = Arc::new(PendingQueue::new());
+    let firsts = Arc::new(AtomicUsize::new(0));
+    let start = Arc::new(std::sync::Barrier::new(THREADS));
+
+    let mut handles = Vec::new();
+    for i in 0..THREADS {
+        let q = Arc::clone(&q);
+        let firsts = Arc::clone(&firsts);
+        let start = Arc::clone(&start);
+        handles.push(thread::spawn(move || {
+            // Maximise contention: every thread parks at the
+            // barrier, then races into the queue's mutex together.
+            start.wait();
+            let id = format!("id-{i}");
+            let (_rx, hint) = q.submit_with_render(summary(&id, "https://x.test/"), String::new());
+            if hint.was_empty_before {
+                firsts.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    assert_eq!(
+        firsts.load(Ordering::SeqCst),
+        1,
+        "exactly one concurrent submit should observe an empty queue"
+    );
+    assert_eq!(q.len(), THREADS);
+}

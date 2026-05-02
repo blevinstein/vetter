@@ -156,19 +156,19 @@ pub fn stop() -> ExitCode {
         }
     };
 
+    if !pidfile::is_pid_alive(contents.pid) {
+        // Process already gone — clean up the orphan pidfile and
+        // report success so retries are idempotent.
+        pidfile::remove(&pidfile);
+        println!(
+            "vet daemon: pid {} no longer running; cleaned up stale pidfile",
+            contents.pid
+        );
+        return ExitCode::from(EXIT_OK);
+    }
     let rc = unsafe { kill(contents.pid as i32, SIGTERM) };
     if rc != 0 {
         let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc_esrch()) {
-            // Process already gone — clean up the orphan pidfile and
-            // report success so retries are idempotent.
-            pidfile::remove(&pidfile);
-            println!(
-                "vet daemon: pid {} no longer running; cleaned up stale pidfile",
-                contents.pid
-            );
-            return ExitCode::from(EXIT_OK);
-        }
         eprintln!("vet daemon: SIGTERM pid {} failed: {err}", contents.pid);
         return ExitCode::from(EXIT_CONFIG);
     }
@@ -300,10 +300,4 @@ fn format_uptime(c: &PidFileContents) -> String {
     } else {
         format!("{s}s")
     }
-}
-
-/// `ESRCH` ("no such process") in libc, hard-coded to avoid pulling
-/// in the libc crate. Same value across Linux + macOS.
-fn libc_esrch() -> i32 {
-    3
 }

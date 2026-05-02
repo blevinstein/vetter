@@ -84,6 +84,25 @@ impl PendingDecision {
     }
 }
 
+/// Out-of-band advice from the queue to the notifier, computed
+/// inside [`PendingQueue::submit_with_render`]'s critical section
+/// so concurrent submits get race-free answers.
+///
+/// Currently carries a single bit, [`Self::was_empty_before`], that
+/// the macOS notifier uses to coalesce: only the request that
+/// transitions the queue from empty to non-empty raises a banner.
+/// Subsequent requests in the same burst rely on the menu-bar
+/// badge and popover (both auto-refresh from the queue's change
+/// listener) instead of stacking notifications.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NotifyHint {
+    /// True iff the queue was empty immediately before this entry
+    /// was inserted. Captured in the same critical section as the
+    /// insert so two threads racing into [`PendingQueue::submit`]
+    /// can never both see "empty".
+    pub was_empty_before: bool,
+}
+
 struct Entry {
     summary: PromptSummary,
     /// Pre-rendered §8.5 detail string. Empty for callers that go
@@ -127,27 +146,37 @@ impl PendingQueue {
     /// Equivalent to [`Self::submit_with_render`] with an empty
     /// string — useful for tests and the mock notifier where the
     /// popover never reads the rendered field.
+    ///
+    /// Discards the [`NotifyHint`]; callers that need it (the
+    /// daemon worker site) call `submit_with_render` directly.
     pub fn submit(&self, summary: PromptSummary) -> Receiver<PendingDecision> {
-        self.submit_with_render(summary, String::new())
+        self.submit_with_render(summary, String::new()).0
     }
 
     /// Register a new prompt-class request with its pre-rendered §8.5
-    /// detail. The returned [`Receiver`] blocks until the matching id
-    /// is resolved or the queue is cancelled (see
-    /// [`Self::cancel_all`]). The caller should treat
-    /// `Err(RecvError)` as a deny.
+    /// detail. Returns the [`Receiver`] that blocks until the
+    /// matching id is resolved (or the queue is cancelled — see
+    /// [`Self::cancel_all`]) plus a [`NotifyHint`] computed inside
+    /// the same critical section as the insert.
+    /// The caller should treat `Err(RecvError)` on the receiver as a
+    /// deny.
     ///
     /// Duplicate ids overwrite the prior entry — by construction
     /// every request carries a fresh ULID, so this is a defensive
-    /// fallback rather than a normal path.
+    /// fallback rather than a normal path. When that happens
+    /// `was_empty_before` reflects the pre-insert queue state, which
+    /// is `false` because the prior entry is still in the map.
     pub fn submit_with_render(
         &self,
         summary: PromptSummary,
         rendered: String,
-    ) -> Receiver<PendingDecision> {
+    ) -> (Receiver<PendingDecision>, NotifyHint) {
         let (tx, rx) = channel();
-        let listener = {
+        let (hint, listener) = {
             let mut g = self.inner.lock().expect("pending mutex poisoned");
+            let hint = NotifyHint {
+                was_empty_before: g.entries.is_empty(),
+            };
             g.entries.insert(
                 summary.id.clone(),
                 Entry {
@@ -156,12 +185,12 @@ impl PendingQueue {
                     sender: tx,
                 },
             );
-            g.listener.clone()
+            (hint, g.listener.clone())
         };
         if let Some(cb) = listener {
             cb();
         }
-        rx
+        (rx, hint)
     }
 
     /// Post a decision for `id`. Returns `true` if a waiter was

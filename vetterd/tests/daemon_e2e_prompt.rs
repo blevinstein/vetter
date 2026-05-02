@@ -236,6 +236,54 @@ fn daemon_shutdown_drains_pending_workers() {
     let _ = id;
 }
 
+/// macOS coalescing (only the first request in an empty queue raises
+/// a banner) is a Mac-only UX detail; the mock notifier must still
+/// surface every prompt so test coverage of multi-prompt flows stays
+/// deterministic. This test pins that contract by issuing two
+/// prompts back-to-back and asserting the mock observed both — even
+/// though by the time the second `notify` fires the queue is no
+/// longer empty (its `NotifyHint::was_empty_before` is `false`).
+///
+/// The `MacNotifier` consumes that bit; the `MockNotifier` ignores
+/// it. Without that distinction, this test (and every concurrent /
+/// burst test built on `MockUi`) would silently lose half its
+/// observations after the coalescing patch.
+#[test]
+fn coalescing_does_not_drop_mock_observations() {
+    let d = Daemon::spawn(ALLOWLIST);
+    d.ui.expect_target("https://first.test/", MockResponse::allow("approved first"));
+    d.ui.expect_target(
+        "https://second.test/",
+        MockResponse::allow("approved second"),
+    );
+
+    // Concurrent so both submits land before either resolves; in
+    // wall-clock terms the second one will see a non-empty queue
+    // (`was_empty_before == false`), exercising the coalescing path
+    // on the daemon side.
+    let req_first = make_req(curl_get("https://first.test/"), false);
+    let req_second = make_req(curl_get("https://second.test/"), false);
+    let socket = d.socket.clone();
+    let socket2 = d.socket.clone();
+    let h_first = std::thread::spawn(move || round_trip(&socket, &req_first));
+    let h_second = std::thread::spawn(move || round_trip(&socket2, &req_second));
+    let dec_first = h_first.join().unwrap();
+    let dec_second = h_second.join().unwrap();
+    assert_eq!(dec_first.decision, WireDecision::Allow);
+    assert_eq!(dec_second.decision, WireDecision::Allow);
+
+    let observed = d.ui.wait_for_observed(2, Duration::from_secs(2));
+    assert_eq!(
+        observed.len(),
+        2,
+        "mock notifier must observe every prompt regardless of \
+         coalescing hint; got {observed:?}"
+    );
+    let mut targets: Vec<_> = observed.iter().map(|s| s.primary_target.clone()).collect();
+    targets.sort();
+    assert_eq!(targets, vec!["https://first.test/", "https://second.test/"]);
+}
+
 /// Mock notifier connection failure → daemon falls back to deny so
 /// vet doesn't hang. We trigger this by pointing
 /// VETTERD_NOTIFIER_SOCKET at a path that doesn't exist.

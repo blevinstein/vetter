@@ -72,3 +72,20 @@ fn remove_is_idempotent() {
     // Second call should be a silent no-op even though the file is gone.
     remove(&path);
 }
+
+#[test]
+fn is_pid_alive_says_true_for_self() {
+    // The current process is, by definition, alive.
+    assert!(is_pid_alive(std::process::id()));
+}
+
+#[test]
+fn is_pid_alive_says_false_for_unlikely_pid() {
+    // Picking a pid the kernel almost certainly does not have
+    // assigned. PIDs are 32-bit but the typical max on Linux/macOS
+    // is far below this bound, so ESRCH is the expected result.
+    // The probe returns true on EPERM (alive but unsignalable) — we
+    // chose a pid that should not exist at all rather than one that
+    // exists but is foreign-owned.
+    assert!(!is_pid_alive(u32::MAX - 1));
+}

@@ -136,6 +136,12 @@ vet daemon start|stop|status     # supervise vetterd
 There is intentionally **no `--interactive` / TTY prompt mode**. Approvals
 always go through the daemon's separate-channel UI; if the daemon is down,
 `vet` errors out.
+
+**Opt-in only — no global hook.** `vet` does not install a PATH shim,
+shell function, or any other interception layer that captures bare
+`curl` invocations. The agent harness must be configured to invoke
+`vet curl …` explicitly. This keeps the tool predictable and avoids
+breaking unrelated scripts that expect plain `curl`.
 ```
 
 Conventions:
@@ -306,6 +312,12 @@ Parsed::Curl {
 }
 ```
 
+**Streaming bodies are refused for MVP.** If stdin is a pipe whose total
+size we cannot read into memory cheaply (cap: 1 MiB), or if `-T -` /
+chunked-transfer flags are used, `vet` errors out with a clear
+"streaming requests are not supported yet" message and exits non-zero.
+Lifting this restriction is left to a future phase.
+
 ### Render layout (consistent regardless of curl flag order)
 
 ```
@@ -433,24 +445,12 @@ slower CLI cold start and worse parser ergonomics.)
 
 ## 12. Open questions
 
-1. **Wrap vs. shim curl.** Brief mentions "wrap or replace curl". A PATH
-   shim that intercepts bare `curl` would catch agents that forget to type
-   `vet`, but breaks scripts and is surprising. Recommend explicit `vet
-   curl …` for v1; revisit a shim mode (`vet install --shim curl`) later.
-2. **Streaming requests.** curl can stream bodies (`-T` from stdin, chunked
-   uploads). We can hash stdin up to a cap (e.g. 1 MiB) and prompt
-   beyond that, but this is awkward. First pass: refuse to vet stdin >
-   cap unless an explicit `streaming: true` rule matches.
-3. **Allowlist semantics for query strings.** Are query params part of the
+1. **Allowlist semantics for query strings.** Are query params part of the
    match surface? Default off (most are non-sensitive), with an opt-in
    `query:` matcher.
-4. **Multi-user / shared dev box.** Daemon is per-user; sockets in
-   `$TMPDIR` (macOS doesn't set `$XDG_RUNTIME_DIR`). No cross-user policy.
-5. **Latency budget.** Daemon round-trip target <30 ms on cache hit. Rust
-   + Unix socket should be fine; needs a benchmark before we believe it.
-6. **Telemetry.** None by default. Opt-in local-only metrics for
+2. **Telemetry.** None by default. Opt-in local-only metrics for
    diagnosing the project's own behavior.
-7. **Distribution.** MVP is macOS only: Homebrew tap delivering the
+3. **Distribution.** MVP is macOS only: Homebrew tap delivering the
    notarised `.app` (which contains both `vet` and `vetterd`), with
    symlinks into `/usr/local/bin` for the CLI. Linux/Windows packaging
    waits until Phase 6.

@@ -1,0 +1,80 @@
+# vetter
+
+A local security gate that sits between an LLM coding agent and "dangerous"
+CLI commands. The agent runs `vet curl …` instead of `curl …`; `vet` parses
+the invocation, applies a layered allowlist, and either lets it through
+silently, blocks it outright, or prompts you for a per-call decision via a
+native macOS notification.
+
+For the architecture, threat model, and rule semantics see
+[plans/Overview.md](plans/Overview.md).
+
+## Status
+
+Pre-MVP. Phases 0–3 (workspace, parser plugin contract, curl parser,
+allowlist evaluation, daemon + IPC) are complete. **Phase 4 PR 1** —
+the all-in-Rust macOS approver — has just landed:
+
+- `Vetter.app` menu-bar bundle, built from `vetterd` via
+  [`tools/build-app.sh`](tools/build-app.sh).
+- `UNUserNotificationCenter` notifications with **Approve** / **Reject**
+  buttons; the daemon worker blocks until the user clicks one.
+- End-to-end coverage via a `MockNotifier`-driven test harness; real
+  `UNUserNotificationCenter` integration is verified by the manual
+  smoke test in [plans/Phase4Notes.md](plans/Phase4Notes.md).
+
+What's deliberately not there yet (tracked in [TODO.md](TODO.md)): the
+menu-bar popover listing pending requests, notification coalescing,
+the **Allowlist…** action (Phase 5), Developer-ID signing + notarisation,
+and non-macOS UIs (Phase 6).
+
+## Trying it locally
+
+macOS only for now (Phase 4 PR 1 ships only the macOS UI). Walkthrough
+including first-run permission prompts, gotchas, and the audit-log check
+is in [plans/Phase4Notes.md](plans/Phase4Notes.md). Short version:
+
+```sh
+tools/build-app.sh --release
+cargo build -p vet --release
+open target/Vetter.app                 # menu-bar app, no dock icon
+export PATH="$PWD/target/release:$PATH"
+vet curl https://prompt-test.example/  # triggers an Approve/Reject banner
+```
+
+For non-macOS or headless environments, run the daemon with
+`VETTERD_NOTIFIER=noop` (every prompt-class request hangs until the
+daemon is killed — useful for CI smoke checks, not for actual use).
+
+## Workspace layout
+
+Rust workspace, `cargo` for everything:
+
+- [`vetter-core/`](vetter-core/) — shared library: `ParsedCommand`,
+  `Effect`, parser registry, renderer, risk analyzer, wire types.
+- [`vet/`](vet/) — the CLI users (and agents) invoke.
+- [`vetterd/`](vetterd/) — the long-running per-user daemon; on macOS
+  this binary is also the body of `Vetter.app`.
+
+Build / fmt / clippy / test:
+
+```sh
+cargo fmt --all
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test  --workspace --all-features
+```
+
+## Documentation index
+
+| If you want to… | Read |
+|---|---|
+| Understand the architecture, types, and rule model | [plans/Overview.md](plans/Overview.md) |
+| See what's done / next / blocked | [TODO.md](TODO.md) |
+| Test plan and per-component coverage targets | [plans/TestingPlan.md](plans/TestingPlan.md) |
+| Threat model + hardening backlog | [plans/ThreatModel.md](plans/ThreatModel.md) |
+| Build / run / smoke-test the macOS app | [plans/Phase4Notes.md](plans/Phase4Notes.md) |
+| Work on the repo as an AI agent (or a human) | [AGENTS.md](AGENTS.md) |
+
+## License
+
+Not yet chosen; the repo is private during pre-MVP development.

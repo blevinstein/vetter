@@ -32,11 +32,5 @@ pub fn version() -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn version_is_non_empty() {
-        assert!(!version().is_empty());
-    }
-}
+#[path = "tests/lib.rs"]
+mod tests;

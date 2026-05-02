@@ -45,14 +45,26 @@ use crate::pending::{PendingQueue, PromptSummary, ResolvedEntry};
 
 /// Outer popover dimensions. Width is fixed; height grows with
 /// content up to this cap, then the inner scroll view scrolls.
-const POPOVER_WIDTH: f64 = 480.0;
+///
+/// Bumped from 480 → 560 once the URL row + sorted pills row + per-
+/// effect rows started competing for horizontal real estate. The
+/// older width forced long URLs to truncate and crowded the
+/// pills row whenever a request emitted three or more pills.
+const POPOVER_WIDTH: f64 = 560.0;
 const POPOVER_HEIGHT: f64 = 500.0;
+/// Horizontal breathing room between the popover's content edge and
+/// the cards stack. Combined with each card's `CARD_INSET` (which
+/// pads content *inside* the card chrome), this gives ~24pt of
+/// total margin from the popover edge to any text — enough that
+/// long URLs don't visually butt against the rounded popover
+/// corner. Vertical margins remain 0 so the cards stack hugs the
+/// scroll view's clip edges as before.
+const CARDS_HORIZONTAL_MARGIN: f64 = 12.0;
 /// Outer gap between adjacent cards in the cards stack. Bumped from
 /// 12 → 16 once we started inserting `NSBoxType::Separator` lines
 /// between cards: the rule line wants a bit more breathing room
 /// either side or it visually crowds the buttons.
 const CARD_SPACING: f64 = 16.0;
-const CARD_PADDING: f64 = 12.0;
 /// Inset around each card's content (header / body / buttons). Pulls
 /// the body away from any wrapping `NSBox` border (dry-run case) and
 /// gives non-dry-run cards consistent breathing room without needing
@@ -92,6 +104,18 @@ impl Popover {
         cards.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         cards.setSpacing(CARD_SPACING);
         cards.setDistribution(NSStackViewDistribution::Fill);
+        // Inset the arranged cards horizontally so card content
+        // doesn't run flush with the popover's rounded edges.
+        // Vertical insets stay 0; the cards stack is pinned to the
+        // scroll view's clip view top/bottom by autolayout below
+        // and we want the first card to sit at the very top of the
+        // scroll area (so vertical scrolling feels natural).
+        cards.setEdgeInsets(NSEdgeInsets {
+            top: 0.0,
+            left: CARDS_HORIZONTAL_MARGIN,
+            bottom: 0.0,
+            right: CARDS_HORIZONTAL_MARGIN,
+        });
         // NSStackView defaults this to `false`, but pin it
         // explicitly so the constraints below are the only thing
         // that gives the document view a size — if a future change
@@ -271,11 +295,21 @@ pub struct PopoverControllerIvars {
     cards: std::sync::OnceLock<Retained<NSStackView>>,
     /// Ids of currently-rendered cards, indexed by button tag.
     card_ids: Mutex<Vec<String>>,
-    /// Per-card raw-body `NSScrollView`s, indexed by button tag,
-    /// in the same order as `card_ids`. The "Show raw" disclosure
-    /// action toggles `setHidden` on the matching entry. Cleared
-    /// alongside `card_ids` on every refresh.
+    /// Per-card raw-body `NSScrollView`s, indexed by `disclosure_idx`
+    /// (the global counter `refresh` maintains across pending and
+    /// resolved cards). The "Show raw" disclosure action toggles
+    /// `setHidden` on the matching entry. Cleared alongside
+    /// `card_ids` on every refresh.
     body_scrolls: Mutex<Vec<Retained<NSScrollView>>>,
+    /// Per-card structured-effects container views, indexed by
+    /// `disclosure_idx` in the same way as `body_scrolls`. Pending
+    /// cards always render their effect rows directly into the
+    /// card and store `None` here — the "Details" disclosure is
+    /// resolved-only because pending cards need the structured
+    /// info visible so the user can decide whether to approve.
+    /// Resolved cards store `Some(container)` and the
+    /// `toggleDetailsDisclosure:` selector flips `setHidden` on it.
+    details_views: Mutex<Vec<Option<Retained<NSView>>>>,
 }
 
 define_class!(
@@ -331,6 +365,18 @@ define_class!(
         #[unsafe(method(toggleRawDisclosure:))]
         fn toggle_raw_disclosure(&self, sender: Option<&NSButton>) {
             self.toggle_disclosure_for_tag(sender);
+        }
+
+        /// "Details" disclosure selector for resolved cards. Same
+        /// per-tag, per-card pattern as `toggleRawDisclosure:` but
+        /// targets the structured-effects container parked at
+        /// `details_views[sender.tag]`. Pending cards never wire
+        /// up this button (their effect rows are always visible),
+        /// so the matching slot is `None` and a stray firing is a
+        /// no-op rather than a panic.
+        #[unsafe(method(toggleDetailsDisclosure:))]
+        fn toggle_details_disclosure(&self, sender: Option<&NSButton>) {
+            self.toggle_details_for_tag(sender);
         }
     }
 );
@@ -405,6 +451,36 @@ impl PopoverController {
         }
     }
 
+    /// Resolved-card sibling of `toggle_disclosure_for_tag`. Toggles
+    /// the structured-effects container parked at
+    /// `details_views[sender.tag]`. Pending-card slots are `None`
+    /// (their effect rows are always visible) so a stray firing is
+    /// a no-op rather than a panic — useful when a refresh races
+    /// with a click.
+    fn toggle_details_for_tag(&self, sender: Option<&NSButton>) {
+        let Some(button) = sender else { return };
+        let tag = button.tag();
+        let off = NSControlStateValueOff;
+        let hide = button.state() == off;
+        let view = {
+            let g = self
+                .ivars()
+                .details_views
+                .lock()
+                .expect("details_views poisoned");
+            g.get(tag as usize).cloned().flatten()
+        };
+        if let Some(view) = view {
+            view.setHidden(hide);
+            let title = if hide {
+                "▸ Details"
+            } else {
+                "▾ Hide details"
+            };
+            button.setTitle(&NSString::from_str(title));
+        }
+    }
+
     /// Replace the cards stack with one card per pending entry
     /// followed by a "Recent" section for resolved entries.
     /// If `focused_id` is `Some` and matches a pending entry, that
@@ -445,12 +521,22 @@ impl PopoverController {
             g.clear();
             g.extend(entries.iter().map(|(s, _)| s.id.clone()));
         }
-        // Reset the disclosure registry; `build_card` will repopulate
-        // it (one entry per *pending* card, keyed by `idx == tag`).
+        // Reset the disclosure registries; `build_card` will repopulate
+        // them (one entry per card, keyed by `disclosure_idx == tag`).
+        // `details_views` keeps a slot per card too — pending slots
+        // are `None` because pending cards never wire up a Details
+        // disclosure (their effect rows are always visible so the
+        // user can decide). Keeping the two registries in lockstep
+        // makes the per-tag lookup symmetric across both selectors.
         self.ivars()
             .body_scrolls
             .lock()
             .expect("body_scrolls poisoned")
+            .clear();
+        self.ivars()
+            .details_views
+            .lock()
+            .expect("details_views poisoned")
             .clear();
 
         if entries.is_empty() && resolved.is_empty() {
@@ -639,7 +725,14 @@ impl PopoverController {
         // measurement below (see `measure_raw_body_height`); the
         // height is provisional and replaced by an autolayout
         // constraint at the end of `build_card`.
-        let body_width = POPOVER_WIDTH - CARD_PADDING * 2.0;
+        //
+        // Subtract both the cards-stack outer margin and the per-
+        // card inset so the wrap column matches what the user will
+        // actually see; without the margin term the body
+        // measurement was overshooting and the disclosure expanded
+        // to a strip wider than its parent card on the new 560pt
+        // popover width.
+        let body_width = POPOVER_WIDTH - CARDS_HORIZONTAL_MARGIN * 2.0 - CARD_INSET * 2.0;
         body_scroll.setFrame(NSRect::new(
             NSPoint::new(0.0, 0.0),
             NSSize::new(body_width, RAW_BODY_MIN_HEIGHT),
@@ -661,7 +754,32 @@ impl PopoverController {
             tv.setSelectable(true);
             tv.setRichText(true);
             tv.setDrawsBackground(true);
+            // Pin the text view's appearance to Dark Aqua even
+            // though the popover already is. `NSTextView` doesn't
+            // always inherit `effectiveAppearance` through the
+            // scroll-view → clip-view → document-view chain, so the
+            // dynamic system colours below (`textColor`,
+            // `textBackgroundColor`) can resolve to the *light*
+            // variants and we end up with black text on a dark card.
+            // Setting the appearance here makes the resolution
+            // unambiguous.
+            if let Some(dark) = unsafe { NSAppearance::appearanceNamed(NSAppearanceNameDarkAqua) } {
+                body_scroll.setAppearance(Some(&dark));
+                tv.setAppearance(Some(&dark));
+            }
             tv.setBackgroundColor(&NSColor::textBackgroundColor());
+            // Default text colour for un-styled (non-ANSI) runs. The
+            // popover's appearance is pinned to Dark Aqua, so
+            // `textColor` resolves to a light foreground that reads
+            // against the dark `textBackgroundColor` set above.
+            // Without this AppKit was rendering plain-text runs in
+            // the *light* variant of `textColor` (black) regardless
+            // of the popover's pinned appearance — the appearance
+            // pin above fixes the dynamic resolution, but stamping
+            // an explicit colour is the belt-and-suspenders that
+            // keeps it readable even if a future AppKit revision
+            // breaks appearance propagation again.
+            tv.setTextColor(Some(&NSColor::textColor()));
             let font =
                 NSFont::userFixedPitchFontOfSize(11.0).unwrap_or(NSFont::systemFontOfSize(11.0));
             tv.setFont(Some(&font));
@@ -708,19 +826,32 @@ impl PopoverController {
         // pill — that's surfaced inside the "Show raw" disclosure
         // body instead.
         //
+        // Order within the row is by triage priority
+        // (`popover_pills::signal_priority`): Danger (red) first,
+        // Warn (orange) next, AuthHeader (green) last. The user's
+        // eye lands on the most-urgent chips before scanning past
+        // the supportive ones, regardless of the order the parser
+        // emitted the signals in. Ties (two Danger kinds, etc.)
+        // keep their first-seen order so the tooltip-detail
+        // selection above stays stable.
+        //
         // Layout: a horizontal stack placed *below* the header row
         // rather than inside it, so multi-pill cases don't
         // crowd the command/url line. The row is hidden entirely
         // when no pill ends up rendered (no Warn/Danger signals).
-        let mut pill_views: Vec<Retained<NSView>> = Vec::new();
+        let mut deduped: Vec<&vetter_core::RiskSignal> = Vec::new();
         let mut seen: Vec<vetter_core::SignalKind> = Vec::new();
         for sig in &summary.signals {
-            let kind = sig.kind;
-            if seen.contains(&kind) {
+            if seen.contains(&sig.kind) {
                 continue;
             }
-            seen.push(kind);
-            if let Some(pill) = popover_pills::build_signal_pill(kind, &sig.detail, mtm) {
+            seen.push(sig.kind);
+            deduped.push(sig);
+        }
+        deduped.sort_by_key(|sig| popover_pills::signal_priority(sig.kind));
+        let mut pill_views: Vec<Retained<NSView>> = Vec::new();
+        for sig in &deduped {
+            if let Some(pill) = popover_pills::build_signal_pill(sig.kind, &sig.detail, mtm) {
                 pill_views.push(pill);
             }
         }
@@ -744,11 +875,68 @@ impl PopoverController {
         // spawns. Falls back to nothing when `parsed` is absent
         // (legacy / mock callers); the "Show raw" disclosure below
         // still surfaces the §8.5 layout in that case.
-        if let Some(parsed) = &summary.parsed {
-            for view in popover_effects::build_effect_views(parsed, mtm) {
-                card.addArrangedSubview(&view);
+        //
+        // Pending vs resolved layout differs:
+        // - Pending cards add the rows directly to the card so the
+        //   user can scan headers/auth/body before approving. The
+        //   matching `details_views` slot is `None`.
+        // - Resolved cards collect the rows into a hidden
+        //   container behind a "▸ Details" disclosure. The card
+        //   stays compact (URL + pills + outcome badge) so the
+        //   "Recent" stack reads as a quick history rather than a
+        //   wall of redundant detail; the structured rows are one
+        //   click away when the user wants to audit a past
+        //   decision.
+        let effect_views: Vec<Retained<NSView>> = summary
+            .parsed
+            .as_ref()
+            .map(|parsed| popover_effects::build_effect_views(parsed, mtm))
+            .unwrap_or_default();
+        let mut details_container: Option<Retained<NSView>> = None;
+        if outcome.is_some() && !effect_views.is_empty() {
+            // Resolved + has structured rows → wrap them in a
+            // hidden container.
+            let container = NSStackView::new(mtm);
+            container.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+            container.setSpacing(8.0);
+            container.setDistribution(NSStackViewDistribution::Fill);
+            for view in &effect_views {
+                container.addArrangedSubview(view);
+            }
+            container.setHidden(true);
+
+            let details_toggle = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    ns_string!("▸ Details"),
+                    Some(&*(self as *const Self).cast::<AnyObject>()),
+                    Some(sel!(toggleDetailsDisclosure:)),
+                    mtm,
+                )
+            };
+            details_toggle.setBordered(false);
+            details_toggle.setButtonType(NSButtonType::PushOnPushOff);
+            details_toggle.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+            details_toggle.setTag(disclosure_idx as isize);
+            card.addArrangedSubview(&details_toggle);
+            card.addArrangedSubview(&container);
+
+            details_container = Some(container.into_super());
+        } else {
+            // Pending card or no effect rows: render directly into
+            // the card (no disclosure).
+            for view in &effect_views {
+                card.addArrangedSubview(view);
             }
         }
+        // Always push a slot so `details_views` stays in lockstep
+        // with `body_scrolls` and the global `disclosure_idx`. The
+        // pending case stores `None` so the toggle action is a
+        // no-op if it ever fires.
+        self.ivars()
+            .details_views
+            .lock()
+            .expect("details_views poisoned")
+            .push(details_container);
 
         // "Show raw" disclosure — collapsed by default. Toggling
         // unhides the existing ANSI-attributed `body_scroll` so the

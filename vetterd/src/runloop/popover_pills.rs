@@ -145,6 +145,34 @@ pub fn pill_bg_for(fg: &NSColor) -> Retained<NSColor> {
     fg.colorWithAlphaComponent(0.22)
 }
 
+/// Triage priority for sorting signal pills left-to-right inside the
+/// pills row. Lower number sorts first (closer to the start of the
+/// row), so the user's eye lands on the most-urgent chips before
+/// scanning past the supportive ones:
+///
+/// | Priority | Tier                                  | Colour |
+/// |---------:|---------------------------------------|--------|
+/// |       0  | `Danger`                              | red    |
+/// |       1  | `Warn` (excluding `AuthHeader`)       | orange |
+/// |       2  | `AuthHeader` (special-cased positive) | green  |
+/// |       3  | `Info` (no pill — sorted last regardless) |    |
+///
+/// Centralising this next to the colour decision in
+/// [`build_signal_pill`] keeps the "what colour is this kind?" and
+/// "where in the row does it land?" answers in lockstep — flipping
+/// `AuthHeader` to a different colour later only requires updating
+/// one match arm in this file.
+pub fn signal_priority(kind: SignalKind) -> u8 {
+    if kind == SignalKind::AuthHeader {
+        return 2;
+    }
+    match kind.ui_severity() {
+        BadgeSeverity::Danger => 0,
+        BadgeSeverity::Warn => 1,
+        BadgeSeverity::Info => 3,
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/popover_pills.rs"]
 mod tests;

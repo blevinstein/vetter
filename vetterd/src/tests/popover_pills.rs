@@ -65,6 +65,69 @@ fn info_tier_kinds_return_no_pill() {
 }
 
 #[test]
+fn signal_priority_orders_danger_warn_authheader() {
+    // Danger first (red), generic Warn second (orange), AuthHeader
+    // third (green — special-cased positive). Pinned here so a
+    // future re-tier of any signal can't silently shuffle the row
+    // order without somebody updating the test. Picks one
+    // representative kind per band — the per-kind tier mapping is
+    // owned by `vetter_core::SignalKind::ui_severity` and tested
+    // there.
+    assert_eq!(signal_priority(SignalKind::PipeToShell), 0); // Danger
+    assert_eq!(signal_priority(SignalKind::WriteMethod), 1); // Warn
+    assert_eq!(signal_priority(SignalKind::AuthHeader), 2); // green band
+    assert!(
+        signal_priority(SignalKind::PipeToShell) < signal_priority(SignalKind::WriteMethod),
+        "Danger must sort before Warn"
+    );
+    assert!(
+        signal_priority(SignalKind::WriteMethod) < signal_priority(SignalKind::AuthHeader),
+        "Warn must sort before AuthHeader (green)"
+    );
+}
+
+#[test]
+fn signal_priority_groups_match_ui_severity_buckets() {
+    // The three priority bands map 1:1 to `ui_severity` plus the
+    // AuthHeader override. Walk every current `SignalKind` and
+    // pin its band here so a re-tier in vetter-core forces the
+    // popover author to confirm the row reordering on purpose
+    // rather than discover it visually.
+    use vetter_core::BadgeSeverity;
+    for k in [
+        SignalKind::InsecureFlag,
+        SignalKind::InsecureTls,
+        SignalKind::CacertOverride,
+        SignalKind::ResolveOverride,
+        SignalKind::UnixSocket,
+        SignalKind::PipeToShell,
+        SignalKind::RawIpLiteral,
+        SignalKind::WriteMethod,
+        SignalKind::AuthHeader,
+        SignalKind::NonStandardPort,
+        SignalKind::IdnHost,
+        SignalKind::FileOutsideCwd,
+        SignalKind::FileReadOutsideCwd,
+        SignalKind::UnknownHost,
+    ] {
+        let want = if k == SignalKind::AuthHeader {
+            2
+        } else {
+            match k.ui_severity() {
+                BadgeSeverity::Danger => 0,
+                BadgeSeverity::Warn => 1,
+                BadgeSeverity::Info => 3,
+            }
+        };
+        assert_eq!(
+            signal_priority(k),
+            want,
+            "expected priority={want} for {k:?}"
+        );
+    }
+}
+
+#[test]
 fn build_pill_smoke_runs_without_panicking() {
     // Foundation/AppKit smoke test: build a pill on the main thread
     // (when available) and confirm we get a non-null `NSView`. The

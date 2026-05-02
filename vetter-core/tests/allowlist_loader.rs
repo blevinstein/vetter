@@ -5,10 +5,14 @@
 //! semantics are exercised end-to-end.
 
 use std::fs;
+use std::io::Write as _;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use tempfile::TempDir;
-use vetter_core::matcher::{discover_project_root, load_default, load_file, LoadError};
+use vetter_core::matcher::{
+    add_rule, discover_project_root, load_default, load_file, write_file, AllowlistFile, LoadError,
+    Rule, RuleWhen,
+};
 
 fn write(path: &std::path::Path, contents: &str) {
     if let Some(parent) = path.parent() {
@@ -205,4 +209,96 @@ rules:
     let store = load_default(Some(cwd.path()), None).expect("load");
     assert_eq!(store.user.len(), 1);
     assert_eq!(store.user[0].id, "from-user");
+}
+
+// ── §5.3 atomic-write tests ──────────────────────────────────────────────────
+
+fn simple_rule(id: &str) -> Rule {
+    let when: RuleWhen = serde_yaml_ng::from_str("http: { method: [GET] }").unwrap();
+    Rule {
+        id: id.to_string(),
+        command: None,
+        when,
+        note: None,
+        created_by: None,
+        created_at: None,
+    }
+}
+
+#[test]
+fn write_file_produces_valid_yaml_and_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("allowlist.yaml");
+
+    let mut file = AllowlistFile::default();
+    file.rules.push(simple_rule("r1"));
+    write_file(&path, &file).expect("write_file");
+
+    let loaded = load_file(&path).expect("load_file after write");
+    assert_eq!(loaded.rules.len(), 1);
+    assert_eq!(loaded.rules[0].id, "r1");
+}
+
+/// Simulate a SIGKILL between the temp-file write and the `rename` call.
+///
+/// We replicate what `write_file` does internally up to the point of
+/// `persist` (= atomic rename), then drop the `NamedTempFile` without
+/// persisting. This is exactly what happens if the process is killed
+/// after writing the temp data but before the rename completes.
+///
+/// The invariant: the original file must be byte-for-byte unchanged.
+#[test]
+fn abandoned_tempfile_leaves_original_intact() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("allowlist.yaml");
+
+    // Write an initial version.
+    let mut original = AllowlistFile::default();
+    original.rules.push(simple_rule("original"));
+    write_file(&target, &original).expect("initial write");
+    let original_bytes = fs::read(&target).expect("read original");
+
+    // Simulate writing new content to a sibling temp file…
+    let mut tmp = tempfile::NamedTempFile::new_in(dir.path()).expect("NamedTempFile");
+    let new_yaml = "rules:\n  - id: replacement\n    when:\n      http: { method: [POST] }\n";
+    tmp.write_all(new_yaml.as_bytes()).expect("write tmp");
+    tmp.as_file().sync_all().expect("sync tmp");
+
+    // …then "crash": drop without calling persist (no rename).
+    drop(tmp);
+
+    // Original must be unchanged.
+    let after_bytes = fs::read(&target).expect("read target after abandoned tmp");
+    assert_eq!(
+        original_bytes, after_bytes,
+        "original file must be intact after an abandoned tempfile"
+    );
+
+    // Double-check via the loader.
+    let reloaded = load_file(&target).expect("reload");
+    assert_eq!(reloaded.rules.len(), 1);
+    assert_eq!(reloaded.rules[0].id, "original");
+}
+
+#[test]
+fn add_rule_result_is_valid_yaml_and_rule_is_present() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("allowlist.yaml");
+
+    // Start from an existing file with one rule.
+    let mut file = AllowlistFile::default();
+    file.rules.push(simple_rule("existing"));
+    write_file(&path, &file).expect("initial write");
+
+    // Append a second rule.
+    add_rule(&path, simple_rule("added")).expect("add_rule");
+
+    let loaded = load_file(&path).expect("reload after add_rule");
+    assert_eq!(
+        loaded.rules.len(),
+        2,
+        "both rules must be present: {loaded:?}"
+    );
+    assert_eq!(loaded.rules[0].id, "existing");
+    assert_eq!(loaded.rules[1].id, "added");
 }

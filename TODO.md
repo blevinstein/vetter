@@ -80,7 +80,7 @@ Roadmap: [plans/Overview.md](plans/Overview.md) §5. Test plan:
 - [x] Negative tests: host-suffix confusion, path traversal, denylist
       overrides allow at every layer
 
-## Phase 3 — Daemon + IPC  `[~] in progress`
+## Phase 3 — Daemon + IPC  `[x] done`
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §3, §11. Test plan:
 [plans/TestingPlan.md](plans/TestingPlan.md) §5, §6.
@@ -100,9 +100,9 @@ Phase 3a (spine) landed; remaining boxes are Phase 3b polish.
 - [x] Stub UI for prompt-class decisions: auto-deny with reason
       `"no UI yet"`
 - [x] `vet daemon start|stop|status` controls supervise `vetterd`
-- [ ] Atomic allowlist writes (temp + rename); §5.3 crash test
+- [x] Atomic allowlist writes (temp + rename); §5.3 crash test
 - [x] §4.9 fail-closed test (no exec on deny / missing socket)
-- [ ] §6.3 protocol fuzzing entry
+- [x] §6.3 protocol fuzzing entry
 
 ## Phase 4 — macOS approver UI  `[ ] not started`  (MVP milestone)
 

@@ -287,3 +287,71 @@ fn version_mismatch_request_is_rejected_by_daemon() {
     let res = read_decision(&mut s, &req.id);
     assert!(res.is_err(), "expected error on bad version, got {res:?}");
 }
+
+/// §6.3 — Feed a variety of malformed byte sequences to the daemon socket.
+///
+/// For each probe: connect, send garbage, drain until EOF or error.
+/// After all probes, send a valid framed request and assert a well-formed
+/// decision comes back — this proves the daemon is still alive and accepting
+/// connections, i.e. no panic / wedge occurred.
+#[test]
+fn random_bytes_do_not_crash_daemon() {
+    use std::io::Read as _;
+
+    let d = Daemon::spawn(ALLOWLIST);
+
+    let garbage_probes: &[&[u8]] = &[
+        // Empty send (immediate EOF from writer's side)
+        b"",
+        // Truncated length prefix (only 2 of 4 bytes)
+        &[0x00, 0x01],
+        // Length prefix says 5 MiB body — daemon must reject before allocating
+        &[0xFF, 0xFF, 0xFF, 0xFF],
+        // Well-formed 4-byte length (12) but body is pure garbage
+        &[
+            0x00, 0x00, 0x00, 0x0C, 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00,
+            0x00, 0x00,
+        ],
+        // Looks like valid JSON length but body is not JSON
+        &[0x00, 0x00, 0x00, 0x05, b'n', b'u', b'l', b'l', b'!'],
+        // Random-ish printable bytes with no framing at all
+        b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
+        // Null bytes
+        &[0x00; 16],
+        // Single byte
+        &[0x42],
+    ];
+
+    let timeout = std::time::Duration::from_secs(1);
+
+    for (i, probe) in garbage_probes.iter().enumerate() {
+        let mut s = UnixStream::connect(&d.socket)
+            .unwrap_or_else(|e| panic!("probe {i}: connect failed: {e}"));
+        s.set_write_timeout(Some(timeout))
+            .expect("set_write_timeout");
+        s.set_read_timeout(Some(timeout)).expect("set_read_timeout");
+
+        if !probe.is_empty() {
+            // Best-effort send; the daemon may close before we finish writing.
+            let _ = s.write_all(probe);
+        }
+        // Drain until EOF or error — we only care that this completes and the
+        // daemon doesn't panic.
+        let mut sink = [0u8; 256];
+        loop {
+            match s.read(&mut sink) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    }
+
+    // Daemon must still be alive: a valid round-trip succeeds.
+    let req = make_req(make_parsed(HttpMethod::Get, "https://example.test/"), false);
+    let dec = round_trip(&d.socket, &req);
+    assert_eq!(
+        dec.decision,
+        WireDecision::Allow,
+        "daemon should still be functional after garbage probes"
+    );
+}

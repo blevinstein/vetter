@@ -151,6 +151,55 @@ before the rest land.
 
 ---
 
+## Hardening — cross-cutting (pre-MVP gate)
+
+Roadmap source: tech-debt audit, 2026-05. None of these block a phase
+by themselves, but Phase 4 (UI) shouldn't ship without them — they are
+the difference between "demo-quality daemon" and "I'd run this on my
+machine".
+
+- [ ] Write `plans/ThreatModel.md` (assets, attackers, in-scope /
+      out-of-scope, residual risks)
+- [ ] Peer credential check on `vetterd` accept (`SO_PEERCRED` /
+      `getpeereid`); reject connections whose uid doesn't match the
+      daemon's
+- [ ] Verify socket parent dir owner + mode before `vet` connects;
+      refuse on mismatch (defends against squat / race on
+      `$TMPDIR/vetter.sock`)
+- [ ] `FD_CLOEXEC` on daemon + client sockets and the audit fd; test
+      that the exec'd child inherits only 0/1/2
+- [ ] Sanitise ANSI / C0 control bytes in renderer output (header
+      values, URLs, paths, argv echo) before any TTY write — argv is
+      attacker-controlled and the user is being asked to trust what
+      they see
+- [ ] `cargo-fuzz` target for `parsers::curl` over random argv;
+      remove `expect("Value flag has value")` from
+      `parsers/curl/state.rs` by encoding flag-has-value at the type
+      level
+- [ ] Decide symlink semantics for `Effect::FileWrite` /
+      `Effect::FileRead` (canonicalise vs. reject vs.
+      accept-and-document); add tests
+- [ ] Audit log rotation + size cap; explicit behaviour when audit
+      dir is unwritable (warn loudly, don't silently drop)
+- [ ] Connection cap + panic boundary on `vetterd` accept loop
+      (currently unbounded `thread::spawn` per connection)
+- [ ] `serde(deny_unknown_fields)` on `VetRequest` / `VetDecision`;
+      document wire evolution rules (additive-only fields, unknown
+      enum variants rejected) in `plans/Overview.md` §3
+- [ ] Hash the loaded ruleset; record digest in each audit row so
+      decisions remain replayable after `allowlist.yaml` edits
+- [ ] Expand `vet doctor` checks: socket perms, audit dir writable,
+      allowlist parses, daemon reachable
+- [ ] CI: `cargo-deny check` (advisories, bans, sources, licenses)
+      and `cargo-audit`
+
+Promoted from elsewhere because the audit raised their priority:
+
+- [ ] Wire protocol fuzzing — was Phase 3 §6.3; promote out of
+      "Phase 3b polish"
+
+---
+
 ## Cross-cutting / open questions
 
 Tracked from [plans/Overview.md](plans/Overview.md) §12:
@@ -158,6 +207,8 @@ Tracked from [plans/Overview.md](plans/Overview.md) §12:
 - [x] Decide allowlist semantics for query strings (default off; opt-in
       `query:` matcher)
 - [ ] Decide telemetry policy (default none; opt-in local-only metrics)
+      — close this explicitly in `ThreatModel.md` rather than leaving
+      it open
 - [ ] Distribution: Homebrew tap publishing the notarised `.app`
 
 ---

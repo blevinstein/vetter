@@ -1,0 +1,21 @@
+[package]
+name = "vet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "vet — local security gate that wraps dangerous CLI commands for LLM coding agents."
+
+[[bin]]
+name = "vet"
+path = "src/main.rs"
+
+[dependencies]
+vetter-core = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }

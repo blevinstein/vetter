@@ -1,5 +1,6 @@
-//! Phase 0 smoke test for `vet doctor`. Asserts the binary runs, exits 0,
-//! and produces output that names each Phase 0 stubbed check.
+//! Smoke tests for `vet doctor`. After Phase 1b, the curl parser is
+//! registered into release builds, so the parsers-registered count is
+//! `1` and the names list mentions `curl`.
 
 use assert_cmd::Command;
 use predicates::str::contains;
@@ -13,9 +14,8 @@ fn doctor_runs_and_reports_stubs() {
         .success()
         .stdout(contains("daemon"))
         .stdout(contains("socket"))
-        // Phase 1a registers no parsers in release builds (noop is
-        // test-only). Phase 1b will land curl and bump this to `1`.
-        .stdout(contains("parsers registered . 0"))
+        .stdout(contains("parsers registered . 1"))
+        .stdout(contains("curl"))
         .stdout(contains("code signing"));
 }
 

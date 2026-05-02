@@ -14,9 +14,10 @@ pub mod signals;
 pub mod wire;
 
 pub use parsers::{
-    Auth, Badge, BadgeSeverity, Body, CommandParser, CredentialUse, DisplayHints, Effect,
-    EnvSnapshot, FileRead, FileWrite, FormField, Header, HttpMethod, HttpRequest, NetworkOpen,
-    ParseError, ParsedCommand, ProcessSpawn, Sha256, StdinHandle, TlsPolicy, WriteSource,
+    register_builtins, Auth, Badge, BadgeSeverity, Body, CommandParser, CredentialUse,
+    DisplayHints, Effect, EnvSnapshot, FileRead, FileWrite, FormField, Header, HttpMethod,
+    HttpRequest, NetworkOpen, ParseError, ParsedCommand, ProcessSpawn, Sha256, StdinHandle,
+    TlsPolicy, WriteSource,
 };
 pub use render::{AnsiWriter, DefaultRenderer, PlainWriter, Renderer, Style, StyledWriter};
 pub use signals::{analyze, RiskSignal, SignalKind};

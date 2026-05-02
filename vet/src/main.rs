@@ -10,7 +10,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod color;
 mod doctor;
+mod explain;
 
 /// Exit code for "config / not yet implemented" per `plans/Overview.md` §4.
 const EXIT_CONFIG: u8 = 78;
@@ -87,16 +89,23 @@ enum DaemonAction {
 }
 
 fn main() -> ExitCode {
+    vetter_core::parsers::register_builtins();
     let cli = Cli::parse();
     match cli.command {
         Command::Doctor => doctor::run(),
         Command::Allow { .. } => not_implemented("`vet allow`", "Phase 2"),
         Command::Daemon { .. } => not_implemented("`vet daemon`", "Phase 3"),
         Command::Wrap(argv) => {
+            if cli.dry_run {
+                return not_implemented("`--dry-run`", "Phase 3 (daemon)");
+            }
+            if cli.explain {
+                return explain::run(argv, cli.quiet);
+            }
             let cmd = argv.first().map(String::as_str).unwrap_or("<command>");
             not_implemented(
-                &format!("wrapping `{cmd}` (`vet <cmd> [args...]`)"),
-                "Phase 1b (curl) / Phase 3 (daemon)",
+                &format!("wrapping `{cmd}` without --explain (the daemon is required to exec)"),
+                "Phase 3 (daemon)",
             )
         }
     }

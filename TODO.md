@@ -40,7 +40,7 @@ Status legend: `[x]` done · `[~]` in progress · `[ ]` not started.
 - [x] §2.1 type roundtrips, §2.2 registry dispatch, §2.3 noop snapshot
       (insta), §2.4 per-SignalKind tests
 
-## Phase 1b — Curl parser  `[~] in progress`
+## Phase 1b — Curl parser  `[x] done`
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §8.4, §11. Test plan:
 [plans/TestingPlan.md](plans/TestingPlan.md) §3.
@@ -54,13 +54,13 @@ Roadmap: [plans/Overview.md](plans/Overview.md) §8.4, §11. Test plan:
 - [x] Refuses streaming bodies with `ParseError::StreamingUnsupported`
       (`-T -`, chunked transfer, `-d @-` >1 MiB)
 - [x] Snapshot fixture corpus in `vetter-core/tests/corpus/curl/` per
-      `TestingPlan.md` §3.1 (minimum-viable subset of ~10 happy + 2
-      negative; expand toward the full ~25 in a later pass)
-- [ ] `vet --explain curl …` runs end-to-end against the Phase 1a
+      `TestingPlan.md` §3.1 (Phase 1b ships ~12 fixtures; expand toward
+      the full ~25 in a follow-up phase)
+- [x] `vet --explain curl …` runs end-to-end against the Phase 1a
       renderer + analyzer with no daemon, no policy
-- [ ] CLI: TTY / `NO_COLOR` / `CLICOLOR_FORCE` detection chooses
+- [x] CLI: TTY / `NO_COLOR` / `CLICOLOR_FORCE` detection chooses
       `PlainWriter` vs `AnsiWriter`
-- [ ] `vet doctor` reports `parsers registered . 1` (curl)
+- [x] `vet doctor` reports `parsers registered . 1` (curl)
 
 ## Phase 2 — Allowlist evaluation  `[ ] not started`
 

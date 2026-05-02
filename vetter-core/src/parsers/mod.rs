@@ -168,6 +168,20 @@ pub fn registered_names() -> Vec<&'static str> {
         .collect()
 }
 
+/// Register every parser that ships in release `vet` / `vetterd`
+/// binaries. Idempotent: callable from multiple binary entry points
+/// (and tests) without panicking on duplicate registration.
+///
+/// Intentionally does NOT register the `noop` parser — that one is
+/// gated behind `cfg(any(test, feature = "test-parsers"))` and stays
+/// out of release builds.
+pub fn register_builtins() {
+    static ONCE: OnceLock<()> = OnceLock::new();
+    ONCE.get_or_init(|| {
+        register(Box::new(curl::CurlParser));
+    });
+}
+
 /// Stable handle to a registered parser. We can't return `&dyn` because
 /// the registry is behind a mutex; this handle re-locks per call. That's
 /// fine for the dispatch hot path (one call per `vet` invocation).

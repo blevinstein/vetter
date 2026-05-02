@@ -201,6 +201,21 @@ real AppKit run loop entirely.
   [`runloop::run_app_kit`](../vetterd/src/runloop/mod.rs) translates
   it into `[NSApp stop:]` plus a no-op `applicationDefined` event so
   `[NSApp run]` returns naturally and the cleanup runs.
+- **`NSStackView` as `NSScrollView.documentView` needs explicit
+  constraints.** `NSStackView` is Auto Layout only
+  (`translatesAutoresizingMaskIntoConstraints == false`), so set as
+  the document view of an `NSScrollView` with no anchor constraints
+  it stays at zero size and the entire subtree renders invisible —
+  the popover looks empty even with pending requests in the queue.
+  Pin `leadingAnchor` / `trailingAnchor` / `topAnchor` to
+  `scroll.contentView()` and `widthAnchor` to `scroll.widthAnchor()`
+  (so vertical scroll only). Same gotcha applies the other
+  direction: any frame-sized child (e.g. the per-card
+  `NSTextView::scrollableTextView`) added to an autolayout
+  `NSStackView` loses its frame and collapses to its intrinsic
+  height — pin its `heightAnchor` explicitly. See
+  [`runloop::popover::Popover::new`](../vetterd/src/runloop/popover.rs)
+  for the canonical fix.
 
 Both lessons argue for the same general rule: **the AppKit code path
 is the part of the daemon least covered by integration tests.** Any

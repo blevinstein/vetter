@@ -29,13 +29,13 @@ use objc2::sel;
 use objc2::DefinedClass;
 use objc2::MainThreadOnly;
 use objc2_app_kit::{
-    NSBezelStyle, NSButton, NSColor, NSFont, NSPopover, NSPopoverBehavior, NSPopoverDelegate,
-    NSScrollView, NSStackView, NSStackViewDistribution, NSStatusBarButton, NSTextField, NSTextView,
-    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
+    NSBezelStyle, NSButton, NSColor, NSFont, NSLayoutConstraint, NSPopover, NSPopoverBehavior,
+    NSPopoverDelegate, NSScrollView, NSStackView, NSStackViewDistribution, NSStatusBarButton,
+    NSTextField, NSTextView, NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_foundation::{
-    ns_string, MainThreadMarker, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize,
-    NSString,
+    ns_string, MainThreadMarker, NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge,
+    NSSize, NSString,
 };
 
 use super::AppDelegate;
@@ -71,6 +71,13 @@ impl Popover {
         cards.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
         cards.setSpacing(CARD_SPACING);
         cards.setDistribution(NSStackViewDistribution::Fill);
+        // NSStackView defaults this to `false`, but pin it
+        // explicitly so the constraints below are the only thing
+        // that gives the document view a size — if a future change
+        // re-enables autoresizing translation we'd silently get
+        // back to a zero-sized stack view (the bug this whole
+        // setup is fixing).
+        cards.setTranslatesAutoresizingMaskIntoConstraints(false);
 
         // Wrap the cards in a scroll view so a popover with N>1
         // pending requests doesn't grow off-screen.
@@ -80,10 +87,6 @@ impl Popover {
         scroll.setAutohidesScrollers(true);
         scroll.setDrawsBackground(false);
         scroll.setDocumentView(Some(&cards));
-        scroll.setFrame(NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(POPOVER_WIDTH, POPOVER_HEIGHT),
-        ));
 
         // The popover's content controller wraps a container view
         // that hosts the scroll view and a fixed footer (Quit
@@ -100,6 +103,31 @@ impl Popover {
             NSSize::new(POPOVER_WIDTH, POPOVER_HEIGHT - 36.0),
         ));
         container.addSubview(&scroll);
+
+        // Anchor the cards stack inside the scroll view's clip
+        // view. Without these constraints `NSStackView` (an Auto
+        // Layout view) stays at zero size as the document view
+        // and every card silently renders invisible — the popover
+        // looks empty even with pending requests in the queue.
+        // Pinning width to `scroll.widthAnchor()` (not
+        // `contentView.widthAnchor()`) keeps the stack the exact
+        // visible width and stops the horizontal scroller ever
+        // appearing; height is implicit (sum of arranged subview
+        // heights) so the vertical scroller engages once N cards
+        // exceed the popover height.
+        let clip = scroll.contentView();
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            cards
+                .leadingAnchor()
+                .constraintEqualToAnchor(&clip.leadingAnchor()),
+            cards
+                .trailingAnchor()
+                .constraintEqualToAnchor(&clip.trailingAnchor()),
+            cards.topAnchor().constraintEqualToAnchor(&clip.topAnchor()),
+            cards
+                .widthAnchor()
+                .constraintEqualToAnchor(&scroll.widthAnchor()),
+        ]));
 
         // Footer with a Quit button on the right. Replaces the
         // PR-1 `NSStatusItem.menu` Quit entry now that the button
@@ -449,6 +477,17 @@ impl PopoverController {
         card.addArrangedSubview(&header_row);
         card.addArrangedSubview(&body_scroll);
         card.addArrangedSubview(&buttons);
+
+        // Pin the body's height. `body_scroll` carries a `setFrame`
+        // size, but once it's an arranged subview of an autolayout
+        // `NSStackView` the frame is replaced by intrinsic-content
+        // sizing — which for a freshly-built `scrollableTextView` is
+        // basically zero. Without this constraint the §8.5 detail
+        // collapses to a thin strip even when the outer cards stack
+        // is correctly sized.
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[body_scroll
+            .heightAnchor()
+            .constraintEqualToConstant(DETAIL_HEIGHT)]));
 
         // Coerce the stack view into a plain NSView for return.
         let view: Retained<NSView> = card.into_super();

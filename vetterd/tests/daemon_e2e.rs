@@ -14,7 +14,6 @@ use tempfile::TempDir;
 use vetter_core::wire::{
     new_request_id, read_decision, write_frame, VetRequest, WireDecision, PROTOCOL_VERSION,
 };
-use vetter_core::{Body, DisplayHints, Effect, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy};
 use vetterd::AuditEntry;
 
 struct Daemon {
@@ -93,44 +92,27 @@ fn wait_for_socket(path: &Path, timeout: Duration) {
     panic!("daemon socket did not appear at {}", path.display());
 }
 
-fn make_parsed(method: HttpMethod, url: &str) -> ParsedCommand {
-    ParsedCommand {
-        command: "curl".into(),
-        argv: vec!["curl".into(), url.into()],
-        cwd: None,
-        stdin_digest: None,
-        effects: vec![Effect::HttpRequest(HttpRequest {
-            method: method.clone(),
-            url: url::Url::parse(url).unwrap(),
-            headers: vec![],
-            body: Body::None,
-            auth: None,
-            tls: TlsPolicy::Strict,
-            follow_redirects: false,
-            proxy: None,
-        })],
-        signals: vec![],
-        display_hints: DisplayHints {
-            primary_verb: method.as_str().into(),
-            primary_target: url.into(),
-            ..Default::default()
-        },
-        extras: serde_json::Value::Null,
-    }
-}
-
-fn make_req(parsed: ParsedCommand, force_prompt: bool) -> VetRequest {
+/// Build a v2 [`VetRequest`] from the wrapped command's argv. The
+/// daemon does its own parse, so callers no longer pass a pre-built
+/// `ParsedCommand` — they hand over the same `argv` they would type
+/// into a shell.
+fn make_req<I, S>(argv: I, force_prompt: bool) -> VetRequest
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
     VetRequest {
         v: PROTOCOL_VERSION,
         id: new_request_id(),
         cwd: None,
         agent_hint: None,
-        command: parsed.command.clone(),
-        argv: parsed.argv.clone(),
-        stdin_digest: None,
-        parsed,
+        argv: argv.into_iter().map(Into::into).collect(),
         force_prompt,
     }
+}
+
+fn curl_get(url: &str) -> Vec<String> {
+    vec!["curl".into(), url.into()]
 }
 
 fn round_trip(socket: &Path, req: &VetRequest) -> vetter_core::wire::VetDecision {
@@ -164,7 +146,7 @@ deny:
 #[test]
 fn allow_path_returns_allow_with_rule_id_in_reason() {
     let d = Daemon::spawn(ALLOWLIST);
-    let req = make_req(make_parsed(HttpMethod::Get, "https://example.test/"), false);
+    let req = make_req(curl_get("https://example.test/"), false);
     let dec = round_trip(&d.socket, &req);
     assert_eq!(dec.decision, WireDecision::Allow);
     assert!(dec.reason.contains("example-get"), "{}", dec.reason);
@@ -174,7 +156,7 @@ fn allow_path_returns_allow_with_rule_id_in_reason() {
 #[test]
 fn deny_path_returns_deny_with_denylist_scope_in_reason() {
     let d = Daemon::spawn(ALLOWLIST);
-    let req = make_req(make_parsed(HttpMethod::Get, "https://blocked.test/"), false);
+    let req = make_req(curl_get("https://blocked.test/"), false);
     let dec = round_trip(&d.socket, &req);
     assert_eq!(dec.decision, WireDecision::Deny);
     assert!(dec.reason.contains("blocked-host"), "{}", dec.reason);
@@ -184,10 +166,7 @@ fn deny_path_returns_deny_with_denylist_scope_in_reason() {
 #[test]
 fn prompt_class_falls_back_to_stub_deny() {
     let d = Daemon::spawn(ALLOWLIST);
-    let req = make_req(
-        make_parsed(HttpMethod::Get, "https://unmatched.test/"),
-        false,
-    );
+    let req = make_req(curl_get("https://unmatched.test/"), false);
     let dec = round_trip(&d.socket, &req);
     assert_eq!(dec.decision, WireDecision::Deny);
     assert!(dec.reason.contains("no UI yet"), "{}", dec.reason);
@@ -196,7 +175,7 @@ fn prompt_class_falls_back_to_stub_deny() {
 #[test]
 fn force_prompt_overrides_existing_allow_rule() {
     let d = Daemon::spawn(ALLOWLIST);
-    let req = make_req(make_parsed(HttpMethod::Get, "https://example.test/"), true);
+    let req = make_req(curl_get("https://example.test/"), true);
     let dec = round_trip(&d.socket, &req);
     assert_eq!(dec.decision, WireDecision::Deny);
     assert!(dec.reason.contains("no UI yet"), "{}", dec.reason);
@@ -210,14 +189,12 @@ fn concurrent_clients_get_independent_correlated_decisions() {
         .map(|i| {
             let socket = socket.clone();
             std::thread::spawn(move || {
-                // Half allow, half deny so we cover both paths under
-                // contention.
                 let url = if i % 2 == 0 {
                     "https://example.test/"
                 } else {
                     "https://blocked.test/"
                 };
-                let req = make_req(make_parsed(HttpMethod::Get, url), false);
+                let req = make_req(curl_get(url), false);
                 let expected_id = req.id.clone();
                 let dec = round_trip(&socket, &req);
                 (i, expected_id, dec)
@@ -238,8 +215,8 @@ fn concurrent_clients_get_independent_correlated_decisions() {
 #[test]
 fn audit_log_records_one_entry_per_request_with_decision() {
     let d = Daemon::spawn(ALLOWLIST);
-    let req_a = make_req(make_parsed(HttpMethod::Get, "https://example.test/"), false);
-    let req_b = make_req(make_parsed(HttpMethod::Get, "https://blocked.test/"), false);
+    let req_a = make_req(curl_get("https://example.test/"), false);
+    let req_b = make_req(curl_get("https://blocked.test/"), false);
     let dec_a = round_trip(&d.socket, &req_a);
     let dec_b = round_trip(&d.socket, &req_b);
 
@@ -257,9 +234,61 @@ fn audit_log_records_one_entry_per_request_with_decision() {
     let a = &by_id[&dec_a.id];
     assert_eq!(a.decision, WireDecision::Allow);
     assert!(a.reason.contains("example-get"), "{:?}", a);
+    // Audit `command` is the daemon-derived parser name, not whatever
+    // the client claimed. T2 regression check: an attacker submitting
+    // `argv: ["curl", ...]` cannot scribble a different command into
+    // the log.
+    assert_eq!(a.command, "curl");
     let b = &by_id[&dec_b.id];
     assert_eq!(b.decision, WireDecision::Deny);
     assert!(b.reason.contains("blocked-host"), "{:?}", b);
+    assert_eq!(b.command, "curl");
+}
+
+/// T2 regression: with v2 wire, the daemon parses argv itself, so a
+/// client cannot submit `argv: ["curl", "https://blocked.test/"]` and
+/// have it allowed by lying about parsed effects. The wire format
+/// physically has nowhere to put the lie any more, but we also assert
+/// here that a request whose argv hits a denylist rule is denied —
+/// proving the daemon did the parse and reached the matcher with
+/// effects derived from the real argv.
+#[test]
+fn daemon_reparses_argv_so_client_cannot_forge_effects() {
+    let d = Daemon::spawn(ALLOWLIST);
+    let req = make_req(curl_get("https://blocked.test/"), false);
+    let dec = round_trip(&d.socket, &req);
+    assert_eq!(dec.decision, WireDecision::Deny);
+    assert!(dec.reason.contains("blocked-host"), "{}", dec.reason);
+}
+
+/// T2 regression: a request whose argv the daemon cannot parse fails
+/// closed (deny) with a `parse failed` reason. Earlier the daemon
+/// would have happily evaluated whatever `parsed` field the client
+/// supplied; v2 requires the daemon to derive the effects itself.
+#[test]
+fn unparseable_argv_is_denied_with_parse_failed_reason() {
+    let d = Daemon::spawn(ALLOWLIST);
+    // Curl with no URL at all is a `MissingArgument("URL")` — a real
+    // ParseError that the daemon must surface as deny.
+    let req = make_req(["curl"], false);
+    let dec = round_trip(&d.socket, &req);
+    assert_eq!(dec.decision, WireDecision::Deny);
+    assert!(dec.reason.contains("parse failed"), "{}", dec.reason);
+    assert!(dec.reason.contains("URL"), "{}", dec.reason);
+}
+
+/// T2 regression: an argv whose `argv[0]` resolves to no registered
+/// parser is also denied (the daemon would otherwise have to fall
+/// back to client-supplied effects, which v2 deliberately doesn't
+/// have).
+#[test]
+fn unknown_command_is_denied() {
+    let d = Daemon::spawn(ALLOWLIST);
+    let req = make_req(["totally-not-a-real-binary", "--help"], false);
+    let dec = round_trip(&d.socket, &req);
+    assert_eq!(dec.decision, WireDecision::Deny);
+    assert!(dec.reason.contains("parse failed"), "{}", dec.reason);
+    assert!(dec.reason.contains("no parser"), "{}", dec.reason);
 }
 
 #[test]
@@ -278,7 +307,7 @@ fn connection_refused_after_daemon_killed() {
 #[test]
 fn version_mismatch_request_is_rejected_by_daemon() {
     let d = Daemon::spawn(ALLOWLIST);
-    let mut req = make_req(make_parsed(HttpMethod::Get, "https://example.test/"), false);
+    let mut req = make_req(curl_get("https://example.test/"), false);
     req.v = 99;
     let mut s = UnixStream::connect(&d.socket).expect("connect");
     write_frame(&mut s, &req).expect("write frame");
@@ -347,7 +376,7 @@ fn random_bytes_do_not_crash_daemon() {
     }
 
     // Daemon must still be alive: a valid round-trip succeeds.
-    let req = make_req(make_parsed(HttpMethod::Get, "https://example.test/"), false);
+    let req = make_req(curl_get("https://example.test/"), false);
     let dec = round_trip(&d.socket, &req);
     assert_eq!(
         dec.decision,

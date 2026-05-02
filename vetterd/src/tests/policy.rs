@@ -3,22 +3,7 @@
 
 use super::*;
 use vetter_core::matcher::rule::{HostPattern, HttpClause, Rule, RuleWhen, UrlClause};
-use vetter_core::wire::PROTOCOL_VERSION;
 use vetter_core::{Body, DisplayHints, Effect, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy};
-
-fn req_for(parsed: ParsedCommand, force_prompt: bool) -> VetRequest {
-    VetRequest {
-        v: PROTOCOL_VERSION,
-        id: "01HX0000000000000000000000".into(),
-        cwd: None,
-        agent_hint: None,
-        command: parsed.command.clone(),
-        argv: parsed.argv.clone(),
-        stdin_digest: None,
-        parsed,
-        force_prompt,
-    }
-}
 
 fn parsed_get(host: &str) -> ParsedCommand {
     ParsedCommand {
@@ -77,8 +62,7 @@ fn allow_rule_in_user_scope_returns_allow_with_reason() {
         user: vec![allow_rule("yes", "example.test")],
         builtin: vec![],
     };
-    let req = req_for(parsed_get("example.test"), false);
-    let (d, reason) = evaluate(&req, &store);
+    let (d, reason) = evaluate(&parsed_get("example.test"), false, &store);
     assert_eq!(d, WireDecision::Allow);
     assert!(reason.contains("yes"), "{reason}");
     assert!(reason.contains("user"), "{reason}");
@@ -93,8 +77,7 @@ fn denylist_rule_returns_deny_with_reason() {
         user: vec![allow_rule("would-allow", "example.test")],
         builtin: vec![],
     };
-    let req = req_for(parsed_get("example.test"), false);
-    let (d, reason) = evaluate(&req, &store);
+    let (d, reason) = evaluate(&parsed_get("example.test"), false, &store);
     assert_eq!(d, WireDecision::Deny);
     assert!(reason.contains("blocked"), "{reason}");
     assert!(reason.contains("denylist"), "{reason}");
@@ -103,8 +86,7 @@ fn denylist_rule_returns_deny_with_reason() {
 #[test]
 fn no_match_falls_back_to_stub_deny() {
     let store = AllowlistStore::default();
-    let req = req_for(parsed_get("unknown.test"), false);
-    let (d, reason) = evaluate(&req, &store);
+    let (d, reason) = evaluate(&parsed_get("unknown.test"), false, &store);
     assert_eq!(d, WireDecision::Deny);
     assert_eq!(reason, STUB_PROMPT_REASON);
 }
@@ -118,8 +100,7 @@ fn force_prompt_short_circuits_even_with_allow_rule() {
         user: vec![allow_rule("would-allow", "example.test")],
         builtin: vec![],
     };
-    let req = req_for(parsed_get("example.test"), true);
-    let (d, reason) = evaluate(&req, &store);
+    let (d, reason) = evaluate(&parsed_get("example.test"), true, &store);
     assert_eq!(d, WireDecision::Deny);
     assert_eq!(reason, STUB_PROMPT_REASON);
 }

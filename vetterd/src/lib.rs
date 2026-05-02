@@ -27,10 +27,13 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use vetter_core::matcher::{load_default, AllowlistStore};
+use vetter_core::parsers::{self, EnvSnapshot, ParseError, StdinHandle};
 use vetter_core::pidfile;
 use vetter_core::wire::{
-    new_request_id, read_request, write_frame, VetDecision, WireError, PROTOCOL_VERSION,
+    new_request_id, read_request, write_frame, VetDecision, VetRequest, WireDecision, WireError,
+    PROTOCOL_VERSION,
 };
+use vetter_core::{analyze, ParsedCommand};
 
 pub use audit::{AuditEntry, AuditLog};
 pub use policy::evaluate;
@@ -147,14 +150,35 @@ fn accept_loop(
     }
 }
 
-/// Handle a single connection: read one [`VetRequest`], evaluate,
-/// write one [`VetDecision`], audit, close.
+/// Handle a single connection: read one [`VetRequest`], re-parse
+/// `argv` on the daemon side, evaluate, write one [`VetDecision`],
+/// audit, close.
+///
+/// The daemon does its own parse because the client's view of the
+/// world is by definition adversarial-aligned: a same-UID process
+/// could submit `argv: ["curl", "https://evil"]` along with `parsed`
+/// effects describing a benign call and bypass the matcher. See
+/// `plans/ThreatModel.md` T2.
 pub fn handle_connection(
     mut stream: std::os::unix::net::UnixStream,
     ctx: &Context,
 ) -> Result<(), WireError> {
     let req = read_request(&mut stream)?;
-    let (decision, reason) = evaluate(&req, &ctx.allowlist);
+
+    let (decision, reason, command_for_audit) = match parse_request(&req) {
+        Ok(parsed) => {
+            let (decision, reason) = evaluate(&parsed, req.force_prompt, &ctx.allowlist);
+            (decision, reason, parsed.command)
+        }
+        Err(e) => {
+            // Fail closed: a request the daemon cannot parse is one the
+            // daemon cannot reason about. Refuse and surface a usable
+            // explanation so the user knows what argv tripped us.
+            let reason = format!("parse failed: {}", explain_parse_error(&e));
+            (WireDecision::Deny, reason, parser_name_hint(&req))
+        }
+    };
+
     let resp = VetDecision {
         v: PROTOCOL_VERSION,
         id: req.id.clone(),
@@ -169,7 +193,7 @@ pub fn handle_connection(
     let entry = AuditEntry {
         id: req.id.clone(),
         timestamp: timestamp_iso8601(),
-        command: req.command.clone(),
+        command: command_for_audit,
         argv: req.argv.clone(),
         decision,
         reason,
@@ -182,6 +206,65 @@ pub fn handle_connection(
 
     write_frame(&mut stream, &resp)?;
     Ok(())
+}
+
+/// Re-run the parser on `req.argv` using the request's `cwd` and the
+/// daemon's own environment. The returned [`ParsedCommand`] also
+/// carries the generic risk signals so policy / audit see the same
+/// picture the renderer would.
+///
+/// Stdin is intentionally empty here: the v2 wire protocol does not
+/// forward stdin bytes, so the daemon parses with [`StdinHandle::empty`].
+/// For curl's `-d @-` form this means `Body::FromStdin{len: 0}` —
+/// matching what the client's local parser sees and what today's
+/// renderer shows. Forwarding stdin (and re-injecting it on exec) is
+/// tracked separately; see `TODO.md`.
+fn parse_request(req: &VetRequest) -> Result<ParsedCommand, ParseError> {
+    let argv0 = req
+        .argv
+        .first()
+        .ok_or_else(|| ParseError::Other("argv is empty".into()))?
+        .as_str();
+    let parser = parsers::dispatch(argv0)
+        .ok_or_else(|| ParseError::Other(format!("no parser registered for `{argv0}`")))?;
+
+    let env = EnvSnapshot {
+        vars: std::env::vars().collect(),
+        cwd: req.cwd.clone(),
+    };
+    let mut parsed = parser.parse(&req.argv, StdinHandle::empty(), &env)?;
+    parsed.cwd = req.cwd.clone();
+    parsed.signals.extend(analyze(&parsed));
+    Ok(parsed)
+}
+
+/// Best-effort label for the audit log when the parser bails. We
+/// prefer the basename of `argv[0]` so log scrapers searching for
+/// `"command":"curl"` still find the failed-parse entry.
+fn parser_name_hint(req: &VetRequest) -> String {
+    req.argv
+        .first()
+        .map(|p| {
+            Path::new(p)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(p)
+        })
+        .unwrap_or("?")
+        .to_string()
+}
+
+fn explain_parse_error(e: &ParseError) -> String {
+    match e {
+        ParseError::MissingArgument(what) => format!("missing required argument `{what}`"),
+        ParseError::ConflictingArgs(detail) => format!("conflicting arguments: {detail}"),
+        ParseError::UnknownArgument(name) => format!("unknown argument `{name}`"),
+        ParseError::StreamingUnsupported => {
+            "streaming bodies are not supported (`-T -`, chunked transfer, or `-d @-` over 1 MiB)"
+                .into()
+        }
+        ParseError::Other(s) => s.clone(),
+    }
 }
 
 /// RFC-3339 timestamp without bringing in chrono. Audit log lines

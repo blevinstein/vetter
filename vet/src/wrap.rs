@@ -104,10 +104,12 @@ pub fn run(
         id: id.clone(),
         cwd: env.cwd.clone(),
         agent_hint: detect_agent(&env),
-        command: parsed.command.clone(),
+        // Wire v2 sends only argv: the daemon re-runs the parser
+        // on its own copy and matches against the daemon-derived
+        // ParsedCommand. The local `parsed` value above is used
+        // only for the stderr render so the user sees what was
+        // sent. See plans/ThreatModel.md T2.
         argv: argv.clone(),
-        stdin_digest: parsed.stdin_digest.as_ref().map(|d| d.as_str().to_string()),
-        parsed,
         force_prompt: dry_run,
     };
 
@@ -156,11 +158,11 @@ fn round_trip(
 ) -> Result<vetter_core::wire::VetDecision, WireError> {
     let mut s = UnixStream::connect(socket)?;
     // Authenticate the peer BEFORE sending the request. The body
-    // contains argv, parsed effects, cwd, and a stdin digest — all of
-    // which leak to a hijacker in the same-UID-impersonation case
-    // covered by ThreatModel.md T1. `assert_peer_is_self` calls
-    // `getpeereid(2)` on the connected stream and bails with
-    // `WireError::PeerAuth` if the kernel reports a UID we don't own.
+    // carries argv and cwd — both of which leak to a hijacker in the
+    // same-UID-impersonation case covered by ThreatModel.md T1.
+    // `assert_peer_is_self` calls `getpeereid(2)` on the connected
+    // stream and bails with `WireError::PeerAuth` if the kernel
+    // reports a UID we don't own.
     assert_peer_is_self(&s)?;
     write_frame(&mut s, req)?;
     read_decision(&mut s, &req.id)

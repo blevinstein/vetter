@@ -156,16 +156,29 @@ before the rest land.
 Roadmap source: tech-debt audit, 2026-05. None of these block a phase
 by themselves, but Phase 4 (UI) shouldn't ship without them — they are
 the difference between "demo-quality daemon" and "I'd run this on my
-machine".
+machine". Per-threat detail in
+[plans/ThreatModel.md](plans/ThreatModel.md).
 
-- [ ] Write `plans/ThreatModel.md` (assets, attackers, in-scope /
-      out-of-scope, residual risks)
-- [ ] Peer credential check on `vetterd` accept (`SO_PEERCRED` /
+- [x] Write `plans/ThreatModel.md` (assets, attackers, in-scope /
+      out-of-scope, residual risks) — landed in PR #4
+- [x] Peer credential check on `vetterd` accept (`SO_PEERCRED` /
       `getpeereid`); reject connections whose uid doesn't match the
-      daemon's
+      daemon's — landed in PR #5 (T1 partial)
+- [x] Drop `parsed` from `VetRequest`; daemon re-parses argv before
+      matcher runs (T2). Wire bumped to v2; client / daemon /
+      audit-log all re-derive command from `argv[0]`
 - [ ] Verify socket parent dir owner + mode before `vet` connects;
-      refuse on mismatch (defends against squat / race on
-      `$TMPDIR/vetter.sock`)
+      refuse on mismatch. (Daemon enforces `0700` at bind; the
+      client-side check is the residual gap — peer-cred largely
+      neutralises it.)
+- [ ] PID attestation on connect (`vetterd` flocks the pidfile;
+      `vet` asserts the locking PID equals the peer PID) — closes
+      the rest of T1
+- [ ] Read deadline on `vetterd`'s request frame + cap inflight
+      workers (T3)
+- [ ] Resolve `argv[0]` to a real path / inode before parser dispatch
+      so `ln /bin/bash /tmp/curl && vet /tmp/curl …` can't route to
+      the wrong parser (T4)
 - [ ] `FD_CLOEXEC` on daemon + client sockets and the audit fd; test
       that the exec'd child inherits only 0/1/2
 - [ ] Sanitise ANSI / C0 control bytes in renderer output (header
@@ -181,10 +194,10 @@ machine".
       accept-and-document); add tests
 - [ ] Audit log rotation + size cap; explicit behaviour when audit
       dir is unwritable (warn loudly, don't silently drop)
-- [ ] Connection cap + panic boundary on `vetterd` accept loop
-      (currently unbounded `thread::spawn` per connection)
-- [ ] `serde(deny_unknown_fields)` on `VetRequest` / `VetDecision`;
-      document wire evolution rules (additive-only fields, unknown
+- [x] `serde(deny_unknown_fields)` on `VetRequest` / `VetDecision`
+      (already in place; new wire-format test enforces that legacy
+      `parsed` payloads are rejected)
+- [ ] Document wire evolution rules (additive-only fields, unknown
       enum variants rejected) in `plans/Overview.md` §3
 - [ ] Hash the loaded ruleset; record digest in each audit row so
       decisions remain replayable after `allowlist.yaml` edits
@@ -192,6 +205,12 @@ machine".
       allowlist parses, daemon reachable
 - [ ] CI: `cargo-deny check` (advisories, bans, sources, licenses)
       and `cargo-audit`
+- [ ] Forward stdin bytes for parsers that read stdin (curl `-d @-`)
+      and re-inject on exec; today daemon parses with empty stdin so
+      `-d @-` round-trips as `Body::FromStdin{len: 0}`. Audit logs
+      and policy decisions for those calls reflect the empty body,
+      not the bytes curl actually sees. Tracked here because it
+      surfaced while landing T2.
 
 Promoted from elsewhere because the audit raised their priority:
 

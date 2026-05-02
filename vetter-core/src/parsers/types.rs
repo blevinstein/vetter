@@ -30,8 +30,11 @@ impl Sha256 {
 
 /// Top-level structured surface produced by every `CommandParser`.
 ///
-/// Wire format (Phase 3 `VetRequest.parsed`) is the JSON serialization
-/// of this struct.
+/// This is purely an internal type now. Phase 3a sent it on the wire as
+/// `VetRequest.parsed`, but v2 of the wire protocol dropped that field
+/// (see [`crate::wire`] module docs / `plans/ThreatModel.md` T2): the
+/// daemon re-runs the parser on `argv` and `ParsedCommand` only flows
+/// inside a single process.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParsedCommand {

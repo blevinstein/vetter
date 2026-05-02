@@ -1,17 +1,29 @@
 //! JSON wire types for the Unix-socket protocol between `vet` and `vetterd`.
 //!
-//! Implements the schema sketched in `plans/Overview.md` §3. Phase 3a
-//! ships v1 with one [`VetRequest`] frame per connection followed by
-//! one [`VetDecision`] frame back. Frames are length-prefixed JSON: a
-//! 4-byte big-endian `u32` length followed by exactly that many bytes
-//! of UTF-8 JSON. The protocol is intentionally synchronous (one
-//! request → one decision); concurrency is achieved by spawning a
-//! worker thread per connection on the daemon side.
+//! Implements the schema sketched in `plans/Overview.md` §3. The
+//! protocol is intentionally synchronous (one request → one decision);
+//! concurrency is achieved by spawning a worker thread per connection
+//! on the daemon side. Frames are length-prefixed JSON: a 4-byte
+//! big-endian `u32` length followed by exactly that many bytes of
+//! UTF-8 JSON.
 //!
 //! Both message types include a `v` field. A peer that sees a `v` it
 //! does not understand returns [`WireError::VersionMismatch`] without
 //! attempting to parse the rest — this keeps the daemon defensive
 //! against rolled-back clients.
+//!
+//! ## Versioning
+//!
+//! - **v1** (Phase 3a): the client sent a pre-parsed [`ParsedCommand`]
+//!   in `VetRequest.parsed` and the daemon evaluated against that
+//!   field directly. The daemon trusted argv-shaped lies — the
+//!   attack documented as T2 in `plans/ThreatModel.md`.
+//! - **v2** (Phase 3b, current): `VetRequest` carries only the raw
+//!   argv (plus `cwd`, agent hint, and a correlation id). The daemon
+//!   re-runs the parser on argv and rules match on the *daemon's*
+//!   `ParsedCommand`. A same-UID attacker can no longer submit
+//!   `argv: ["curl", "https://evil.com"]` with parsed effects
+//!   describing a benign call.
 
 use std::io::{Read, Write};
 
@@ -19,26 +31,30 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::matcher::Decision as MatchDecision;
-use crate::ParsedCommand;
 
 /// The wire-format version this build speaks. Bumping this requires
 /// either a backward-compatible schema (default-able new fields) or
 /// negotiating `v` on the connection.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Hard cap on a single frame body. The daemon refuses anything larger
-/// rather than allocating an unbounded `Vec`. 4 MiB is generous: a
-/// realistic [`VetRequest`] (with `parsed.effects` + the original
-/// argv) is well under 64 KiB even with a 1 MiB inline body. The cap
+/// rather than allocating an unbounded `Vec`. 1 MiB is generous: a
+/// realistic v2 [`VetRequest`] is just argv + a few small strings,
+/// comfortably under 64 KiB even for pathological argvs. The cap
 /// exists to defend against accidentally-corrupt length prefixes on
 /// real connections and against deliberately-malformed input from
 /// fuzzing in Phase 3b.
-pub const MAX_FRAME_BYTES: u32 = 4 * 1024 * 1024;
+pub const MAX_FRAME_BYTES: u32 = 1024 * 1024;
 
-/// Sent by `vet` after it has parsed the wrapped command and rendered
-/// the summary locally. The daemon evaluates this against its
-/// allowlist store and returns a [`VetDecision`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Sent by `vet` after rendering a local preview of the wrapped
+/// command. The daemon re-parses [`Self::argv`], evaluates the result
+/// against its allowlist store, and returns a [`VetDecision`].
+///
+/// Wire schema is intentionally minimal: anything the daemon could
+/// conclude on its own (parsed effects, command name, stdin digest)
+/// is *not* on the wire — see the v1→v2 transition note in the
+/// module docstring.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VetRequest {
     /// Wire-protocol version. Must equal [`PROTOCOL_VERSION`] for the
@@ -48,28 +64,23 @@ pub struct VetRequest {
     /// matching [`VetDecision`] and in the audit log entry.
     pub id: String,
     /// Working directory `vet` was invoked from. Daemon uses this for
-    /// project-scope rule discovery.
+    /// project-scope rule discovery and as the `cwd` field on the
+    /// re-parsed [`crate::ParsedCommand`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<std::path::PathBuf>,
     /// Best-effort agent identifier (`"claude-code"`, `"cursor"`,
     /// etc.) sniffed from env variables on the client side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_hint: Option<String>,
-    /// The wrapped command name (parser identifier, `"curl"` etc.).
-    pub command: String,
-    /// Original argv as the user invoked it; preserved for the audit
-    /// log and for any future re-parsing on the daemon side.
+    /// Original argv as the user invoked it. `argv[0]` is the parser
+    /// dispatch key on the daemon side; the rest is fed verbatim into
+    /// the parser. **The daemon never trusts argv-derived effects
+    /// the client may have computed locally** — that's the whole
+    /// point of the v2 wire break.
     pub argv: Vec<String>,
-    /// SHA-256 of any stdin bytes the client consumed for the parser
-    /// (e.g. curl's `-d @-`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stdin_digest: Option<String>,
-    /// Parsed structured surface — the canonical thing rules match on.
-    pub parsed: ParsedCommand,
     /// Force the request onto the prompt path, even if a permissive
     /// rule would otherwise auto-allow. `vet --dry-run` rides this
-    /// flag in Phase 3a (when the prompt path stub-denies, dry-run
-    /// effectively becomes "always refuse").
+    /// flag.
     #[serde(default, skip_serializing_if = "is_false")]
     pub force_prompt: bool,
 }
@@ -90,7 +101,7 @@ pub struct VetDecision {
     /// and by `vet`'s `allow (…)` / `deny (…)` line on stderr.
     pub reason: String,
     /// If the approver chose "Allowlist…" this carries the new rule
-    /// the daemon persisted (Phase 4+). Always `None` in 3a since
+    /// the daemon persisted (Phase 4+). Always `None` in 3b since
     /// the stub UI never adds rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule_added: Option<serde_json::Value>,
@@ -108,9 +119,9 @@ pub enum WireDecision {
     Allow,
     Deny,
     /// Reserved for the Phase-4 UI: a one-shot allow not persisted to
-    /// any allowlist file. In Phase 3a daemons never emit this; if a
+    /// any allowlist file. In Phase 3 daemons never emit this; if a
     /// peer-of-the-future sends it the client should treat it
-    /// conservatively (Phase 3a `vet` maps it to deny).
+    /// conservatively (Phase 3 `vet` maps it to deny).
     AllowOnce,
 }
 

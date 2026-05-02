@@ -2,30 +2,7 @@
 //! `AGENTS.md`.
 
 use super::*;
-use crate::{DisplayHints, Effect, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy};
 use std::io::Cursor;
-
-fn sample_parsed() -> ParsedCommand {
-    ParsedCommand {
-        command: "curl".into(),
-        argv: vec!["curl".into(), "https://example.test/".into()],
-        cwd: None,
-        stdin_digest: None,
-        effects: vec![Effect::HttpRequest(HttpRequest {
-            method: HttpMethod::Get,
-            url: url::Url::parse("https://example.test/").unwrap(),
-            headers: vec![],
-            body: crate::Body::None,
-            auth: None,
-            tls: TlsPolicy::Strict,
-            follow_redirects: false,
-            proxy: None,
-        })],
-        signals: vec![],
-        display_hints: DisplayHints::default(),
-        extras: serde_json::Value::Null,
-    }
-}
 
 fn sample_request(id: &str) -> VetRequest {
     VetRequest {
@@ -33,10 +10,7 @@ fn sample_request(id: &str) -> VetRequest {
         id: id.to_string(),
         cwd: Some("/work".into()),
         agent_hint: Some("claude-code".into()),
-        command: "curl".into(),
         argv: vec!["curl".into(), "https://example.test/".into()],
-        stdin_digest: None,
-        parsed: sample_parsed(),
         force_prompt: false,
     }
 }
@@ -87,10 +61,41 @@ fn version_mismatch_rejected_by_helpers() {
     write_frame(&mut buf, &req).unwrap();
     let mut cur = Cursor::new(buf);
     let err = read_request(&mut cur).unwrap_err();
-    assert!(matches!(
-        err,
-        WireError::VersionMismatch { got: 99, want: 1 }
-    ));
+    assert!(
+        matches!(
+            err,
+            WireError::VersionMismatch {
+                got: 99,
+                want: PROTOCOL_VERSION
+            }
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn v1_request_with_legacy_parsed_field_rejected() {
+    // A v1 client (or attacker) crafting a request with a `parsed`
+    // field tries to bypass the daemon re-parse. With
+    // `deny_unknown_fields` on `VetRequest`, the daemon refuses to
+    // even decode such a frame, so the lie can't reach the matcher.
+    let payload = serde_json::json!({
+        "v": PROTOCOL_VERSION,
+        "id": "01HX0000000000000000000000",
+        "argv": ["curl", "https://evil.test/"],
+        "parsed": {
+            "command": "curl",
+            "argv": ["curl", "https://example.test/"],
+            "effects": [],
+        },
+    });
+    let body = serde_json::to_vec(&payload).unwrap();
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    buf.extend_from_slice(&body);
+    let mut cur = Cursor::new(buf);
+    let err = read_request(&mut cur).unwrap_err();
+    assert!(matches!(err, WireError::Json(_)), "{err}");
 }
 
 #[test]

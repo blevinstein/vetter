@@ -5,8 +5,7 @@
 //!
 //! - `--allowlist <path>` (the global flag) — write directly to that
 //!   file regardless of `--scope`.
-//! - `--scope user` (default) — `$XDG_CONFIG_HOME/vet/allowlist.yaml`
-//!   or `$HOME/.config/vet/allowlist.yaml`.
+//! - `--scope user` (default) — `$HOME/.vet/allowlist.yaml`.
 //! - `--scope project` — `<repo>/.vet/allowlist.yaml`, where `<repo>`
 //!   is the nearest ancestor of `cwd` that contains `.git/` (or
 //!   already contains `.vet/allowlist.yaml`). If no such ancestor
@@ -225,9 +224,8 @@ fn resolve_target(scope: AllowScope, override_path: Option<&Path>) -> Result<Pat
         return Ok(p.to_path_buf());
     }
     match scope {
-        AllowScope::User => user_allowlist_path().ok_or_else(|| {
-            "neither $XDG_CONFIG_HOME nor $HOME is set; cannot resolve user allowlist path".into()
-        }),
+        AllowScope::User => user_allowlist_path()
+            .ok_or_else(|| "$HOME is not set; cannot resolve user allowlist path".into()),
         AllowScope::Project => {
             let cwd = std::env::current_dir()
                 .map_err(|e| format!("cannot read current directory: {e}"))?;

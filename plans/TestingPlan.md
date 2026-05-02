@@ -212,7 +212,7 @@ For each `when:` clause field, write tests verifying:
 
 - Walk from a nested directory up to a `<repo>/.vet/allowlist.yaml`; the
   project-scope rules are merged.
-- User-scope file at `~/.config/vet/allowlist.yaml` is merged at lower
+- User-scope file at `~/.vet/allowlist.yaml` is merged at lower
   precedence.
 - Atomic write: simulate a crash mid-write (replace temp file process);
   the allowlist on disk is either the old file or the new file, never

@@ -24,8 +24,8 @@ fn vet_nocolor_clean() -> (Command, TempDir) {
         .env_remove("CLICOLOR_FORCE")
         .env_remove("CLICOLOR")
         .env_remove("TERM")
-        .env("XDG_CONFIG_HOME", scratch.path())
-        .env_remove("HOME")
+        .env("HOME", scratch.path())
+        .env_remove("XDG_CONFIG_HOME")
         .current_dir(scratch.path());
     (cmd, scratch)
 }

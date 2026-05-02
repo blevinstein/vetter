@@ -1,7 +1,6 @@
 //! YAML allowlist loader + project discovery.
 //!
-//! - User scope: `$XDG_CONFIG_HOME/vet/allowlist.yaml`, falling back to
-//!   `$HOME/.config/vet/allowlist.yaml`.
+//! - User scope: `$HOME/.vet/allowlist.yaml`.
 //! - Project scope: walk up from `cwd` looking for `.vet/allowlist.yaml`,
 //!   stopping at any directory containing `.git`.
 //! - Override: when `Some(path)` is passed to [`load_default`], that
@@ -148,22 +147,11 @@ pub fn discover_project_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// Compute the path to the user-scope allowlist file from environment.
-/// Returns `None` when neither `XDG_CONFIG_HOME` nor `HOME` is set —
-/// the CLI surfaces that as an actionable error rather than guessing.
+/// Returns `None` when `HOME` is not set — the CLI surfaces that as an
+/// actionable error rather than guessing.
 pub fn user_allowlist_path() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        let xdg = PathBuf::from(xdg);
-        if !xdg.as_os_str().is_empty() {
-            return Some(xdg.join("vet").join("allowlist.yaml"));
-        }
-    }
     let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join(".config")
-            .join("vet")
-            .join("allowlist.yaml"),
-    )
+    Some(PathBuf::from(home).join(".vet").join("allowlist.yaml"))
 }
 
 /// Read + parse one YAML file. Public so integration tests can drive

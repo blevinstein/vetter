@@ -33,8 +33,8 @@ struct EnvGuard {
 fn isolate_user_scope() -> EnvGuard {
     let lock = env_lock();
     let scratch = TempDir::new().unwrap();
-    std::env::set_var("XDG_CONFIG_HOME", scratch.path());
-    std::env::remove_var("HOME");
+    std::env::set_var("HOME", scratch.path());
+    std::env::remove_var("XDG_CONFIG_HOME");
     EnvGuard {
         _lock: lock,
         _scratch: scratch,
@@ -186,13 +186,13 @@ fn missing_files_produce_empty_store() {
 }
 
 #[test]
-fn user_scope_loaded_via_xdg_config_home() {
+fn user_scope_loaded_via_home() {
     let _lock = env_lock();
     let scratch = TempDir::new().unwrap();
-    std::env::set_var("XDG_CONFIG_HOME", scratch.path());
-    std::env::remove_var("HOME");
+    std::env::set_var("HOME", scratch.path());
+    std::env::remove_var("XDG_CONFIG_HOME");
     write(
-        &scratch.path().join("vet/allowlist.yaml"),
+        &scratch.path().join(".vet/allowlist.yaml"),
         r#"
 rules:
   - id: from-user

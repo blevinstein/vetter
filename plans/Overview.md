@@ -160,7 +160,7 @@ Conventions:
 1. **Built-in baseline** — bundled with the binary, very small. Examples:
    `GET https://registry.npmjs.org/**`, `GET https://pypi.org/simple/**`.
    Disabled by default; user opts in.
-2. **User scope** — `~/.config/vet/allowlist.yaml`. Personal, never commited.
+2. **User scope** — `~/.vet/allowlist.yaml`. Personal, never commited.
 3. **Project scope** — `<repo>/.vet/allowlist.yaml`. Discovered by walking
    up from `cwd` to a directory containing this file or `.git`. Designed to
    be checked in so a team shares vetted patterns.

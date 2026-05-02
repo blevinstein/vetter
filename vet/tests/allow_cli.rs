@@ -1,8 +1,8 @@
 //! CLI integration tests for `vet allow add | rm | list`.
 //!
-//! Each test gets its own tempdir; env (`XDG_CONFIG_HOME`, `HOME`)
-//! and cwd are set per-spawn via `assert_cmd::Command`, so tests
-//! parallelise without stomping on each other.
+//! Each test gets its own tempdir; env (`HOME`) and cwd are set
+//! per-spawn via `assert_cmd::Command`, so tests parallelise without
+//! stomping on each other.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,8 +16,8 @@ fn vet() -> Command {
 }
 
 /// Returns a base command + the scratch tempdir whose lifetime must
-/// outlive the assertion (`Drop` deletes it). `XDG_CONFIG_HOME` is
-/// pointed at the scratch dir so user-scope writes land there.
+/// outlive the assertion (`Drop` deletes it). `HOME` is pointed at
+/// the scratch dir so user-scope writes land at `scratch/.vet/`.
 fn vet_isolated() -> (Command, TempDir) {
     let scratch = TempDir::new().expect("tempdir");
     let mut cmd = vet();
@@ -25,14 +25,14 @@ fn vet_isolated() -> (Command, TempDir) {
         .env_remove("CLICOLOR_FORCE")
         .env_remove("CLICOLOR")
         .env_remove("TERM")
-        .env("XDG_CONFIG_HOME", scratch.path())
-        .env_remove("HOME")
+        .env("HOME", scratch.path())
+        .env_remove("XDG_CONFIG_HOME")
         .current_dir(scratch.path());
     (cmd, scratch)
 }
 
 fn user_allowlist_path(scratch: &TempDir) -> PathBuf {
-    scratch.path().join("vet").join("allowlist.yaml")
+    scratch.path().join(".vet").join("allowlist.yaml")
 }
 
 const PATTERN_GET_EXAMPLE: &str =
@@ -89,8 +89,8 @@ fn add_auto_id_is_stable_so_duplicate_add_errors() {
         .success();
 
     let (mut cmd2, _scratch2) = (vet(), _scratch);
-    cmd2.env_remove("HOME")
-        .env("XDG_CONFIG_HOME", _scratch2.path())
+    cmd2.env("HOME", _scratch2.path())
+        .env_remove("XDG_CONFIG_HOME")
         .current_dir(_scratch2.path())
         .args(["allow", "add", PATTERN_GET_EXAMPLE])
         .assert()
@@ -229,6 +229,7 @@ rules:
 #[test]
 fn list_prints_rules_grouped_by_scope() {
     let (mut cmd, scratch) = vet_isolated();
+    // User scope: $HOME/.vet/allowlist.yaml (HOME=scratch)
     seed_file(
         &user_allowlist_path(&scratch),
         r#"
@@ -242,9 +243,10 @@ deny:
       http: { method: [POST], url: { host: bad.test } }
 "#,
     );
-    fs::create_dir_all(scratch.path().join(".vet")).unwrap();
+    // Project scope: scratch/proj/.vet/allowlist.yaml (cwd=proj)
+    let proj = scratch.path().join("proj");
     seed_file(
-        &scratch.path().join(".vet/allowlist.yaml"),
+        &proj.join(".vet/allowlist.yaml"),
         r#"
 rules:
   - id: from-project
@@ -252,7 +254,11 @@ rules:
       http: { method: [HEAD], url: { host: project.test } }
 "#,
     );
-    let assertion = cmd.args(["allow", "list"]).assert().success();
+    let assertion = cmd
+        .current_dir(&proj)
+        .args(["allow", "list"])
+        .assert()
+        .success();
     let stdout = String::from_utf8(assertion.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("[denylist] blocked"), "{stdout}");
     assert!(stdout.contains("[project] from-project"), "{stdout}");
@@ -275,9 +281,9 @@ rules:
       http: { method: [GET] }
 "#,
     );
-    fs::create_dir_all(scratch.path().join(".vet")).unwrap();
+    let proj = scratch.path().join("proj");
     seed_file(
-        &scratch.path().join(".vet/allowlist.yaml"),
+        &proj.join(".vet/allowlist.yaml"),
         r#"
 rules:
   - id: from-project
@@ -286,6 +292,7 @@ rules:
 "#,
     );
     let assertion = cmd
+        .current_dir(&proj)
         .args(["allow", "list", "--scope", "user"])
         .assert()
         .success();
@@ -306,9 +313,9 @@ rules:
       http: { method: [GET] }
 "#,
     );
-    fs::create_dir_all(scratch.path().join(".vet")).unwrap();
+    let proj = scratch.path().join("proj");
     seed_file(
-        &scratch.path().join(".vet/allowlist.yaml"),
+        &proj.join(".vet/allowlist.yaml"),
         r#"
 rules:
   - id: from-project
@@ -321,6 +328,7 @@ deny:
 "#,
     );
     let assertion = cmd
+        .current_dir(&proj)
         .args(["allow", "list", "--scope", "project"])
         .assert()
         .success();

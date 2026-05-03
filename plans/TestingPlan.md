@@ -393,7 +393,25 @@ Required rows, in order:
   was given. Same shape as user.
 - **parsers registered** — `OK <count> (<names>)`. An empty registry
   is `ERROR` (binary likely misbuilt).
-- **code signing** — `SKIP` until the notarisation pipeline lands.
+- **code signing (vet)** / **code signing (vetterd)** — on macOS,
+  shells out to `codesign --verify --strict` then `codesign -d -vv`
+  on each binary. `OK` for Developer-ID Application authority +
+  `--options runtime` (hardened runtime); `WARN` for ad-hoc signed
+  (`Signature=adhoc`, the cargo + `codesign --sign -` dev path) or
+  Developer-ID without the hardened runtime; `ERROR` if `codesign
+  --verify` fails or the binary path cannot be resolved. The
+  `vetterd` binary is resolved via the same logic `vet daemon start`
+  uses (`$VETTERD_BIN` → sibling-of-`vet` → `PATH`). Off macOS the
+  whole block collapses to a single `code signing SKIP macOS only`
+  row — distribution is macOS-only, so a signature on Linux is
+  meaningless.
+- **code signing (bundle)** — emitted only when both binaries
+  resolve to the same `<Name>.app/Contents/MacOS/`. Runs `xcrun
+  stapler validate` then `spctl --assess --type execute --verbose=4`
+  on the bundle. `OK` only when both succeed (notarised + stapled +
+  Gatekeeper-accepted, the artifact `tools/release.sh` produces);
+  `WARN` for ad-hoc bundles or Developer-ID bundles missing the
+  staple; `ERROR` if `codesign --verify` against the bundle fails.
 
 Test matrix lives in [`vet/tests/doctor.rs`](../vet/tests/doctor.rs):
 clean state, real running daemon, stale pidfile, orphan socket,

@@ -21,6 +21,8 @@ use std::io::ErrorKind;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use std::process::ExitCode;
 use std::time::SystemTime;
 
@@ -96,7 +98,7 @@ pub fn run(allowlist_override: Option<&Path>) -> ExitCode {
     ];
     checks.extend(check_allowlists(cwd.as_deref(), allowlist_override));
     checks.push(check_parsers());
-    checks.push(check_code_signing());
+    checks.extend(check_code_signing());
 
     print_report(&checks);
 
@@ -573,11 +575,329 @@ fn check_parsers() -> Check {
     }
 }
 
-fn check_code_signing() -> Check {
+/// Code-signing rows. On non-macOS this is a single SKIP — the
+/// distribution channel is macOS-only (`plans/Overview.md` §12), so a
+/// signed binary on Linux is meaningless. On macOS we emit one row per
+/// inspected artifact: the running `vet`, the resolved `vetterd`, and
+/// (when both binaries live inside the same `.app/Contents/MacOS/`)
+/// the enclosing bundle's notarisation + staple state.
+///
+/// Verdict matrix per
+/// [plans/TestingPlan.md](../../plans/TestingPlan.md) §4.7:
+///
+/// - Per-binary: `OK` for Developer-ID + hardened runtime, `WARN` for
+///   ad-hoc signed (locally built), `ERROR` if `codesign --verify`
+///   fails or the binary path cannot be resolved.
+/// - Bundle: `OK` for Developer-ID + notarised + stapled, `WARN`
+///   otherwise, `ERROR` if `codesign --verify` against the bundle
+///   fails. The row is omitted when the binaries are not inside an
+///   `.app` (typical cargo-build path).
+fn check_code_signing() -> Vec<Check> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        vec![Check::new("code signing", Status::Skip, "macOS only")]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let vet_path = std::env::current_exe().ok();
+        let vetterd_path = crate::daemon::locate_vetterd().ok();
+        let mut checks = vec![
+            check_binary_signature("code signing (vet)", vet_path.as_deref()),
+            check_binary_signature("code signing (vetterd)", vetterd_path.as_deref()),
+        ];
+        if let Some(bundle) = shared_bundle_root(vet_path.as_deref(), vetterd_path.as_deref()) {
+            checks.push(check_bundle_signature(&bundle));
+        }
+        checks
+    }
+}
+
+/// On macOS only. Walks the parents of `exe` looking for a
+/// `<Name>.app/Contents/MacOS/<exe>` ancestor and returns the `.app`
+/// path. Mirrors the reachability check in
+/// `vetterd::notifier::mac::is_app_bundle_executable`; duplicated
+/// rather than shared because the two crates already keep the helper
+/// small and the dependency would only be used for this row.
+#[cfg(target_os = "macos")]
+fn bundle_root_for(exe: &Path) -> Option<PathBuf> {
+    let macos_dir = exe.parent()?;
+    if macos_dir.file_name().and_then(|s| s.to_str()) != Some("MacOS") {
+        return None;
+    }
+    let contents_dir = macos_dir.parent()?;
+    if contents_dir.file_name().and_then(|s| s.to_str()) != Some("Contents") {
+        return None;
+    }
+    let app_dir = contents_dir.parent()?;
+    if !app_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|name| name.ends_with(".app"))
+    {
+        return None;
+    }
+    Some(app_dir.to_path_buf())
+}
+
+/// Returns the `.app` path iff both binaries resolve to executables
+/// living inside the *same* bundle. A mismatch (e.g. `vet` from a
+/// bundle but `vetterd` resolved via PATH to `/usr/local/bin/vetterd`)
+/// means the bundle row would be ambiguous; we omit it instead.
+#[cfg(target_os = "macos")]
+fn shared_bundle_root(vet: Option<&Path>, vetterd: Option<&Path>) -> Option<PathBuf> {
+    let vet = vet?;
+    let vetterd = vetterd?;
+    let vet_bundle = bundle_root_for(vet)?;
+    let vetterd_bundle = bundle_root_for(vetterd)?;
+    if vet_bundle == vetterd_bundle {
+        Some(vet_bundle)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CodesignInfo {
+    /// `Signature=adhoc` line present.
+    adhoc: bool,
+    /// First `Authority=Developer ID Application: …` line, verbatim
+    /// (without the `Authority=` prefix). `None` when the leaf
+    /// authority is something else (e.g. Apple-internal "Software
+    /// Signing"), or when the binary is ad-hoc / unsigned.
+    developer_id: Option<String>,
+    /// `TeamIdentifier=` value when present and not literally
+    /// `not set`.
+    team_id: Option<String>,
+    /// True iff the `flags=…` bitset on the `CodeDirectory` line
+    /// includes `runtime` — the `--options runtime` codesign flag.
+    hardened_runtime: bool,
+}
+
+/// Parse the metadata block `codesign -d -vv` writes to stderr. The
+/// parser is line-oriented and tolerant of unrecognised fields; new
+/// codesign versions add fields at the end of the block (e.g.
+/// `CMSDigest`) which we deliberately ignore.
+#[cfg(target_os = "macos")]
+fn parse_codesign_display(text: &str) -> CodesignInfo {
+    let mut info = CodesignInfo::default();
+    for line in text.lines() {
+        let line = line.trim();
+        if line == "Signature=adhoc" {
+            info.adhoc = true;
+        } else if let Some(rest) = line.strip_prefix("Authority=") {
+            if rest.starts_with("Developer ID Application:") && info.developer_id.is_none() {
+                info.developer_id = Some(rest.to_string());
+            }
+        } else if let Some(rest) = line.strip_prefix("TeamIdentifier=") {
+            if rest != "not set" {
+                info.team_id = Some(rest.to_string());
+            }
+        } else if line.starts_with("CodeDirectory") && line.contains("(") {
+            // flags appear as `flags=0xNNNN(label1,label2,…)`; the
+            // label list contains `runtime` when the hardened runtime
+            // option was set at sign time. Substring match is enough
+            // — the labels are a flat comma list.
+            if let Some(open) = line.find('(') {
+                if let Some(close) = line[open..].find(')') {
+                    let labels = &line[open + 1..open + close];
+                    if labels.split(',').any(|l| l.trim() == "runtime") {
+                        info.hardened_runtime = true;
+                    }
+                }
+            }
+        }
+    }
+    info
+}
+
+#[cfg(target_os = "macos")]
+fn check_binary_signature(label: &'static str, path: Option<&Path>) -> Check {
+    let Some(path) = path else {
+        return Check::new(
+            label,
+            Status::Error,
+            "cannot resolve binary path \
+             (set $VETTERD_BIN or place vetterd next to vet)",
+        );
+    };
+    if !path.exists() {
+        return Check::new(label, Status::Error, format!("missing: {}", path.display()));
+    }
+    match codesign_verdict(path) {
+        Ok(check) => Check::new(label, check.0, check.1),
+        Err(e) => Check::new(label, Status::Error, e),
+    }
+}
+
+/// Returns the `(Status, detail)` pair for a single binary path, or
+/// an error string describing why the verdict could not be computed.
+/// Pulled out so [`check_binary_signature`] stays a thin shell that
+/// turns the path-missing case into ERROR with a useful detail.
+#[cfg(target_os = "macos")]
+fn codesign_verdict(path: &Path) -> Result<(Status, String), String> {
+    let verify = Command::new("codesign")
+        .args(["--verify", "--strict"])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("spawning codesign --verify failed: {e}"))?;
+    if !verify.status.success() {
+        let stderr = String::from_utf8_lossy(&verify.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            format!(
+                "codesign --verify --strict {} exited non-zero",
+                path.display()
+            )
+        } else {
+            format!("{}: {stderr}", path.display())
+        };
+        return Ok((Status::Error, detail));
+    }
+
+    // `codesign -d` writes its metadata block to stderr, not stdout.
+    let display = Command::new("codesign")
+        .args(["-d", "-vv"])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("spawning codesign -d -vv failed: {e}"))?;
+    if !display.status.success() {
+        let stderr = String::from_utf8_lossy(&display.stderr).trim().to_string();
+        return Ok((
+            Status::Error,
+            format!("codesign -d {}: {stderr}", path.display()),
+        ));
+    }
+    let info = parse_codesign_display(&String::from_utf8_lossy(&display.stderr));
+
+    if info.adhoc {
+        return Ok((
+            Status::Warn,
+            format!("{} (ad-hoc signed; locally built)", path.display()),
+        ));
+    }
+    if let Some(authority) = info.developer_id {
+        let mut bits: Vec<String> = Vec::new();
+        bits.push(authority);
+        if let Some(team) = info.team_id {
+            bits.push(format!("Team {team}"));
+        }
+        if info.hardened_runtime {
+            bits.push("hardened runtime".into());
+        } else {
+            // No hardened runtime → notary will reject, so this is
+            // not a healthy distribution build even if everything
+            // else looks Developer-ID-shaped.
+            return Ok((
+                Status::Warn,
+                format!(
+                    "{}: {} (no hardened runtime)",
+                    path.display(),
+                    bits.join(", ")
+                ),
+            ));
+        }
+        return Ok((
+            Status::Ok,
+            format!("{}: {}", path.display(), bits.join(", ")),
+        ));
+    }
+    Ok((
+        Status::Warn,
+        format!(
+            "{} (signature present but not Developer ID Application)",
+            path.display()
+        ),
+    ))
+}
+
+/// Bundle-level check: `xcrun stapler validate` for the notarisation
+/// staple, then `spctl --assess --type execute` for Gatekeeper
+/// acceptance. OK only when both succeed; otherwise WARN with a hint
+/// pointing at `tools/release.sh` (canonical Developer-ID +
+/// notarisation pipeline).
+#[cfg(target_os = "macos")]
+fn check_bundle_signature(bundle: &Path) -> Check {
+    let label = "code signing (bundle)";
+
+    let verify = Command::new("codesign")
+        .args(["--verify", "--strict"])
+        .arg(bundle)
+        .output();
+    match verify {
+        Ok(out) if !out.status.success() => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Check::new(
+                label,
+                Status::Error,
+                format!("codesign --verify {}: {stderr}", bundle.display()),
+            );
+        }
+        Err(e) => {
+            return Check::new(
+                label,
+                Status::Error,
+                format!("spawning codesign --verify failed: {e}"),
+            );
+        }
+        Ok(_) => {}
+    }
+
+    let staple = Command::new("xcrun")
+        .args(["stapler", "validate"])
+        .arg(bundle)
+        .output();
+    let stapled = matches!(staple, Ok(out) if out.status.success());
+
+    let assess = Command::new("spctl")
+        .args(["--assess", "--type", "execute", "--verbose=4"])
+        .arg(bundle)
+        .output();
+    let (accepted, source) = match assess {
+        Ok(out) => {
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let accepted = out.status.success();
+            // spctl emits a `source=…` line on stderr when the
+            // assessment found a signature — surface it so the
+            // OK/WARN row tells the user which trust path matched.
+            let source = combined
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("source="))
+                .map(|s| s.to_string());
+            (accepted, source)
+        }
+        Err(_) => (false, None),
+    };
+
+    if stapled && accepted {
+        let detail = match source {
+            Some(s) => format!("{} (stapled, {s})", bundle.display()),
+            None => format!("{} (stapled, accepted)", bundle.display()),
+        };
+        return Check::new(label, Status::Ok, detail);
+    }
+
+    let mut reasons: Vec<String> = Vec::new();
+    if !stapled {
+        reasons.push("no notarisation ticket stapled".into());
+    }
+    if !accepted {
+        match source.as_deref() {
+            Some(s) => reasons.push(format!("spctl rejected (source={s})")),
+            None => reasons.push("spctl rejected".into()),
+        }
+    }
     Check::new(
-        "code signing",
-        Status::Skip,
-        "not implemented (Phase 4 follow-up; see plans/Overview.md §11)",
+        label,
+        Status::Warn,
+        format!(
+            "{}: {} (run tools/release.sh for a Developer-ID + notarised + stapled bundle)",
+            bundle.display(),
+            reasons.join(", "),
+        ),
     )
 }
 

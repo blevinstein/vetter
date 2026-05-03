@@ -163,6 +163,12 @@ impl Drop for Reaper {
 fn clean_state_exits_zero() {
     let s = Scratch::new();
 
+    // Cargo-built binaries on macOS Apple Silicon land as
+    // linker-applied ad-hoc signatures, so the new code-signing rows
+    // raise WARNs in the green-path tests. We only pin the
+    // error-class summary substring; warnings come and go depending
+    // on host arch and signing state. See `plans/TestingPlan.md`
+    // §4.7.
     s.doctor()
         .assert()
         .success()
@@ -171,7 +177,7 @@ fn clean_state_exits_zero() {
         .stdout(contains("not running"))
         .stdout(contains("parsers registered"))
         .stdout(contains("curl"))
-        .stdout(contains("summary: 0 errors, 0 warnings"));
+        .stdout(contains("summary: 0 errors,"));
 }
 
 #[test]
@@ -187,7 +193,7 @@ fn running_daemon_reports_ok() {
         .stdout(contains(format!("pid={pid}")))
         .stdout(contains("peer_uid="))
         .stdout(contains("uptime="))
-        .stdout(contains("summary: 0 errors, 0 warnings"));
+        .stdout(contains("summary: 0 errors,"));
 }
 
 #[test]
@@ -286,4 +292,52 @@ fn unwritable_audit_dir_exits_error() {
     // Restore writable perms so TempDir teardown can rm the dir.
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700))
         .expect("restore perms");
+}
+
+/// `vet doctor` always emits one `code signing (vet)` and one
+/// `code signing (vetterd)` row on macOS. Tests are run from
+/// cargo-built binaries which Apple Silicon's linker auto-ad-hoc-signs
+/// (`Signature=adhoc`), so the rows should report WARN — not ERROR
+/// (which would mean `codesign --verify` failed) and not be missing.
+/// On Intel x86_64 hosts where the cargo output is truly unsigned the
+/// rows will report ERROR; that's expected and acceptable per
+/// `plans/TestingPlan.md` §4.7.
+#[test]
+#[cfg(target_os = "macos")]
+fn code_signing_rows_present() {
+    let s = Scratch::new();
+
+    let assert = s.doctor().assert();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+
+    assert!(
+        stdout.contains("code signing (vet)"),
+        "expected `code signing (vet)` row in:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("code signing (vetterd)"),
+        "expected `code signing (vetterd)` row in:\n{stdout}"
+    );
+    // The bundle row only appears when both binaries are inside the
+    // same `.app/Contents/MacOS/`. Cargo-built tests aren't, so we
+    // assert the row is *absent* — that's the documented contract.
+    assert!(
+        !stdout.contains("code signing (bundle)"),
+        "did not expect bundle row from cargo-built binaries; got:\n{stdout}"
+    );
+}
+
+/// On non-macOS platforms the doctor emits a single `code signing`
+/// SKIP row instead of the per-artifact ones — distribution is
+/// macOS-only, so a signature on Linux is meaningless.
+#[test]
+#[cfg(not(target_os = "macos"))]
+fn code_signing_skipped_off_macos() {
+    let s = Scratch::new();
+    s.doctor()
+        .assert()
+        .success()
+        .stdout(contains("code signing"))
+        .stdout(contains("SKIP"))
+        .stdout(contains("macOS only"));
 }

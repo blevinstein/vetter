@@ -271,6 +271,15 @@ site noted inline.
       ([vet/src/doctor.rs](vet/src/doctor.rs) walks the
       pidfile → live-PID → socket → peer-cred state machine and
       reports OK/WARN/ERROR/INFO/SKIP per row; exit 78 on any error)
+- [x] Real code-signing rows in `vet doctor`: per-binary
+      `code signing (vet)` / `code signing (vetterd)` shell out to
+      `codesign --verify --strict` + `codesign -d -vv` and surface
+      ad-hoc / Developer-ID / hardened-runtime state; the bundle
+      row uses `xcrun stapler validate` + `spctl --assess` to
+      flag un-notarised / un-stapled `.app`s. Only
+      `tools/release.sh`-built bundles report OK end-to-end; the
+      cargo + `tools/build-app.sh` dev paths surface as WARN
+      ([vet/src/doctor.rs](vet/src/doctor.rs))
 
 ### H1 — Daemon protocol & process hardening  `[ ] not started`
 

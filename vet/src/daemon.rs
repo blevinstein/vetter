@@ -326,7 +326,7 @@ fn socket_alive(path: &Path) -> bool {
     assert_peer_is_self(&stream).is_ok()
 }
 
-fn locate_vetterd() -> Result<PathBuf, String> {
+pub(crate) fn locate_vetterd() -> Result<PathBuf, String> {
     if let Some(p) = std::env::var_os("VETTERD_BIN") {
         let pb = PathBuf::from(p);
         if pb.exists() {

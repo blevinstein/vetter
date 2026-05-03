@@ -248,6 +248,15 @@ impl Daemon {
     /// [`MockUi::set_default`] / [`MockUi::expect_target`] before
     /// triggering the request.
     pub fn spawn(allowlist_yaml: &str) -> Self {
+        Self::spawn_with_env(allowlist_yaml, &[])
+    }
+
+    /// Spawn the daemon with an additional batch of (key, value) env
+    /// pairs layered on top of the standard test scaffolding. Used
+    /// by tests that want to twiddle daemon-side knobs like
+    /// `VETTERD_MAX_INFLIGHT` without forking a parallel
+    /// `Command::new` boilerplate.
+    pub fn spawn_with_env(allowlist_yaml: &str, extra_env: &[(&str, &str)]) -> Self {
         let scratch = tempfile::tempdir().expect("tempdir");
         let socket = scratch.path().join("vetter.sock");
         let audit = scratch.path().join("audit.log");
@@ -258,17 +267,19 @@ impl Daemon {
         let ui = MockUi::new(ui_socket.clone());
 
         let bin = assert_cmd::cargo_bin!("vetterd");
-        let child = Command::new(bin)
-            .env("VETTERD_SOCKET", &socket)
+        let mut cmd = Command::new(bin);
+        cmd.env("VETTERD_SOCKET", &socket)
             .env("VETTER_AUDIT_LOG", &audit)
             .env("VETTER_ALLOWLIST", &allow_path)
             .env_remove("VETTER_ALLOWLIST_OVERRIDE")
             .env("VETTERD_NOTIFIER", "mock")
             .env("VETTERD_NOTIFIER_SOCKET", &ui_socket)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn vetterd");
+            .stderr(Stdio::null());
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
+        let child = cmd.spawn().expect("spawn vetterd");
         wait_for_socket(&socket, Duration::from_secs(5));
         Self {
             child,

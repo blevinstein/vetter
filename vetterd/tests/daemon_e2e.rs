@@ -317,3 +317,138 @@ fn random_bytes_do_not_crash_daemon() {
     // CI where this is the only file with helpers.
     let _ = Instant::now();
 }
+
+/// ThreatModel T3 — slow-loris: a peer that connects and never
+/// writes must not be able to pin a daemon worker forever. The
+/// daemon's per-connection read deadline must fire, the worker
+/// must exit, and the daemon must continue serving fresh
+/// requests.
+///
+/// We verify the deadline by reading from the slow-loris socket
+/// after the daemon's request-frame timeout (~5s) has passed:
+/// the daemon's worker error path closes the connection on its
+/// way out, so our read returns EOF rather than blocking.
+#[test]
+fn slow_loris_connection_is_closed_by_request_frame_deadline() {
+    use std::io::Read;
+
+    let d = Daemon::spawn(ALLOWLIST);
+
+    // Connect, deliberately write nothing. The daemon accepts,
+    // spawns a worker, the worker arms a 5 s read timeout, hits
+    // it, returns Err, and InflightGuard drops.
+    let mut slow = UnixStream::connect(&d.socket).expect("slow-loris connect");
+    // Force blocking mode so `set_read_timeout` actually governs
+    // our read (macOS sometimes hands back non-blocking
+    // streams from connect/accept).
+    slow.set_nonblocking(false)
+        .expect("client non-blocking off");
+    // A generous read timeout from our side: the daemon's deadline
+    // is ~5 s, so 8 s is plenty of headroom for CI scheduling jitter.
+    slow.set_read_timeout(Some(Duration::from_secs(8)))
+        .expect("set_read_timeout");
+
+    let started = Instant::now();
+    let mut sink = [0u8; 64];
+    let n = slow.read(&mut sink).expect("read on slow-loris stream");
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        n, 0,
+        "expected EOF after daemon's read deadline, got {n} bytes"
+    );
+    // The deadline is 5 s; allow a generous upper bound to absorb
+    // CI scheduler jitter without making the test flaky.
+    assert!(
+        elapsed < Duration::from_secs(7),
+        "expected EOF within ~5 s of connecting, took {elapsed:?}"
+    );
+    // Lower bound: must not have closed instantly — that would
+    // mean the deadline isn't actually being applied.
+    assert!(
+        elapsed >= Duration::from_secs(3),
+        "EOF arrived too soon ({elapsed:?}); deadline may not be armed"
+    );
+
+    // Daemon must still be functional after timing out the slow-loris.
+    let req = make_req(curl_get("https://example.test/"), false);
+    let dec = round_trip(&d.socket, &req);
+    assert_eq!(dec.decision, WireDecision::Allow);
+}
+
+/// ThreatModel T3 — inflight cap: when `$VETTERD_MAX_INFLIGHT`
+/// connection workers are already busy, additional accepts are
+/// dropped immediately rather than spawning unbounded threads.
+///
+/// We force two workers into a long-lived state by opening
+/// half-open connections (the request-frame deadline parks each
+/// worker for ~5 s before it exits). With the cap set to 2, a
+/// third connect-and-read must see EOF immediately. Once the two
+/// half-open workers finish timing out, slots free up and a
+/// fresh round-trip succeeds — proving `InflightGuard`'s
+/// decrement actually fires.
+#[test]
+fn inflight_cap_drops_excess_connections_then_recycles_slots() {
+    use std::io::Read;
+
+    let d = Daemon::spawn_with_env(ALLOWLIST, &[("VETTERD_MAX_INFLIGHT", "2")]);
+
+    // Drain any transient slots from `wait_for_socket`'s startup
+    // probe by issuing one full round-trip before pinning the cap.
+    // Without this the probe's worker can still hold its slot
+    // (thread spawn → set_nonblocking on a half-closed peer →
+    // err → drop guard) when the test's first half-open connection
+    // is accepted, racing the cap calculation.
+    let warmup = make_req(curl_get("https://example.test/"), false);
+    let _ = round_trip(&d.socket, &warmup);
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Pin both available worker slots with half-open connections.
+    let _slow_a = UnixStream::connect(&d.socket).expect("slow-loris A connect");
+    let _slow_b = UnixStream::connect(&d.socket).expect("slow-loris B connect");
+
+    // Give the daemon's accept loop time to drain both connections
+    // off the kernel queue and reserve their slots. The accept
+    // poll cadence is 100ms, so 300ms is generous.
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Third connection: daemon accepts, sees the cap is full,
+    // immediately drops the stream. Our read returns EOF quickly.
+    let mut over_cap = UnixStream::connect(&d.socket).expect("over-cap connect");
+    over_cap
+        .set_nonblocking(false)
+        .expect("client non-blocking off");
+    over_cap
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set_read_timeout");
+
+    let started = Instant::now();
+    let mut sink = [0u8; 64];
+    let n = over_cap.read(&mut sink).expect("read on over-cap stream");
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        n, 0,
+        "expected immediate EOF when cap is exceeded, got {n} bytes"
+    );
+    // Should be near-instant; certainly well below the 5 s
+    // request-frame deadline, otherwise we'd be picking up a
+    // timeout instead of the cap drop.
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "over-cap drop took {elapsed:?}; should be near-instant"
+    );
+
+    // Wait for the two slow-loris workers to time out and release
+    // their slots. The deadline is 5 s; 7 s gives CI headroom.
+    std::thread::sleep(Duration::from_secs(7));
+
+    // A fresh request now finds an open slot and succeeds.
+    let req = make_req(curl_get("https://example.test/"), false);
+    let dec = round_trip(&d.socket, &req);
+    assert_eq!(
+        dec.decision,
+        WireDecision::Allow,
+        "slots should have recycled after slow-loris workers timed out"
+    );
+}

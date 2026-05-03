@@ -9,6 +9,47 @@ use crate::pending::PendingQueue;
 use crate::testutil::tmpdir;
 use vetter_core::wire::WireDecision;
 
+/// Tests that mutate `VETTERD_MAX_INFLIGHT` take a shared mutex to
+/// serialise against each other regardless of `cargo test`'s
+/// parallelism. Other env-mutating modules (`paths.rs`) use their
+/// own lock; the keys don't overlap so a separate static is fine.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static M: OnceLock<Mutex<()>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
+struct EnvGuard {
+    key: &'static str,
+    prev: Option<std::ffi::OsString>,
+}
+impl EnvGuard {
+    fn unset(key: &'static str) -> Self {
+        let prev = std::env::var_os(key);
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self { key, prev }
+    }
+    fn set(key: &'static str, val: &str) -> Self {
+        let prev = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, val);
+        }
+        Self { key, prev }
+    }
+}
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
 #[test]
 fn handle_connection_evaluates_and_responds() {
     let dir = tmpdir("vetterd-lib-test-");
@@ -127,4 +168,49 @@ fn render_detail_handles_empty_argv() {
         extras: serde_json::Value::Null,
     };
     assert_eq!(super::render_detail(&p), "");
+}
+
+// -- max_inflight_from_env -------------------------------------
+
+#[test]
+fn max_inflight_defaults_when_env_unset() {
+    let _g = env_lock();
+    let _e = EnvGuard::unset("VETTERD_MAX_INFLIGHT");
+    assert_eq!(
+        super::max_inflight_from_env().expect("default branch"),
+        super::DEFAULT_MAX_INFLIGHT
+    );
+}
+
+#[test]
+fn max_inflight_parses_positive_integer() {
+    let _g = env_lock();
+    let _e = EnvGuard::set("VETTERD_MAX_INFLIGHT", "42");
+    assert_eq!(super::max_inflight_from_env().expect("parse 42"), 42);
+}
+
+#[test]
+fn max_inflight_rejects_zero() {
+    let _g = env_lock();
+    let _e = EnvGuard::set("VETTERD_MAX_INFLIGHT", "0");
+    let err = super::max_inflight_from_env().expect_err("zero must be a config error");
+    assert!(matches!(err, super::DaemonError::Config(_)), "{err:?}");
+    assert!(err.to_string().contains("must be > 0"), "{err}");
+}
+
+#[test]
+fn max_inflight_rejects_non_numeric() {
+    let _g = env_lock();
+    let _e = EnvGuard::set("VETTERD_MAX_INFLIGHT", "lots");
+    let err = super::max_inflight_from_env().expect_err("non-numeric must be a config error");
+    assert!(matches!(err, super::DaemonError::Config(_)), "{err:?}");
+    assert!(err.to_string().contains("VETTERD_MAX_INFLIGHT"), "{err}");
+}
+
+#[test]
+fn max_inflight_rejects_negative() {
+    let _g = env_lock();
+    let _e = EnvGuard::set("VETTERD_MAX_INFLIGHT", "-1");
+    let err = super::max_inflight_from_env().expect_err("negative must be a config error");
+    assert!(matches!(err, super::DaemonError::Config(_)), "{err:?}");
 }

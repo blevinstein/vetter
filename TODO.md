@@ -277,9 +277,13 @@ site noted inline.
 Closes the rest of T1, T3, and T4. ThreatModel.md §"Sequencing" lists
 these in smallest-blast-radius-first order; same order here.
 
-- [ ] Read deadline on `vetterd`'s request frame + cap inflight
+- [x] Read deadline on `vetterd`'s request frame + cap inflight
       workers (default 16, configurable via `VETTERD_MAX_INFLIGHT`,
       accept-and-immediately-close above the cap) — ThreatModel T3
+      ([vetterd/src/lib.rs](vetterd/src/lib.rs) — `max_inflight_from_env`,
+      `InflightGuard`, per-connection `set_read_timeout` /
+      `set_write_timeout` of 5 s in `handle_connection` and
+      `run_admin_loop`)
 - [ ] PID attestation on connect (`vetterd` flocks the pidfile;
       `vet` asserts the locking PID equals the peer PID) —
       ThreatModel T1 sequencing #2

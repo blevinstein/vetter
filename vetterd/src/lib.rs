@@ -37,9 +37,9 @@ pub mod socket;
 pub mod suggestions;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use vetter_core::known_hosts::{load_default as load_known_hosts_default, KnownHostsStore};
 use vetter_core::matcher::{load_default, AllowlistStore};
@@ -106,7 +106,25 @@ pub enum DaemonError {
     KnownHosts(#[from] vetter_core::known_hosts::KnownHostsError),
     #[error("notifier: {0}")]
     Notifier(#[from] notifier::NotifierBuildError),
+    #[error("config: {0}")]
+    Config(String),
 }
+
+/// Default upper bound on simultaneous in-flight connection workers.
+/// Each pending request parks one OS thread, so this caps both the
+/// thread footprint and the number of half-open / slow-loris peers
+/// that can pin workers before the daemon refuses new connections.
+/// Override at start-up with `$VETTERD_MAX_INFLIGHT`.
+pub const DEFAULT_MAX_INFLIGHT: usize = 16;
+
+/// Read/write deadline applied to the per-connection [`UnixStream`]
+/// around the request-frame read and the decision-frame write. The
+/// timeout is intentionally short: a well-behaved client writes the
+/// request immediately on connect, and the response body is well
+/// under a kernel send-buffer's worth of bytes. Anything slower is
+/// either a half-open client or a peer wedging the worker on
+/// purpose. ThreatModel.md §T3.
+const REQUEST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Which platform driver to run on the main thread after the accept
 /// loop is up. Returned by [`notifier::driver_for_env`] so the daemon
@@ -139,6 +157,12 @@ pub fn run(
     // before its socket / pidfile cleanup can run.
     let shutdown = Arc::new(AtomicBool::new(false));
     install_signal_handlers(Arc::clone(&shutdown));
+
+    // Resolve the inflight cap before any IO so a misconfigured
+    // operator gets an immediate exit-78 with a clear reason instead
+    // of a half-started daemon with a default cap silently in place.
+    let max_inflight = max_inflight_from_env()?;
+    let inflight = Arc::new(AtomicUsize::new(0));
 
     let allowlist = Arc::new(RwLock::new(
         load_default(None, allowlist_override.as_deref()).map_err(DaemonError::Allowlist)?,
@@ -207,7 +231,13 @@ pub fn run(
         PlatformDriver::None => {
             // Accept loop runs on the main thread (the historical
             // shape preserved for tests with mock / noop notifier).
-            let r = accept_loop(listener, Arc::clone(&ctx), Arc::clone(&shutdown));
+            let r = accept_loop(
+                listener,
+                Arc::clone(&ctx),
+                Arc::clone(&shutdown),
+                Arc::clone(&inflight),
+                max_inflight,
+            );
             pending.cancel_all();
             r
         }
@@ -217,6 +247,8 @@ pub fn run(
             Arc::clone(&ctx),
             Arc::clone(&shutdown),
             Arc::clone(&pending),
+            Arc::clone(&inflight),
+            max_inflight,
         ),
         #[cfg(not(target_os = "macos"))]
         PlatformDriver::AppKit => unreachable!(
@@ -247,12 +279,23 @@ fn run_with_appkit(
     ctx: Arc<Context>,
     shutdown: Arc<AtomicBool>,
     pending: Arc<PendingQueue>,
+    inflight: Arc<AtomicUsize>,
+    max_inflight: usize,
 ) -> Result<(), DaemonError> {
     let accept_ctx = Arc::clone(&ctx);
     let accept_shutdown = Arc::clone(&shutdown);
+    let accept_inflight = Arc::clone(&inflight);
     let accept_handle = std::thread::Builder::new()
         .name("vetterd-accept".into())
-        .spawn(move || accept_loop(listener, accept_ctx, accept_shutdown))
+        .spawn(move || {
+            accept_loop(
+                listener,
+                accept_ctx,
+                accept_shutdown,
+                accept_inflight,
+                max_inflight,
+            )
+        })
         .map_err(DaemonError::Socket)?;
 
     runloop::run_app_kit(Arc::clone(&ctx), Arc::clone(&shutdown));
@@ -300,6 +343,25 @@ fn run_admin_loop(
             Ok((mut stream, _)) => {
                 if assert_peer_is_self(&stream).is_err() {
                     eprintln!("vetterd: admin: rejected connection from foreign UID");
+                    continue;
+                }
+                // The listener is non-blocking; on macOS that flag
+                // inherits onto accepted streams. Force blocking so
+                // the read/write deadlines below actually fire
+                // (SO_RCVTIMEO is a no-op on a non-blocking socket).
+                if let Err(e) = stream.set_nonblocking(false) {
+                    eprintln!("vetterd: admin: set_nonblocking: {e}");
+                    continue;
+                }
+                // Same read/write deadlines as the main socket: a
+                // half-open admin client can't pin the (single)
+                // admin handler thread.
+                if let Err(e) = stream.set_read_timeout(Some(REQUEST_FRAME_TIMEOUT)) {
+                    eprintln!("vetterd: admin: set_read_timeout: {e}");
+                    continue;
+                }
+                if let Err(e) = stream.set_write_timeout(Some(REQUEST_FRAME_TIMEOUT)) {
+                    eprintln!("vetterd: admin: set_write_timeout: {e}");
                     continue;
                 }
                 let req: MgmtRequest = match read_frame(&mut stream) {
@@ -392,10 +454,52 @@ fn install_signal_handlers(shutdown: Arc<AtomicBool>) {
     });
 }
 
+/// Parse `$VETTERD_MAX_INFLIGHT` if set, otherwise return
+/// [`DEFAULT_MAX_INFLIGHT`]. A value of `0`, a non-numeric value, or
+/// non-UTF-8 bytes are configuration errors — we fail closed so the
+/// operator notices instead of silently running with a bogus cap.
+pub(crate) fn max_inflight_from_env() -> Result<usize, DaemonError> {
+    match std::env::var("VETTERD_MAX_INFLIGHT") {
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_MAX_INFLIGHT),
+        Err(std::env::VarError::NotUnicode(_)) => Err(DaemonError::Config(
+            "VETTERD_MAX_INFLIGHT contains non-UTF-8 bytes".into(),
+        )),
+        Ok(s) => {
+            let n: usize = s.parse().map_err(|e| {
+                DaemonError::Config(format!(
+                    "VETTERD_MAX_INFLIGHT=`{s}` is not a non-negative integer: {e}"
+                ))
+            })?;
+            if n == 0 {
+                return Err(DaemonError::Config(format!(
+                    "VETTERD_MAX_INFLIGHT must be > 0 (got `{s}`)"
+                )));
+            }
+            Ok(n)
+        }
+    }
+}
+
+/// RAII counter guard. Workers hold one for their whole lifetime; on
+/// `Drop` (normal return *or* panic) the live-worker count
+/// decrements, so a panicking worker can never permanently steal a
+/// slot from the inflight cap.
+struct InflightGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn accept_loop(
     listener: std::os::unix::net::UnixListener,
     ctx: Arc<Context>,
     shutdown: Arc<AtomicBool>,
+    inflight: Arc<AtomicUsize>,
+    max_inflight: usize,
 ) -> Result<(), DaemonError> {
     listener
         .set_nonblocking(true)
@@ -407,8 +511,30 @@ fn accept_loop(
         }
         match listener.accept() {
             Ok((stream, _addr)) => {
+                // Reserve a slot first; if that puts us over the cap,
+                // immediately give it back and drop the stream (the
+                // OS sees a connect-then-close so the client gets
+                // EOF rather than hanging on read). Reserving before
+                // the cap check rather than after avoids a race
+                // where two threads both observe `count == cap-1`
+                // and both decide they're allowed.
+                let prev = inflight.fetch_add(1, Ordering::SeqCst);
+                if prev >= max_inflight {
+                    inflight.fetch_sub(1, Ordering::SeqCst);
+                    eprintln!(
+                        "vetterd: dropping connection: {} inflight workers exceeds cap {}",
+                        prev + 1,
+                        max_inflight
+                    );
+                    drop(stream);
+                    continue;
+                }
+                let guard = InflightGuard {
+                    counter: Arc::clone(&inflight),
+                };
                 let ctx = Arc::clone(&ctx);
                 std::thread::spawn(move || {
+                    let _g = guard;
                     if let Err(e) = handle_connection(stream, &ctx) {
                         eprintln!("vetterd: connection error: {e}");
                     }
@@ -442,7 +568,28 @@ pub fn handle_connection(
     mut stream: std::os::unix::net::UnixStream,
     ctx: &Context,
 ) -> Result<(), WireError> {
+    // The listener is non-blocking so the accept loop can poll for
+    // shutdown; on macOS that flag inherits onto accepted streams,
+    // which would make `SO_RCVTIMEO` a no-op (a non-blocking read
+    // returns `WouldBlock` immediately rather than honouring the
+    // deadline). Force the stream blocking before arming the
+    // timeouts so the deadlines actually bound the read.
+    stream.set_nonblocking(false)?;
+    // Bound the request-frame read so a peer that connects and never
+    // writes can't pin this worker forever. The matching write
+    // timeout bounds the response in case the peer stops reading
+    // mid-decision. Both deadlines are short on purpose — agents
+    // write the request immediately on connect and the decision
+    // body fits well inside a kernel send buffer.
+    stream.set_read_timeout(Some(REQUEST_FRAME_TIMEOUT))?;
+    stream.set_write_timeout(Some(REQUEST_FRAME_TIMEOUT))?;
     let req = read_request(&mut stream)?;
+    // After the request frame we never read again on this socket;
+    // clearing the read timeout is forward-looking (any later
+    // protocol that adds a follow-up read should re-arm it
+    // explicitly). The write timeout stays in place for write_frame
+    // below.
+    stream.set_read_timeout(None)?;
 
     let (decision, reason, command_for_audit, prompt_ctx) = match parse_request(&req) {
         Ok(mut parsed) => {

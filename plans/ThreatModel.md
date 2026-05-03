@@ -27,17 +27,6 @@ the connected stream and aborts on UID mismatch; `vetterd` holds an
 `flock` on `<rundir>/vetterd.pid`, `vet` asserts the locking PID
 equals the peer PID.
 
-## T3 — Resource exhaustion
-
-`vetterd` spawns one OS thread per accepted connection
-(vetterd/src/lib.rs:119) with no read deadline on the request frame.
-A trickle of half-open connections holds workers indefinitely. Daemon
-becomes unresponsive → `vet` fails closed → user can't run anything.
-
-**Fix**: 5 s read deadline on the request frame; cap inflight workers
-(default 16, configurable via `VETTERD_MAX_INFLIGHT`); accept-and-
-immediately-close above the cap.
-
 ## T4 — argv0 spoofing
 
 `ln /bin/bash /tmp/curl && vet /tmp/curl …` — basename dispatch
@@ -75,12 +64,10 @@ Unicode confusable analysis) — that is future work.
 
 Remaining work, smallest blast radius first:
 
-1. **PR — read deadlines + inflight cap.** Closes T3.
-  `vetterd/src/{lib,socket}.rs`.
-2. **PR — PID attestation.** Closes the rest of T1.
+1. **PR — PID attestation.** Closes the rest of T1.
   `vetterd/src/lib.rs` (flock pid file), `vet/src/wrap.rs` (PID
    attestation against the lock file).
-3. **PR — argv0 inode resolution.** Closes T4. Small, orthogonal
+2. **PR — argv0 inode resolution.** Closes T4. Small, orthogonal
   change in `vetter-core/src/parsers/mod.rs`.
 
 Already shipped:
@@ -93,4 +80,11 @@ connect (PR #5).
 re-runs `parsers::dispatch(&argv[0]).parse(...)` and the matcher
 consumes the daemon's `ParsedCommand`. Forging `argv → effects` is
 no longer expressible on the wire.
+- **T3 read deadlines + inflight cap** — `vetterd::handle_connection`
+arms 5 s `set_read_timeout` / `set_write_timeout` per accepted
+stream (with `set_nonblocking(false)` so the deadline actually
+binds on macOS); `vetterd::accept_loop` keeps an `Arc<AtomicUsize>`
+inflight counter under an RAII `InflightGuard`, refusing new
+connections beyond `$VETTERD_MAX_INFLIGHT` (default 16) by
+accept-then-close so a half-open peer cannot pin every worker.
 

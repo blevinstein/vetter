@@ -444,12 +444,15 @@ impl PendingQueue {
     }
 
     /// Re-derive [`PromptSummary::signals`] and
-    /// [`PromptSummary::host_known`] for every pending entry against
-    /// `known_hosts`. Used by the Phase-5 `AddKnownHost` admin
-    /// handler so the popover repaints after a host transitions
-    /// from unknown → known: the host pill flips green and the
-    /// `UnknownHost` signal pill disappears without the user having
-    /// to re-issue the request.
+    /// [`PromptSummary::host_known`] for every pending **and**
+    /// recently-resolved entry against `known_hosts`. Used by the
+    /// Phase-5 `AddKnownHost` admin handler so the popover repaints
+    /// after a host transitions from unknown → known: the host pill
+    /// flips green and the `UnknownHost` signal pill disappears
+    /// without the user having to re-issue the request. The Recent
+    /// section is refreshed alongside the pending section so cards
+    /// the user just approved (and is staring at) drop their stale
+    /// orange pill at the same moment as still-pending cards.
     ///
     /// Generic risk signals from [`vetter_core::analyze`] are kept
     /// (they don't depend on the known-hosts store) and only the
@@ -458,47 +461,20 @@ impl PendingQueue {
     /// non-known-hosts signals so curl-specific signals
     /// (`InsecureFlag`, `ResolveOverride`, ...) survive the refresh.
     ///
-    /// Fires the change listener once at the end if there were any
-    /// pending entries.
+    /// Fires the change listener once at the end iff either ring had
+    /// at least one entry — a fully-empty queue stays quiet so
+    /// listener-side popover redraws don't run on no-op refreshes.
     pub fn refresh_with(&self, known_hosts: &vetter_core::known_hosts::KnownHostsStore) {
         let listener = {
             let mut g = self.inner.lock().expect("pending mutex poisoned");
-            if g.entries.is_empty() {
+            if g.entries.is_empty() && g.resolved.is_empty() {
                 return;
             }
             for entry in g.entries.values_mut() {
-                let Some(parsed) = entry.summary.parsed.as_ref() else {
-                    continue;
-                };
-                // Re-emit the parser-driven + generic signals
-                // (everything except UnknownHost) so the refresh is
-                // idempotent — re-running this with the same store
-                // yields the same summary.
-                entry
-                    .summary
-                    .signals
-                    .retain(|s| s.kind != vetter_core::SignalKind::UnknownHost);
-                entry
-                    .summary
-                    .signals
-                    .extend(vetter_core::check_known_hosts(parsed, known_hosts));
-
-                // Recompute host_known parallel to parsed.effects.
-                // Delegates to `policy::is_known_host` so the
-                // refresh path stays in lockstep with the
-                // `prompt_summary` build path; without that, the
-                // popover could see a "known" pill from one and an
-                // "unknown" signal from the other.
-                entry.summary.host_known = parsed
-                    .effects
-                    .iter()
-                    .map(|e| match e {
-                        vetter_core::Effect::HttpRequest(req) => {
-                            crate::policy::is_known_host(req, known_hosts)
-                        }
-                        _ => false,
-                    })
-                    .collect();
+                refresh_summary(&mut entry.summary, known_hosts);
+            }
+            for resolved in g.resolved.iter_mut() {
+                refresh_summary(&mut resolved.summary, known_hosts);
             }
             g.listener.clone()
         };
@@ -522,6 +498,37 @@ impl PendingQueue {
     pub fn clear_change_listener(&self) {
         self.inner.lock().expect("pending mutex poisoned").listener = None;
     }
+}
+
+/// Re-derive the known-hosts-dependent fields of a single
+/// [`PromptSummary`] in place against `known_hosts`. Shared between
+/// the pending and resolved walks of [`PendingQueue::refresh_with`]
+/// so the two sections always agree on what counts as known.
+///
+/// No-op when `summary.parsed` is `None` (legacy / mock summaries
+/// that pre-date the `parsed` field).
+fn refresh_summary(
+    summary: &mut PromptSummary,
+    known_hosts: &vetter_core::known_hosts::KnownHostsStore,
+) {
+    let Some(parsed) = summary.parsed.as_ref() else {
+        return;
+    };
+    summary
+        .signals
+        .retain(|s| s.kind != vetter_core::SignalKind::UnknownHost);
+    summary
+        .signals
+        .extend(vetter_core::check_known_hosts(parsed, known_hosts));
+
+    summary.host_known = parsed
+        .effects
+        .iter()
+        .map(|e| match e {
+            vetter_core::Effect::HttpRequest(req) => crate::policy::is_known_host(req, known_hosts),
+            _ => false,
+        })
+        .collect();
 }
 
 #[cfg(test)]

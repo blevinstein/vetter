@@ -55,11 +55,16 @@ What's deliberately not there yet (all tracked in
 
 - **Pre-release ship-blockers** — Hardening §H1 (PID attestation,
   request read deadlines + worker cap, `argv[0]` inode resolution,
-  `FD_CLOEXEC`), §H2 (ANSI / C0 sanitisation in the renderer,
-  curl-parser fuzzing, wire-protocol fuzzing), §H3 (`cargo-deny`
-  + `cargo-audit` in CI, MSRV pin), and §H4 (LICENSE files,
-  SECURITY.md, CHANGELOG, README polish). These must close before
-  the first public Homebrew tag.
+  `FD_CLOEXEC`, `0600` mode on audit / allowlist files, env-
+  override hardening for `$VETTERD_*` / `$VETTER_*`), §H2 (ANSI /
+  C0 sanitisation in the renderer, curl-parser fuzzing, wire-
+  protocol fuzzing, a `FollowRedirects` signal + `no_redirects`
+  predicate, stdin-body drift fix), §H3 (`cargo-deny` +
+  `cargo-audit` in CI, MSRV pin), §H4 (LICENSE files, SECURITY.md,
+  CHANGELOG, README polish), and §H5 (per-repo workspace-trust
+  gate for project-scope allowlists + file-ownership guards on
+  layered YAML loads). These must close before the first public
+  Homebrew tag.
 - **Post-launch follow-ups** — audit log rotation, ruleset hashing
   in the audit row, stdin forwarding for `curl -d @-`, and
   symlink semantics for file effects. Won't expose a known

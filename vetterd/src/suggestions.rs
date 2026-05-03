@@ -14,8 +14,9 @@
 //!   the list of auto-approved request ids.
 //! - [`add_known_host`] persists a known-host entry, reloads the
 //!   `KnownHostsStore`, and refreshes the pending queue's signal
-//!   cache so the popover repaints (host pill flips
-//!   orange → green; `UnknownHost` signal disappears).
+//!   cache — covering both pending entries and the Recent
+//!   (resolved-history) ring — so the popover repaints (host pill
+//!   flips orange → green; `UnknownHost` signal disappears).
 //!
 //! ## Lock ordering
 //!
@@ -205,9 +206,13 @@ pub fn add_known_host(
         *g = new_store;
     }
 
-    // Re-derive signals + host_known on every pending entry so the
-    // popover repaints. The pending queue's `refresh_with` helper
-    // fires the change listener once at the end.
+    // Re-derive signals + host_known on every pending entry **and**
+    // every Recent (resolved-history) entry so the popover repaints
+    // both sections at once: a card the user just approved and is
+    // staring at drops its stale orange `UnknownHost` pill at the
+    // same moment a still-pending card for the same host does. The
+    // pending queue's `refresh_with` helper fires the change listener
+    // once at the end.
     let store_snapshot = ctx
         .known_hosts
         .read()

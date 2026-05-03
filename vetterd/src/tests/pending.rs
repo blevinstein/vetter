@@ -526,3 +526,152 @@ fn prompt_summary_round_trips_through_serde_with_new_fields() {
     assert!(legacy_decoded.parsed.is_none());
     assert!(legacy_decoded.host_known.is_empty());
 }
+
+// -- refresh_with: pending + resolved coverage -----------------
+
+/// Build a `PromptSummary` whose `parsed` describes a single GET to
+/// `host` and whose `signals` already carries the matching
+/// `UnknownHost` record (the state a freshly-submitted unknown-host
+/// request would have on the wire).
+fn unknown_host_summary(id: &str, host: &str) -> PromptSummary {
+    use vetter_core::parsers::{
+        Body, DisplayHints, Effect, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy,
+    };
+    use vetter_core::signals::{RiskSignal, SignalKind};
+
+    let url = url::Url::parse(&format!("https://{host}/v1/data")).expect("test url");
+    let parsed = ParsedCommand {
+        command: "curl".into(),
+        argv: vec!["curl".into(), url.as_str().into()],
+        cwd: None,
+        stdin_digest: None,
+        effects: vec![Effect::HttpRequest(HttpRequest {
+            method: HttpMethod::Get,
+            url: url.clone(),
+            headers: vec![],
+            body: Body::None,
+            auth: None,
+            tls: TlsPolicy::Strict,
+            follow_redirects: false,
+            proxy: None,
+        })],
+        signals: vec![RiskSignal {
+            kind: SignalKind::UnknownHost,
+            detail: format!("host {host} not in known-hosts list"),
+            effect_idx: Some(0),
+        }],
+        display_hints: DisplayHints {
+            primary_verb: "GET".into(),
+            primary_target: url.to_string(),
+            badges: vec![],
+        },
+        extras: serde_json::Value::Null,
+    };
+    PromptSummary {
+        id: id.into(),
+        command: "curl".into(),
+        primary_verb: "GET".into(),
+        primary_target: url.to_string(),
+        force_prompt: false,
+        signals: parsed.signals.clone(),
+        parsed: Some(parsed),
+        host_known: vec![false],
+    }
+}
+
+/// Build a known-hosts store whose user layer trusts `pattern`. We
+/// skip the disk loader and construct the store directly so the test
+/// stays hermetic (no `$HOME` writes, no tempdir cleanup).
+fn known_hosts_with(pattern: &str) -> vetter_core::known_hosts::KnownHostsStore {
+    use vetter_core::known_hosts::{KnownHostEntry, KnownHostsStore};
+    KnownHostsStore {
+        builtin: vec![],
+        user: vec![KnownHostEntry {
+            pattern: pattern.into(),
+            note: None,
+        }],
+        project: vec![],
+    }
+}
+
+#[test]
+fn refresh_with_clears_unknown_host_signal_on_resolved_entry() {
+    use vetter_core::SignalKind;
+
+    let q = PendingQueue::new();
+    let _rx = q.submit_with_render(
+        unknown_host_summary("a", "api.unknown.test"),
+        "rendered-a".into(),
+    );
+    assert!(q.resolve("a", PendingDecision::allow("approved")));
+
+    // Sanity: the resolved entry currently carries the stale
+    // UnknownHost signal and host_known == [false].
+    let before = q.resolved_entries();
+    assert_eq!(before.len(), 1);
+    assert!(before[0]
+        .summary
+        .signals
+        .iter()
+        .any(|s| s.kind == SignalKind::UnknownHost));
+    assert_eq!(before[0].summary.host_known, vec![false]);
+
+    q.refresh_with(&known_hosts_with("api.unknown.test"));
+
+    let after = q.resolved_entries();
+    assert_eq!(after.len(), 1);
+    assert!(
+        !after[0]
+            .summary
+            .signals
+            .iter()
+            .any(|s| s.kind == SignalKind::UnknownHost),
+        "UnknownHost signal should be gone after refresh: {:?}",
+        after[0].summary.signals
+    );
+    assert_eq!(
+        after[0].summary.host_known,
+        vec![true],
+        "host_known should flip to true for the now-trusted host"
+    );
+}
+
+#[test]
+fn refresh_with_fires_listener_when_only_resolved_entries_present() {
+    let q = Arc::new(PendingQueue::new());
+    let _rx = q.submit_with_render(
+        unknown_host_summary("a", "api.unknown.test"),
+        "rendered-a".into(),
+    );
+    assert!(q.resolve("a", PendingDecision::allow("approved")));
+    assert!(q.is_empty(), "pending should be empty after resolve");
+
+    // Install the listener *after* the resolve so the submit/resolve
+    // ticks above don't pollute the count.
+    let count = Arc::new(AtomicUsize::new(0));
+    let count2 = Arc::clone(&count);
+    q.set_change_listener(move || {
+        count2.fetch_add(1, Ordering::SeqCst);
+    });
+
+    q.refresh_with(&known_hosts_with("api.unknown.test"));
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        1,
+        "listener should fire exactly once for a refresh that only touches resolved entries"
+    );
+
+    // Belt-and-braces: a refresh on a fully-empty queue stays quiet.
+    let q_empty = Arc::new(PendingQueue::new());
+    let count = Arc::new(AtomicUsize::new(0));
+    let count2 = Arc::clone(&count);
+    q_empty.set_change_listener(move || {
+        count2.fetch_add(1, Ordering::SeqCst);
+    });
+    q_empty.refresh_with(&known_hosts_with("api.unknown.test"));
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        0,
+        "empty queue refresh must not redraw"
+    );
+}

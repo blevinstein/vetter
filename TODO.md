@@ -337,6 +337,39 @@ these in smallest-blast-radius-first order; same order here.
       main `accept_loop` (currently absent — a same-UID caller can
       submit fake `VetRequest`s for audit-log poisoning / phishing
       prompts) for parity.
+- [ ] Explicit `0600` mode on audit-log, allowlist, and known-hosts
+      writes — ThreatModel T8. `vetterd/src/audit.rs::AuditLog::open`
+      opens with `OpenOptions::new().create(true).append(true)` (no
+      `.mode(0o600)`), and `vetter_core/src/matcher/loader.rs::
+      write_file` persists via `tempfile::NamedTempFile` without a
+      `permissions()` override. Under the default macOS/Linux umask
+      (`022`) both land as `0644` — other local UIDs can read the
+      audit log (which carries verbatim argv, i.e. routinely carries
+      secrets) and the user's allowlist / known-hosts YAML (trust-
+      surface reconnaissance). Fix: `OpenOptions::mode(0o600)` on
+      `AuditLog::open`, `tempfile::Builder::new().permissions(
+      Permissions::from_mode(0o600))` on the matcher / known-hosts
+      write path, and chmod `~/.vet/` and `~/Library/Logs/vetter/`
+      to `0700` at create time. Extend `vet doctor` to flag any of
+      these files whose on-disk mode is wider than `0600` (or whose
+      parent dir is wider than `0700`).
+- [ ] Env-override hardening — ThreatModel T6. `$VETTERD_SOCKET` /
+      `$VETTERD_PIDFILE` / `$VETTER_AUDIT_LOG` /
+      `$VETTER_PARSER_TRUSTED_DIRS` are all agent-inheritable env
+      vars; an attacker that controls `vet`'s env can bind a fake
+      socket + self-lock a fake pidfile and auto-allow every
+      request (both the UID check and the PID attestation are
+      satisfied by construction). `$VETTER_PARSER_TRUSTED_DIRS`
+      separately lets an attacker bless an agent-writable directory
+      so `/tmp/evil/curl` passes the T4 inode-resolver's trust-
+      dir arm. Close: (a) treat `$VETTERD_*` / `$VETTER_*`
+      overrides as dev-only — refuse to start unless a sentinel
+      file under `~/.vet/` opts in; (b) refuse
+      `$VETTER_PARSER_TRUSTED_DIRS` entries whose canonical parent
+      is not owned by `self_uid` and not `0755`-or-tighter; (c)
+      add a client-side parent-dir owner + mode check on the
+      resolved socket path (already open as a residual T1 item
+      above — pair these fixes).
 
 ### H2 — Render trust & input safety  `[ ] not started`
 
@@ -357,6 +390,30 @@ parser/wire layers must not panic on malformed input.
 - [ ] Wire-protocol fuzzing entry — was Phase 3 §6.3; promoted out
       of "Phase 3b polish" because peer-cred narrows but doesn't
       eliminate the local-attacker surface
+- [ ] `SignalKind::FollowRedirects` + `http: { no_redirects: true }`
+      allowlist predicate — ThreatModel T10. Today
+      `HttpRequest.follow_redirects` is tracked on the effect but
+      produces no signal and no predicate, so an allowlisted host
+      that open-redirects (or is compromised) can bounce the
+      request to any origin while the auto-allow fires on the
+      initial URL. Fix: push a `FollowRedirects` signal from the
+      curl parser whenever `-L` / `--location` is present, extend
+      the generic analyzer / signals §9 catalogue to mention it,
+      and add a `no_redirects: true` (default) / explicit opt-in
+      predicate on the `http:` rule clause so rules that genuinely
+      need redirect-following trust have to say so in YAML.
+- [ ] Stdin body drift — ThreatModel T9, promoted from the
+      post-launch follow-ups below because the popover and audit
+      log materially misrepresent what `vet` execs when the agent
+      pipes bytes into `curl -d @-`. Either (a) forward
+      `stdin_digest` + `stdin_len` on the v3 wire frame (client
+      hashes before the daemon round-trip and re-injects on
+      `execvp`), or (b) emit a `StdinBody` signal whenever
+      `Body::FromStdin` appears so the auto-allow path closes for
+      stdin-bearing calls until the human has confirmed the
+      payload shape. Either close is fine; (b) is a one-line
+      change that immediately removes the "approve 0 B, exfil N MB"
+      gap even before the stdin forwarding lands.
 
 ### H3 — Supply chain  `[ ] not started`
 
@@ -401,6 +458,44 @@ these we can't reasonably ask anyone to trust the binary.
       `xattr -d com.apple.quarantine target/Vetter.app` to
       simulate Gatekeeper's first-launch path
 
+### H5 — Workspace & allowlist trust gates  `[ ] not started`
+
+Closes ThreatModel T7. The project-scope allowlist discovery walks
+up from `cwd` and loads any `.vet/allowlist.yaml` it finds before
+hitting a `.git` boundary, with no per-repo opt-in. An untrusted
+repo a coding agent checks out can ship its own rules
+(`host: "*.attacker.example"`, `http: { no_body: false }`, etc.)
+and the agent then auto-allows any call those rules cover — no
+popover, no human in the loop. Same shape applies if the agent's
+`cwd` ends up under an attacker-controlled path that carries a
+`.vet/` directory without an intervening `.git`.
+
+- [ ] Per-repo workspace-trust gate: on first discovery of a
+      project-scope allowlist, refuse to load until the user has
+      confirmed the repo out-of-band. Implementation shape: a
+      `~/.vet/trusted-projects.yaml` keyed by `(project_root_path,
+      allowlist_file_sha256)`; `vetterd` (and the `vet allow list`
+      CLI) refuse entries whose `(path, hash)` pair isn't on the
+      list, surfacing instead an "untrusted project" message with a
+      `vet allow trust-project <path>` escape hatch. Invalidating
+      on hash change means edits re-prompt — which is the right
+      default for a repo where the rules change.
+- [ ] File-ownership guard on allowlist / known-hosts loads: refuse
+      any layered-discovery YAML whose `stat().st_uid` differs from
+      `self_uid`, or whose containing directory is group-/world-
+      writable. Cheap, independent of the workspace-trust list, and
+      catches the "shared scratch dir" variant of T7 even when the
+      user hasn't set up trusted-projects.
+- [ ] Allowlist-file filesystem writes behind the popover: `vet
+      allow add` currently edits `~/.vet/allowlist.yaml` directly,
+      which a same-UID attacker can mimic (no approver gate on the
+      filesystem path). Pair with H1's admin-socket write hardening
+      so *every* rule persistence funnels through a single
+      human-confirmed code path — either the popover picker or an
+      in-process confirmation modal invoked by the CLI — and the
+      raw YAML becomes read-only from the daemon's perspective at
+      runtime.
+
 ---
 
 ## Hardening — post-launch follow-ups
@@ -418,8 +513,12 @@ quickly after v0.1.
       and re-inject on exec; today daemon parses with empty stdin
       so `-d @-` round-trips as `Body::FromStdin{len: 0}`. Audit
       logs and policy decisions for those calls reflect the empty
-      body, not the bytes curl actually sees. Surfaced while
-      landing T2.
+      body, not the bytes curl actually sees. The **approval-
+      surface drift** slice of this has been elevated to H2 as
+      ThreatModel T9 (popover / audit misrepresent what `vet`
+      execs when the pipe carries secrets); what remains here is
+      the full "forward + re-inject" implementation once the
+      interim `StdinBody` signal / wire-v3 digest work lands.
 - [ ] Decide symlink semantics for `Effect::FileWrite` /
       `Effect::FileRead` (canonicalise vs. reject vs.
       accept-and-document); add tests

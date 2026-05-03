@@ -567,6 +567,22 @@ impl PopoverController {
         // pending cards' Approve/Reject buttons key off it.
         let mut disclosure_idx = 0_usize;
         let mut focused_view: Option<Retained<NSView>> = None;
+        if entries.is_empty() {
+            // Pending block is empty but `resolved` isn't (the
+            // both-empty case returned early above). Show a quiet
+            // "no pending" placeholder where the pending cards
+            // would normally be, so the popover doesn't open
+            // straight onto the Recent section with no context —
+            // the user otherwise has to read the "Recent" header
+            // to figure out why their just-opened popover has no
+            // action buttons. Same secondary-label styling as the
+            // "Recent" header below for visual consistency.
+            let no_pending = NSTextField::labelWithString(ns_string!("No pending approvals."), mtm);
+            no_pending.setTextColor(Some(&NSColor::secondaryLabelColor()));
+            no_pending.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+            no_pending.setAlignment(objc2_app_kit::NSTextAlignment::Center);
+            add_full_width_arranged(cards, &no_pending);
+        }
         for (idx, (summary, rendered)) in entries.iter().enumerate() {
             // Thin horizontal rule between adjacent cards.
             if idx > 0 {
@@ -584,14 +600,15 @@ impl PopoverController {
 
         if !resolved.is_empty() {
             // "Recent" header sits between the pending block and the
-            // resolved block (or at the very top when nothing is
-            // pending). Drop a separator before it whenever pending
-            // cards precede it so the two sections read distinctly.
-            if !entries.is_empty() {
-                let sep = NSBox::new(mtm);
-                sep.setBoxType(NSBoxType::Separator);
-                add_full_width_arranged(cards, &sep);
-            }
+            // resolved block. We always drop a separator before it
+            // — when pending cards precede it the rule splits the
+            // two sections, and when only the placeholder
+            // ("No pending approvals.") is above we still want a
+            // visual divide so the placeholder doesn't look like
+            // it belongs to the Recent group.
+            let sep = NSBox::new(mtm);
+            sep.setBoxType(NSBoxType::Separator);
+            add_full_width_arranged(cards, &sep);
             let section_label = NSTextField::labelWithString(ns_string!("Recent"), mtm);
             section_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
             section_label.setFont(Some(&NSFont::boldSystemFontOfSize(11.0)));

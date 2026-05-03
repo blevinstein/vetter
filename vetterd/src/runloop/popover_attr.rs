@@ -181,16 +181,22 @@ pub fn parse_ansi_to_attributed(text: &str) -> Retained<NSMutableAttributedStrin
 }
 
 fn apply_attributes(acc: &NSMutableAttributedString, range: NSRange, style: SpanStyle) {
-    if let Some(color) = ns_color_for(style) {
-        // SAFETY: `ns_string!("NSColor")` is the literal Cocoa
-        // attribute key (`NSForegroundColorAttributeName`'s string
-        // value), `color` is an `NSColor` (matches the documented
-        // value type), and `range` was just computed from
-        // `acc.length()` + `nstr.length()` so it lies fully inside
-        // the attributed string.
-        unsafe {
-            acc.addAttribute_value_range(ns_string!("NSColor"), &color, range);
-        }
+    // Always stamp a foreground colour, even on un-styled spans —
+    // see `ns_color_for` for the rationale (TL;DR:
+    // `setAttributedString:` wipes `NSTextView`'s typing colour, so
+    // ranges with no `NSForegroundColorAttributeName` fall back to
+    // AppKit's hard-coded black instead of the popover's
+    // appearance-adaptive `textColor`, which made plain command text
+    // unreadable on the dark popover surface).
+    let color = ns_color_for(style);
+    // SAFETY: `ns_string!("NSColor")` is the literal Cocoa
+    // attribute key (`NSForegroundColorAttributeName`'s string
+    // value), `color` is an `NSColor` (matches the documented
+    // value type), and `range` was just computed from
+    // `acc.length()` + `nstr.length()` so it lies fully inside
+    // the attributed string.
+    unsafe {
+        acc.addAttribute_value_range(ns_string!("NSColor"), &color, range);
     }
     let font = ns_font_for(style);
     // SAFETY: `ns_string!("NSFont")` is the documented Cocoa
@@ -215,9 +221,24 @@ fn apply_attributes(acc: &NSMutableAttributedString, range: NSRange, style: Span
     }
 }
 
-fn ns_color_for(style: SpanStyle) -> Option<Retained<NSColor>> {
-    let color = style.color?;
-    Some(match (color, style.dim) {
+/// Map a `SpanStyle` to the `NSColor` we want stamped on its run.
+///
+/// Returns *some* colour for every input — un-styled runs (no ANSI
+/// colour code seen) fall through to `NSColor::textColor()`, the
+/// appearance-adaptive default that resolves to a near-white on
+/// the popover's pinned Dark Aqua surface and to black under Light
+/// Aqua. Stamping it explicitly (rather than leaving the run with
+/// no `NSForegroundColorAttributeName`) is what makes the plain
+/// command text readable: `NSTextView`'s typing-colour default
+/// gets reset by `storage.setAttributedString:`, so ranges without
+/// an explicit colour fall back to AppKit's hard-coded black —
+/// which produced the "raw text is unreadable, black on dark"
+/// regression after we forced the popover into Dark Aqua.
+fn ns_color_for(style: SpanStyle) -> Retained<NSColor> {
+    let Some(color) = style.color else {
+        return NSColor::textColor();
+    };
+    match (color, style.dim) {
         (AnsiColor::Red, _) => NSColor::systemRedColor(),
         (AnsiColor::Green, _) => NSColor::systemGreenColor(),
         (AnsiColor::Yellow, _) => NSColor::systemYellowColor(),
@@ -232,7 +253,7 @@ fn ns_color_for(style: SpanStyle) -> Option<Retained<NSColor>> {
         // mode adaptation comes for free.
         (AnsiColor::BrightBlack, _) => NSColor::secondaryLabelColor(),
         (AnsiColor::BrightBlue, _) => NSColor::systemBlueColor(),
-    })
+    }
 }
 
 fn ns_font_for(style: SpanStyle) -> Retained<NSFont> {

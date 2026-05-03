@@ -10,7 +10,7 @@
 //! pending queue and the configured notifier. These tests use the
 //! mock notifier from [`common::MockUi`]; the real
 //! `UNUserNotificationCenter` integration is exercised manually
-//! per `plans/Phase4Notes.md`.
+//! per `plans/MacOSApp.md`.
 
 use std::io::{Read, Write as _};
 use std::os::unix::net::UnixStream;

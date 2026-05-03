@@ -6,7 +6,7 @@
 # minimal `.app` bundle with the Phase 4 Info.plist
 # (LSUIElement + UNUserNotifications), ad-hoc code-signs the bundle
 # (`codesign --sign -`), and prints the path so the manual smoke
-# test in `plans/Phase4Notes.md` can `open` it.
+# test in `plans/MacOSApp.md` can `open` it.
 #
 # Both binaries live in `Contents/MacOS/`. The bundle's
 # `CFBundleExecutable` is `vetterd`, so `open Vetter.app` still

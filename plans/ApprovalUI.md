@@ -2,10 +2,10 @@
 
 Native AppKit catalogue for the macOS approver popover. This doc owns
 the *shape* of each card: which widgets render which fields, how
-severity colors are applied, and what is intentionally deferred. The
-underlying severity / SGR-color taxonomy is shared with the CLI
-renderer and pinned in [Phase4Notes.md "Visual conventions"](Phase4Notes.md);
-this doc only adds the AppKit-specific element rules.
+severity colors are applied, what is intentionally deferred, and the
+SGR-to-`NSColor` taxonomy shared with the CLI renderer (see
+[Body colouring](#body-colouring)). For build / smoke / debug
+procedures see [MacOSApp.md](MacOSApp.md).
 
 ## Goals
 
@@ -117,8 +117,7 @@ visual story to QA against and keeps the design doc honest.
 
 ### Signal pills
 
-Per [Phase4Notes "Visual conventions"](Phase4Notes.md) and
-[`SignalKind::ui_severity`](../vetter-core/src/signals/mod.rs):
+Per [`SignalKind::ui_severity`](../vetter-core/src/signals/mod.rs):
 
 | Severity | Foreground | Background |
 |---|---|---|
@@ -134,14 +133,25 @@ in), which is a different story than the orange "watch out" pills
 the rest of the Warn tier carries.
 
 Tooltip text: `format!("{slug}: {detail}")`, where `slug` is
-[`signal_kind_label(kind)`](../vetter-core/src/render/mod.rs) and
-`detail` is the `RiskSignal::detail` string the analyzer emitted.
+[`signal_kind_label(kind)`](../vetter-core/src/render/mod.rs) (e.g.
+`auth-header`, `insecure-tls`, `pipe-to-shell`) and `detail` is the
+`RiskSignal::detail` string the analyzer emitted. The same slugs
+appear on the body's `Risk signals:` line, so a user learning the
+taxonomy on one surface recognises it on the other.
+
+Font is the pill recipe's `boldSystemFontOfSize(10.0)` — small enough
+to fit several chips next to a wide URL header.
 
 Pills dedupe by `SignalKind` (one chip per kind, even when multiple
 effects emit the same kind) so a multi-effect request doesn't
 bury the rest of the card under near-identical pills. The detail
 string used for the tooltip is the *first* matching signal's detail
 — good enough for v1; future work could merge multiple details.
+
+`Info`-tier signals are intentionally **not** chipped; they live in
+the body's `Risk signals:` line only. Anything new added to
+`SignalKind` defaults to no chip until its `ui_severity` is
+explicitly raised to `Warn` or `Danger`.
 
 ### URL row
 
@@ -225,6 +235,73 @@ expand to keep the closed-state card cheap.
 This is the safety valve: any time the structured layout hasn't
 caught up with a new parser, "Show raw" guarantees the user can
 still read the canonical §8.5 detail before approving.
+
+### Body colouring
+
+The "Show raw" disclosure paints the §8.5 layout as an
+`NSAttributedString`. The daemon emits SGR escapes via
+[`vetter_core::render::AnsiWriter`](../vetter-core/src/render/mod.rs);
+the popover parses them back and stamps `NSColor` attributes. The
+mapping mirrors `ansi_for` 1:1 so `vet --explain` and the popover
+read identically — this taxonomy is the contract between the CLI
+renderer and the AppKit body.
+
+| `Style` (vetter-core) | SGR | `NSColor` (popover) |
+|---|---|---|
+| `Header` | `1` (bold) | label, bold monospaced |
+| `RuleLine`, `BodyMeta`, `Badge(Info)` | `90` (bright-black) | `secondaryLabelColor` |
+| `Method(Read)` (GET/HEAD) | `1;32` | `systemGreenColor`, bold |
+| `Method(Write)` (POST/PUT/PATCH) | `1;33` | `systemYellowColor`, bold |
+| `Method(Delete)` | `1;31` | `systemRedColor`, bold |
+| `Method(Other)` | `1;35` | `systemPurpleColor`, bold |
+| `HeaderName` | `94` (bright-blue) | `systemBlueColor` |
+| `RedactedHeader` | `31` | `systemRedColor` |
+| `Url` | `4;36` | `systemTealColor` + underline |
+| `Loopback` | `2;36` (cyan dim) | `secondaryLabelColor` |
+| `Badge(Warn)`, `SignalText`, `MatchNone` | `33` | `systemYellowColor` |
+| `Badge(Danger)`, `MatchDeny` | `1;31` | `systemRedColor`, bold |
+| `MatchOk` | `32` | `systemGreenColor` |
+
+Unknown SGR codes fall through unstyled — the parser is intentionally
+permissive so a future widening of `ansi_for` doesn't crash the
+popover (it just drops colour until the parser catches up).
+
+### Dry-run wrapper
+
+`PromptSummary.force_prompt` (set when `vet --dry-run` was used)
+swaps the bare card layout for an `NSBox` wrapper:
+
+- `NSBoxType::Custom`, `borderColor = systemYellowColor`,
+  `borderWidth = 1.5`, `cornerRadius = 6.0`.
+- `titlePosition = AtTop`, `title = "dry run"`.
+- The previous inline `dry run` `secondaryLabelColor` pill in
+  `header_row` is removed — the box title carries the message.
+
+Non-dry-run cards stay bare so the visual contrast between the two
+classes reads at a glance when both sit in the same popover.
+
+### Card chrome
+
+- Outer `CARD_SPACING = 16.0` (was 12) plus
+  `NSBoxType::Separator` rules between adjacent cards.
+- Each card stack carries `NSEdgeInsets` of `12, 12, 12, 12` so the
+  body view doesn't clip against the dry-run box border.
+- Header text uses `monospacedSystemFontOfSize_weight(13.0,
+  NSFontWeightSemibold)` so the verb / URL on the header reads in
+  lockstep with the body's monospaced font.
+
+### Approve / Reject buttons
+
+- Layout: **Reject** on the left, **Approve** on the right (canonical
+  macOS HIG for accept/cancel pairs).
+- **Approve** gets `setKeyEquivalent("\r")` → promotes it to the
+  system default button (accent-tinted, accepts `Return`).
+- **Reject** gets `setHasDestructiveAction(true)` → red tint on
+  macOS 11+, plus AppKit's accidental-press guard. Older systems
+  silently fall back to a regular bezel.
+- `Esc` is **not** rebound: the popover's `Transient` behavior
+  reserves it for dismissal, so the user can always back out without
+  resolving a card.
 
 ## Data flow
 

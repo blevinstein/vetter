@@ -107,7 +107,7 @@ Phase 3a (spine) landed; remaining boxes are Phase 3b polish.
 ## Phase 4 — macOS approver UI  `[~] in progress`  (MVP milestone)
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §7. Operational notes
-+ manual smoke procedure: [plans/Phase4Notes.md](plans/Phase4Notes.md).
++ manual smoke procedure: [plans/MacOSApp.md](plans/MacOSApp.md).
 
 PR 1 lands the approve/reject happy path: an all-in-Rust
 `Vetter.app` bundle, `UNUserNotificationCenter` notifications with
@@ -139,7 +139,7 @@ and notarised distribution are still deferred.
       ([vetterd/tests/daemon_e2e_prompt.rs](vetterd/tests/daemon_e2e_prompt.rs))
 - [x] Ad-hoc code-signed `.app` for local dev (`tools/build-app.sh`)
 - [x] Manual smoke procedure documented
-      ([plans/Phase4Notes.md](plans/Phase4Notes.md))
+      ([plans/MacOSApp.md](plans/MacOSApp.md))
 - [x] Menu-bar shield icon with pending-count badge updated by the
       `PendingQueue` change listener
       ([vetterd/src/runloop/status_item.rs](vetterd/src/runloop/status_item.rs))

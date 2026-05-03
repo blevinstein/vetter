@@ -29,7 +29,7 @@ progress; PRs 1 and 2 of the all-in-Rust macOS approver have landed:
   (which now also forwards the §8.5 rendered detail so future
   popover assertions don't need AppKit); real
   `UNUserNotificationCenter` integration is verified by the manual
-  smoke test in [plans/Phase4Notes.md](plans/Phase4Notes.md).
+  smoke test in [plans/MacOSApp.md](plans/MacOSApp.md).
 
 What's deliberately not there yet (tracked in [TODO.md](TODO.md)):
 notification coalescing, the **Allowlist…** action (Phase 5),
@@ -40,7 +40,7 @@ Developer-ID signing + notarisation, and non-macOS UIs (Phase 6).
 macOS only for now (Phase 4 ships the macOS UI; non-macOS UIs are
 Phase 6 territory). Walkthrough including first-run permission
 prompts, gotchas, and the audit-log check is in
-[plans/Phase4Notes.md](plans/Phase4Notes.md). Short version:
+[plans/MacOSApp.md](plans/MacOSApp.md). Short version:
 
 ```sh
 tools/build-app.sh --release          # builds vetterd + vet into the bundle
@@ -93,7 +93,7 @@ cargo test  --workspace --all-features
 | See what's done / next / blocked | [TODO.md](TODO.md) |
 | Test plan and per-component coverage targets | [plans/TestingPlan.md](plans/TestingPlan.md) |
 | Threat model + hardening backlog | [plans/ThreatModel.md](plans/ThreatModel.md) |
-| Build / run / smoke-test the macOS app | [plans/Phase4Notes.md](plans/Phase4Notes.md) |
+| Build / run / smoke-test the macOS app | [plans/MacOSApp.md](plans/MacOSApp.md) |
 | Work on the repo as an AI agent (or a human) | [AGENTS.md](AGENTS.md) |
 
 ## License

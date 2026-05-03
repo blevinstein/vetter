@@ -66,9 +66,20 @@ use status_item::StatusItem;
 /// Stable identifiers for the action buttons. Kept in lockstep with
 /// the Info.plist (the bundle declares the same category id for the
 /// notifications it ships).
+///
+/// Two categories: the base id carries Approve/Reject/Allowlist…
+/// (the popover gates `Trust host…` on the request actually having
+/// an `UnknownHost` signal, so the banner mirrors that gating by
+/// stamping the with-unknown-host id only when the signal is
+/// present). The category is picked per-request inside
+/// [`crate::notifier::mac::MacNotifier::notify`] and threaded into
+/// [`post_notification`] as `has_unknown_host`.
 pub const CATEGORY_ID: &str = "vetter.prompt";
+pub const CATEGORY_ID_WITH_UNKNOWN_HOST: &str = "vetter.prompt.with_unknown_host";
 pub const ACTION_APPROVE: &str = "vetter.approve";
 pub const ACTION_REJECT: &str = "vetter.reject";
+pub const ACTION_ALLOWLIST: &str = "vetter.allowlist";
+pub const ACTION_TRUST_HOST: &str = "vetter.trust_host";
 
 /// Reason recorded on the audit log when the user resolves via the
 /// popover instead of the notification banner.
@@ -162,12 +173,19 @@ fn stop_run_loop(mtm: MainThreadMarker) {
 
 /// Post a single notification on the main queue. Worker threads call
 /// this through [`crate::notifier::mac::MacNotifier::notify`].
+///
+/// `has_unknown_host` selects between the two registered categories:
+/// the with-unknown-host id includes the `Trust host…` action, the
+/// base id stops at `Allowlist…`. Mirrors the popover's per-card
+/// gating so the banner doesn't offer Trust host… for already-known
+/// hosts.
 pub(crate) fn post_notification(
     id: String,
     command: String,
     primary_verb: String,
     primary_target: String,
     force_prompt: bool,
+    has_unknown_host: bool,
 ) {
     DispatchQueue::main().exec_async(move || {
         let mtm = MainThreadMarker::new().expect("dispatched onto main");
@@ -180,9 +198,14 @@ pub(crate) fn post_notification(
         } else {
             format!("{primary_verb} {primary_target}")
         };
+        let category_id = if has_unknown_host {
+            CATEGORY_ID_WITH_UNKNOWN_HOST
+        } else {
+            CATEGORY_ID
+        };
         content.setTitle(&NSString::from_str(&title));
         content.setBody(&NSString::from_str(&body));
-        content.setCategoryIdentifier(&NSString::from_str(CATEGORY_ID));
+        content.setCategoryIdentifier(&NSString::from_str(category_id));
         if force_prompt {
             content.setSubtitle(&NSString::from_str("dry run"));
         }
@@ -228,7 +251,13 @@ fn install_notification_machinery(_mtm: MainThreadMarker, delegate: &AppDelegate
     let proto = ProtocolObject::from_ref(delegate);
     center.setDelegate(Some(proto));
 
-    // Action buttons: Approve (foreground) and Reject (destructive).
+    // Action buttons: Approve (foreground), Reject (destructive),
+    // Allowlist… (foreground — opens the picker NSAlert), and the
+    // optional Trust host… (foreground, only attached to the with-
+    // unknown-host category). Approve/Reject lead so they stay in
+    // the inline two-to-three-button banner layout; the picker
+    // actions condense under macOS's "Options" dropdown when there
+    // are too many to fit inline.
     let approve = UNNotificationAction::actionWithIdentifier_title_options(
         &NSString::from_str(ACTION_APPROVE),
         &NSString::from_str("Approve"),
@@ -239,16 +268,36 @@ fn install_notification_machinery(_mtm: MainThreadMarker, delegate: &AppDelegate
         &NSString::from_str("Reject"),
         UNNotificationActionOptions::Destructive,
     );
-
-    let actions = NSArray::from_retained_slice(&[approve, reject]);
-    let intents: Retained<NSArray<NSString>> = NSArray::new();
-    let category = UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
-        &NSString::from_str(CATEGORY_ID),
-        &actions,
-        &intents,
-        UNNotificationCategoryOptions::CustomDismissAction,
+    let allowlist = UNNotificationAction::actionWithIdentifier_title_options(
+        &NSString::from_str(ACTION_ALLOWLIST),
+        &NSString::from_str("Allowlist…"),
+        UNNotificationActionOptions::Foreground,
     );
-    let categories = NSSet::from_retained_slice(&[category]);
+    let trust_host = UNNotificationAction::actionWithIdentifier_title_options(
+        &NSString::from_str(ACTION_TRUST_HOST),
+        &NSString::from_str("Trust host…"),
+        UNNotificationActionOptions::Foreground,
+    );
+
+    let intents: Retained<NSArray<NSString>> = NSArray::new();
+    let base_actions =
+        NSArray::from_retained_slice(&[approve.clone(), reject.clone(), allowlist.clone()]);
+    let base_category =
+        UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+            &NSString::from_str(CATEGORY_ID),
+            &base_actions,
+            &intents,
+            UNNotificationCategoryOptions::CustomDismissAction,
+        );
+    let with_host_actions = NSArray::from_retained_slice(&[approve, reject, allowlist, trust_host]);
+    let with_host_category =
+        UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+            &NSString::from_str(CATEGORY_ID_WITH_UNKNOWN_HOST),
+            &with_host_actions,
+            &intents,
+            UNNotificationCategoryOptions::CustomDismissAction,
+        );
+    let categories = NSSet::from_retained_slice(&[base_category, with_host_category]);
     center.setNotificationCategories(&categories);
 
     // Authorization request. First-run pops the system permission
@@ -424,6 +473,20 @@ define_class!(
                     .queue()
                     .resolve(&id, PendingDecision::deny("rejected via notification"));
                 remove_delivered_for_ids(vec![id.clone()]);
+            } else if action == ACTION_ALLOWLIST {
+                // Banner-side `Allowlist…`: lift the same picker
+                // sheet the popover Allowlist… button uses. Leaves
+                // the queue entry pending — `persist_rule_async`
+                // auto-approves it (and clears the banner) only if
+                // the user picks a rule that covers it.
+                self.handle_allowlist_action(id);
+            } else if action == ACTION_TRUST_HOST {
+                // Banner-side `Trust host…`: lift the host picker.
+                // Trusting a host never auto-approves the pending
+                // request (the popover's `add_known_host` path has
+                // the same property), so the banner stays until
+                // the user picks Approve/Reject themselves.
+                self.handle_trust_host_action(id);
             } else if action == dismiss {
                 self.ivars().queue().resolve(
                     &id,
@@ -525,6 +588,59 @@ impl AppDelegate {
             }
         }
     }
+
+    /// Body of the banner-side `Allowlist…` action. Looks up the
+    /// pending request, asks the suggestion engine for its rule
+    /// candidates, activates the app so the modal alert lands in
+    /// front, and lifts the same picker the popover Allowlist…
+    /// button uses. Empty / unknown id silently no-ops — the
+    /// banner button might fire after the request was already
+    /// auto-approved by another path.
+    fn handle_allowlist_action(&self, id: String) {
+        let ctx = Arc::clone(self.ivars().ctx());
+        let Some((allowlist, _)) = crate::suggestions::suggestions_for(&ctx, &id) else {
+            return;
+        };
+        if allowlist.is_empty() {
+            return;
+        }
+        let mtm = self.mtm();
+        activate_app(mtm);
+        popover_picker::show_allowlist_picker(mtm, ctx, allowlist);
+    }
+
+    /// Body of the banner-side `Trust host…` action. Mirror of
+    /// `handle_allowlist_action` for the host picker. Same silent
+    /// no-op rule on unknown id / empty suggestions.
+    fn handle_trust_host_action(&self, id: String) {
+        let ctx = Arc::clone(self.ivars().ctx());
+        let Some((_, host)) = crate::suggestions::suggestions_for(&ctx, &id) else {
+            return;
+        };
+        if host.is_empty() {
+            return;
+        }
+        let mtm = self.mtm();
+        activate_app(mtm);
+        popover_picker::show_host_picker(mtm, ctx, host);
+    }
+}
+
+/// Pull the application to the foreground before showing a modal
+/// `NSAlert`. `LSUIElement=true` accessory apps do not reliably
+/// auto-foreground when a `UNNotificationAction` fires, even with
+/// the action's `Foreground` option set — without an explicit
+/// `activateIgnoringOtherApps:`, `runModal()` yields a window that
+/// sits *behind* the frontmost app and is easy to miss.
+///
+/// We use the pre-macOS-14 selector so the call works on the
+/// bundle's declared `LSMinimumSystemVersion=11.0` floor; the
+/// `#[allow(deprecated)]` is intentional. The replacement
+/// `-[NSApplication activate]` was added in macOS 14 and would
+/// silently no-op on older systems.
+fn activate_app(mtm: MainThreadMarker) {
+    #[allow(deprecated)]
+    NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
 }
 
 /// Public re-export for the popover module: the popover needs to

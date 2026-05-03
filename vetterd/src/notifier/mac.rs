@@ -119,12 +119,21 @@ impl Notifier for MacNotifier {
         if !hint.was_empty_before {
             return;
         }
+        // Pick the with-unknown-host category when the parsed
+        // request would have surfaced a `Trust host…` button on
+        // its popover card; mirrors `popover.rs`'s same gating
+        // (see `has_unknown` block in `build_card`).
+        let has_unknown_host = summary
+            .signals
+            .iter()
+            .any(|s| s.kind == vetter_core::SignalKind::UnknownHost);
         crate::runloop::post_notification(
             summary.id.clone(),
             summary.command.clone(),
             summary.primary_verb.clone(),
             summary.primary_target.clone(),
             summary.force_prompt,
+            has_unknown_host,
         );
     }
 

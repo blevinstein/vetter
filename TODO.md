@@ -155,10 +155,17 @@ ship-blockers.
       Approves / Rejects in the popover
 - [x] Banner removed via `removeDeliveredNotificationsWithIdentifiers:`
       on every resolve path so Notification Center stays clean
-- [ ] `Allowlist…` action on the notification banner itself
-      (Phase 5 added per-card popover buttons, which cover the
-      user need; the notification-button variant is convenience
-      only — deferred to Backlog)
+- [x] `Allowlist…` (and `Trust host…`) actions on the notification
+      banner itself: notification category gates the Trust host…
+      button on the request actually carrying an `UnknownHost`
+      signal so already-trusted hosts don't see the extra action;
+      both buttons lift the same picker `NSAlert` the popover
+      uses, and `persist_rule_async` now also clears delivered
+      banners for any auto-approved id so the banner doesn't
+      linger after a covering rule is added
+      ([vetterd/src/runloop/mod.rs](vetterd/src/runloop/mod.rs),
+      [vetterd/src/notifier/mac.rs](vetterd/src/notifier/mac.rs),
+      [vetterd/src/runloop/popover_picker.rs](vetterd/src/runloop/popover_picker.rs))
 - [x] Notification coalescing into menu-bar after the first banner
       ([vetterd/src/notifier/mac.rs](vetterd/src/notifier/mac.rs)
       consumes `NotifyHint::was_empty_before` from
@@ -572,9 +579,6 @@ fix those before the rest land.
 - [ ] E2E happy-path + deny-path tests against the signed bundle
       (PR 1/2 cover them via `MockNotifier`; signed-app E2E waits
       on the notarisation pipeline being stable across releases)
-- [ ] `Allowlist…` button on the notification banner itself
-      (Phase 5's per-card popover buttons cover the user need;
-      adding the action to the banner is convenience)
 - [ ] `vet allow suggest <id>` CLI prints the suggestions payload
       as YAML (developer-ergonomics shim — engine is reachable
       through the admin socket already)

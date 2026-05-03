@@ -369,6 +369,20 @@ fn persist_rule_async(mtm: MainThreadMarker, ctx: Arc<Context>, rule: Rule) {
             pin_dark_appearance(&alert);
             match result {
                 Ok(added) => {
+                    // Auto-approved entries are about to leave
+                    // the pending queue; clear any delivered
+                    // banner for them so Notification Center
+                    // doesn't keep a stale card around. Same
+                    // hygiene the Approve/Reject branches do
+                    // in `did_receive_response`. Also matters
+                    // for the new banner-side `Allowlist…`
+                    // action, but the popover-driven path
+                    // benefits too — picking an Allowlist…
+                    // tier from the popover used to leave the
+                    // matching banner behind.
+                    if !added.auto_approved_ids.is_empty() {
+                        super::remove_delivered_for_ids(added.auto_approved_ids.clone());
+                    }
                     alert.setMessageText(ns_string!("Rule added"));
                     let body = if added.auto_approved_ids.is_empty() {
                         format!("Persisted as `{}`. No pending requests matched.", added.id)

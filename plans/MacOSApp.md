@@ -80,7 +80,28 @@ driven by [`vetterd/tests/daemon_e2e_prompt.rs`].
    the *body* of the notification (not Approve / Reject). The
    popover should open with the matching card in view; `vet` is
    still blocked. Click Approve in the popover; `vet` exec's curl.
-7. **Concurrent prompts (coalescing).** Run two `vet curl` commands
+7. **Banner Allowlist… path.** Run another prompt-class command.
+   While the banner is up, expand its actions (long-press / right-
+   click on macOS Big Sur+, or hover-then-Options on later macOS),
+   and click **Allowlist…**. The Vetter app must come forward
+   (LSUIElement apps don't auto-foreground from a notification
+   action), the picker `NSAlert` should appear listing Exact /
+   PathGlob / MethodHost tiers, pick one, click **Add to user
+   allowlist**. The follow-up alert should report
+   `Auto-approved 1 pending request(s)` and the original banner
+   should be cleared from Notification Center automatically (the
+   `remove_delivered_for_ids` call in `persist_rule_async`). The
+   blocked `vet` should now exec curl. `~/.config/vet/allowlist.yaml`
+   has the new rule appended.
+8. **Banner Trust host… path.** Run `vet curl https://fresh-host.example/`
+   against a host that is NOT in your known-hosts. Expand the
+   banner actions; **Trust host…** should be present (the with-
+   unknown-host category — for already-trusted hosts the action
+   is *absent*). Click it, pick a tier, **Trust this host**.
+   `~/.config/vet/known_hosts.yaml` gets the entry; the request
+   stays pending (trusting a host doesn't auto-approve), so click
+   **Approve** on the still-visible banner to release `vet`.
+9. **Concurrent prompts (coalescing).** Run two `vet curl` commands
    at once. Only the **first** request raises a banner — the second
    coalesces into the menu-bar (spec §7: "we don't spam banners").
    The menu-bar badge reads ` 2` and the popover lists both cards.
@@ -91,12 +112,13 @@ driven by [`vetterd/tests/daemon_e2e_prompt.rs`].
    queue is fully empty, that **does** raise a fresh banner (the
    "next burst is `was_empty_before == true` again" property pinned
    by `submit_marks_first_entry_as_empty_before`).
-8. **Audit log.** `tail -n6 ~/Library/Logs/vetter/audit.log` should
-   show a mix of `approved via notification`, `approved via popover`,
-   `rejected via notification`, and `rejected via popover` reasons
-   alongside the existing `matched rule …` lines.
-9. **Quit.** Click the popover's **Quit Vetter** button. The daemon
-   shuts down cleanly (socket and pidfile removed).
+10. **Audit log.** `tail -n6 ~/Library/Logs/vetter/audit.log` should
+    show a mix of `approved via notification`, `approved via popover`,
+    `rejected via notification`, `rejected via popover`, and
+    `auto-approved by newly added rule` reasons alongside the
+    existing `matched rule …` lines.
+11. **Quit.** Click the popover's **Quit Vetter** button. The daemon
+    shuts down cleanly (socket and pidfile removed).
 
 ## Troubleshooting
 

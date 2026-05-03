@@ -12,19 +12,29 @@ For the architecture, threat model, and rule semantics see
 ## Status
 
 Pre-MVP. Phases 0–3 (workspace, parser plugin contract, curl parser,
-allowlist evaluation, daemon + IPC) are complete. Phase 4 is in
-progress; PRs 1 and 2 of the all-in-Rust macOS approver have landed:
+allowlist evaluation, daemon + IPC) are complete. Phase 4 (the
+all-in-Rust macOS approver) is feature-complete for everyday use:
 
 - `Vetter.app` menu-bar bundle, built from `vetterd` via
   [`tools/build-app.sh`](tools/build-app.sh).
-- `UNUserNotificationCenter` notifications with **Approve** / **Reject**
-  buttons; the daemon worker blocks until the user clicks one.
+- `UNUserNotificationCenter` notifications with **Approve** /
+  **Reject** buttons; the daemon worker blocks until the user
+  clicks one. The first prompt of a burst raises a banner;
+  subsequent prompts coalesce into the menu-bar without spamming
+  Notification Center.
 - A menu-bar shield icon + pending-count badge, plus an `NSPopover`
-  listing every pending request with its §8.5 detail and per-card
-  Approve / Reject buttons. Tapping the body of a notification
-  routes the user into that popover with the matching card scrolled
-  into view; Approve/Reject from the popover dismisses any stale
-  banner.
+  listing every pending request as a structured card — typed
+  AppKit rows for the URL (with a host-trust pill), risk-signal
+  chips, headers (with secret redaction), body, and per-effect
+  file / process rows, plus a "Show raw" disclosure that keeps
+  the canonical §8.5 plaintext layout reachable underneath.
+  Tapping the body of a notification routes the user into the
+  popover with the matching card scrolled into view; Approve /
+  Reject from either surface dismisses any stale banner. See
+  [plans/ApprovalUI.md](plans/ApprovalUI.md) for the catalogue.
+- A separate `vet daemon list` / `vet daemon status` admin socket
+  so the CLI can report real pending counts and queue contents
+  without going through the prompt path.
 - End-to-end coverage via a `MockNotifier`-driven test harness
   (which now also forwards the §8.5 rendered detail so future
   popover assertions don't need AppKit); real
@@ -32,8 +42,14 @@ progress; PRs 1 and 2 of the all-in-Rust macOS approver have landed:
   smoke test in [plans/MacOSApp.md](plans/MacOSApp.md).
 
 What's deliberately not there yet (tracked in [TODO.md](TODO.md)):
-notification coalescing, the **Allowlist…** action (Phase 5),
-Developer-ID signing + notarisation, and non-macOS UIs (Phase 6).
+the **Allowlist…** action (Phase 5), Developer-ID signing +
+notarisation + Homebrew tap, an E2E suite against the signed
+bundle, the full §7 cross-cutting security property suite, and
+non-macOS UIs (Phase 6). Several pre-MVP hardening items
+(read-deadline + worker cap, `FD_CLOEXEC` on the daemon's fds,
+ANSI / C0 sanitisation in the renderer, ruleset hashing in the
+audit log) are also still open under "Hardening — cross-cutting"
+in TODO.
 
 ## Trying it locally
 

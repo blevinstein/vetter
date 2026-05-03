@@ -21,3 +21,18 @@ fn assert_peer_is_self_passes_for_socketpair() {
     let (a, _b) = UnixStream::pair().expect("socketpair");
     assert_peer_is_self(&a).expect("same-uid pair must pass");
 }
+
+#[test]
+fn peer_pid_of_socketpair_is_self_pid() {
+    // Both ends of a socketpair live in the calling process, so the
+    // kernel reports `getpid()` as the peer PID on every platform we
+    // build for (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS /
+    // BSD).
+    let (a, _b) = UnixStream::pair().expect("socketpair");
+    let me = std::process::id();
+    let peer = peer_pid(&a).expect("peer_pid on connected pair");
+    assert_eq!(
+        peer, me,
+        "socketpair within one process must report self pid"
+    );
+}

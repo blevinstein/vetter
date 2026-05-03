@@ -6,22 +6,23 @@ use std::time::{Duration, UNIX_EPOCH};
 use tempfile::TempDir;
 
 #[test]
-fn write_then_read_round_trip() {
+fn acquire_writes_pid_and_start() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("vetter.pid");
     let start = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    write(&path, 4242, start).unwrap();
+    let lock = acquire(&path, 4242, start).unwrap();
     let got = read(&path).unwrap();
     assert_eq!(got.pid, 4242);
     assert_eq!(got.start, start);
+    drop(lock);
 }
 
 #[test]
-fn write_creates_missing_parent_dirs() {
+fn acquire_creates_missing_parent_dirs() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("a/b/c/vetter.pid");
     let start = UNIX_EPOCH + Duration::from_secs(123);
-    write(&path, 7, start).unwrap();
+    let _lock = acquire(&path, 7, start).unwrap();
     assert!(path.exists());
     assert_eq!(read(&path).unwrap().pid, 7);
 }
@@ -65,8 +66,9 @@ fn read_bad_start_returns_invalid_data() {
 fn remove_is_idempotent() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("vetter.pid");
-    write(&path, 1, UNIX_EPOCH).unwrap();
+    let lock = acquire(&path, 1, UNIX_EPOCH).unwrap();
     assert!(path.exists());
+    drop(lock);
     remove(&path);
     assert!(!path.exists());
     // Second call should be a silent no-op even though the file is gone.
@@ -89,3 +91,28 @@ fn is_pid_alive_says_false_for_unlikely_pid() {
     // exists but is foreign-owned.
     assert!(!is_pid_alive(u32::MAX - 1));
 }
+
+#[test]
+fn read_locker_pid_for_missing_file_returns_not_found() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("absent.pid");
+    let err = read_locker_pid(&path).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[test]
+fn read_locker_pid_for_unlocked_file_returns_none() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("vetter.pid");
+    // File exists but no process holds an fcntl write-lock on it.
+    std::fs::write(&path, b"123\n456\n").unwrap();
+    assert_eq!(read_locker_pid(&path).unwrap(), None);
+}
+
+// Cross-process verification of `acquire`'s lock semantics
+// (a second process must observe `read_locker_pid == Some(child_pid)`
+// and a `WouldBlock` from its own `acquire` attempt) lives in the
+// `vetterd` integration suite, where spawning a real subprocess is
+// already part of the test scaffolding. POSIX `F_GETLK` only reports
+// foreign-process locks, so a same-process probe always returns
+// `F_UNLCK` and would be useless here.

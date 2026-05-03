@@ -27,7 +27,7 @@ use std::time::SystemTime;
 use vetter_core::matcher::{
     self, discover_project_root, user_allowlist_path, AllowlistFile, LoadError,
 };
-use vetter_core::peer_cred::{current_euid, peer_uid};
+use vetter_core::peer_cred::{current_euid, peer_pid, peer_uid};
 use vetter_core::pidfile::{self, PidFileContents};
 use vetter_core::{default_audit_path, default_pidfile_path, default_socket_path};
 
@@ -231,9 +231,9 @@ fn check_daemon_with_pidfile(
             );
         }
     };
-    drop(stream);
 
     if peer != expected {
+        drop(stream);
         return Check::new(
             "daemon",
             Status::Error,
@@ -246,11 +246,62 @@ fn check_daemon_with_pidfile(
         );
     }
 
+    // PID attestation: the kernel-reported peer pid must equal the
+    // pidfile's POSIX-write-lock holder pid. A same-UID racer that
+    // bound the socket without `fcntl`-locking the pidfile gets
+    // caught here even though the UID check above passed. See
+    // `plans/ThreatModel.md` T1 sequencing #1.
+    let peer_pid_value = match peer_pid(&stream) {
+        Ok(p) => p,
+        Err(e) => {
+            return Check::new(
+                "daemon",
+                Status::Error,
+                format!(
+                    "cannot read peer pid on {} ({e}); refusing to declare the daemon healthy",
+                    socket_path.display()
+                ),
+            );
+        }
+    };
+    drop(stream);
+
+    let lock_pid = match pidfile::read_locker_pid(pidfile_path) {
+        Ok(p) => p,
+        Err(e) => {
+            return Check::new(
+                "daemon",
+                Status::Error,
+                format!(
+                    "cannot probe pidfile lock at {} ({e}); \
+                     refusing to declare the daemon healthy",
+                    pidfile_path.display()
+                ),
+            );
+        }
+    };
+    if lock_pid != Some(peer_pid_value) {
+        let lock_label = match lock_pid {
+            Some(p) => format!("pid {p}"),
+            None => "no holder (pidfile is not locked)".to_string(),
+        };
+        return Check::new(
+            "daemon",
+            Status::Error,
+            format!(
+                "PID attestation failed: socket peer is pid {peer_pid_value}, \
+                 but pidfile {} is locked by {lock_label}. \
+                 Stop the running process at the socket path and restart with `vet daemon start`.",
+                pidfile_path.display()
+            ),
+        );
+    }
+
     Check::new(
         "daemon",
         Status::Ok,
         format!(
-            "pid={}, uptime={}, peer_uid={peer}",
+            "pid={}, uptime={}, peer_uid={peer}, lock_pid={peer_pid_value}",
             contents.pid,
             format_uptime(contents.start),
         ),

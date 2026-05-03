@@ -9,24 +9,6 @@ closes it. When a threat ships, delete its entry.
 
 ---
 
-## T1 — Daemon impersonation
-
-A same-UID process binds `$TMPDIR/vetter.sock` before `vetterd`
-starts. `vet` connects, dumps the full `VetRequest` (argv, parsed
-effects, cwd, stdin digest) to the attacker, and receives a forged
-`Allow`. `vet` then `execvp`s the unverified command. Allowlist,
-audit log, and UI are all bypassed — and the threat model in
-Overview.md §6 does *not* cover this case (it covers agents that
-bypass `vet`, not agents that impersonate `vetterd`).
-
-`vet` performs no peer-cred check on `connect()` (vet/src/wrap.rs:154)
-and the socket lives in a path the attacker can race for.
-
-**Fix**: move socket under `$XDG_RUNTIME_DIR` / `~/Library/Application Support/vetter/run/`; client calls `getpeereid()` / `SO_PEERCRED` on
-the connected stream and aborts on UID mismatch; `vetterd` holds an
-`flock` on `<rundir>/vetterd.pid`, `vet` asserts the locking PID
-equals the peer PID.
-
 ## T4 — argv0 spoofing
 
 `ln /bin/bash /tmp/curl && vet /tmp/curl …` — basename dispatch
@@ -64,10 +46,7 @@ Unicode confusable analysis) — that is future work.
 
 Remaining work, smallest blast radius first:
 
-1. **PR — PID attestation.** Closes the rest of T1.
-  `vetterd/src/lib.rs` (flock pid file), `vet/src/wrap.rs` (PID
-   attestation against the lock file).
-2. **PR — argv0 inode resolution.** Closes T4. Small, orthogonal
+1. **PR — argv0 inode resolution.** Closes T4. Small, orthogonal
   change in `vetter-core/src/parsers/mod.rs`.
 
 Already shipped:
@@ -75,6 +54,16 @@ Already shipped:
 - **T1 path + peer-cred** — socket moved out of `$TMPDIR`, parent dir
 forced to `0700`, `vet` runs `getpeereid()`/`SO_PEERCRED` on
 connect (PR #5).
+- **T1 PID attestation** — `vetterd` holds a POSIX
+`fcntl(F_SETLK, F_WRLCK)` on the pidfile for its full lifetime
+(`vetter_core::pidfile::PidFileLock` / `acquire`); `vet` opens the
+same path and queries the locker pid via `fcntl(F_GETLK)`
+(`pidfile::read_locker_pid`), then cross-checks it against the
+kernel-reported peer pid (`peer_cred::peer_pid`, `SO_PEERCRED` on
+Linux / `LOCAL_PEERPID` on macOS). A same-UID racer that bound
+the socket without `fcntl`-locking the pidfile is now caught
+before the request frame is sent — `vet` exits 78 with
+`WireError::PeerPidMismatch`.
 - **T2 daemon re-parse** — wire bumped to v2; `VetRequest` dropped
 `parsed`/`command`/`stdin_digest`; `vetterd::handle_connection`
 re-runs `parsers::dispatch(&argv[0]).parse(...)` and the matcher

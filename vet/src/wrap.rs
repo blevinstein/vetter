@@ -23,13 +23,15 @@ use std::process::{Command, ExitCode};
 
 use vetter_core::matcher::{self, LoadError};
 use vetter_core::parsers::{self, EnvSnapshot, ParseError, StdinHandle};
-use vetter_core::peer_cred::assert_peer_is_self;
+use vetter_core::peer_cred::{assert_peer_is_self, peer_pid};
+use vetter_core::pidfile;
 use vetter_core::wire::{
     new_request_id, read_decision, write_frame, VetRequest, WireDecision, WireError,
     PROTOCOL_VERSION,
 };
 use vetter_core::{
-    analyze, default_socket_path, AnsiWriter, DefaultRenderer, ParsedCommand, PlainWriter, Renderer,
+    analyze, default_pidfile_path, default_socket_path, AnsiWriter, DefaultRenderer, ParsedCommand,
+    PlainWriter, Renderer,
 };
 
 use crate::color::{self, Style};
@@ -164,6 +166,22 @@ fn round_trip(
     // stream and bails with `WireError::PeerAuth` if the kernel
     // reports a UID we don't own.
     assert_peer_is_self(&s)?;
+    // Same-UID racers slip past the UID check, so cross-check the
+    // peer PID against the daemon pidfile's POSIX write-lock holder.
+    // `pidfile::read_locker_pid` asks the kernel directly via
+    // `fcntl(F_GETLK)`, so a hijacker that never `fcntl`-locked the
+    // file fails with `locker = None` even if it forged the file's
+    // body. ThreatModel.md T1 sequencing #1.
+    let peer = peer_pid(&s)?;
+    let pidfile_path = default_pidfile_path(socket);
+    let locker = match pidfile::read_locker_pid(&pidfile_path) {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(WireError::Io(e)),
+    };
+    if locker != Some(peer) {
+        return Err(WireError::PeerPidMismatch { peer, locker });
+    }
     write_frame(&mut s, req)?;
     read_decision(&mut s, &req.id)
 }
@@ -212,6 +230,25 @@ fn daemon_error(socket: &Path, e: &WireError) -> String {
             socket.display(),
             socket.display()
         ),
+        WireError::PeerPidMismatch { peer, locker } => {
+            let pidfile = default_pidfile_path(socket);
+            let locker_msg = match locker {
+                Some(p) => format!(
+                    "but the pidfile lock at {} is held by pid {p}",
+                    pidfile.display()
+                ),
+                None => format!(
+                    "but the pidfile at {} is not locked by any process \
+                     (stale daemon, or a same-UID racer that did not lock the file)",
+                    pidfile.display()
+                ),
+            };
+            format!(
+                "refusing to talk to {}: socket peer pid is {peer}, {locker_msg}. \
+                 Run `vet daemon status` to investigate.",
+                socket.display()
+            )
+        }
         other => format!(
             "daemon protocol error talking to {}: {other}",
             socket.display()

@@ -169,6 +169,21 @@ pub enum WireError {
         "peer authentication failed: socket peer uid {peer} does not match expected uid {expected}"
     )]
     PeerAuth { expected: u32, peer: u32 },
+    /// PID-attestation check on the connected stream failed: the
+    /// process on the other end of the socket is *not* the holder of
+    /// the daemon pidfile's POSIX write lock. A same-UID racer that
+    /// bound the socket before the legitimate `vetterd` started will
+    /// surface here even though [`Self::PeerAuth`] passes.
+    /// `locker = None` means the pidfile exists but is unlocked
+    /// (stale daemon / hijacker that didn't bother locking);
+    /// `locker = Some(p)` with `p != peer` means a different process
+    /// holds the lock from the one on the other end of the socket.
+    /// See `plans/ThreatModel.md` T1 sequencing #1.
+    #[error(
+        "peer pid attestation failed: socket peer pid {peer} does not match \
+         pidfile lock holder {locker:?}"
+    )]
+    PeerPidMismatch { peer: u32, locker: Option<u32> },
 }
 
 /// Serialise `msg` to JSON, write a 4-byte big-endian length prefix,

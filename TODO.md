@@ -284,9 +284,17 @@ these in smallest-blast-radius-first order; same order here.
       `InflightGuard`, per-connection `set_read_timeout` /
       `set_write_timeout` of 5 s in `handle_connection` and
       `run_admin_loop`)
-- [ ] PID attestation on connect (`vetterd` flocks the pidfile;
-      `vet` asserts the locking PID equals the peer PID) —
-      ThreatModel T1 sequencing #2
+- [x] PID attestation on connect (`vetterd` holds an `fcntl(F_SETLK,
+      F_WRLCK)` on the pidfile for its full lifetime; `vet` reads
+      the locker via `F_GETLK` and asserts it equals the connected
+      peer PID — ThreatModel T1 sequencing #1)
+      ([vetter-core/src/pidfile.rs](vetter-core/src/pidfile.rs) —
+      `PidFileLock` / `acquire` / `read_locker_pid`,
+      [vetter-core/src/peer_cred.rs](vetter-core/src/peer_cred.rs) —
+      `peer_pid` for Linux `SO_PEERCRED` + macOS `LOCAL_PEERPID`,
+      [vet/src/wrap.rs](vet/src/wrap.rs) — `round_trip` cross-checks
+      `peer_pid` against `read_locker_pid` before sending the
+      request frame)
 - [ ] Resolve `argv[0]` to a real path / inode before parser dispatch
       so `ln /bin/bash /tmp/curl && vet /tmp/curl …` can't route to
       the wrong parser — ThreatModel T4
@@ -297,6 +305,27 @@ these in smallest-blast-radius-first order; same order here.
       refuse on mismatch. (Daemon enforces `0700` at bind; the
       client-side check is the residual T1 gap — peer-cred largely
       neutralises it but the check is cheap.)
+- [ ] Same-UID admin-socket write hardening: `MgmtRequest::AddRule`
+      and `AddKnownHost` on `vetter-admin.sock` currently trust any
+      same-UID caller (peer-cred passes by definition). A malicious
+      same-UID process can call `AddRule { scope: User, … }` to
+      persist an arbitrary rule into `~/.vet/allowlist.yaml` —
+      bypassing the popover's `Allowlist…` confirmation flow — and
+      every future `vet curl …` matching that rule then auto-allows
+      with no human prompt. `AddKnownHost` similarly silences the
+      `UnknownHost` signal (T5 partial mitigation) for
+      attacker-chosen hosts. Two viable closes: (a) demote these
+      mutations off the admin socket and call
+      [`vetterd::suggestions::add_allowlist_rule`](vetterd/src/suggestions.rs)
+      directly from the in-process popover, leaving the admin
+      socket read-only; or (b) require an explicit human-confirmed
+      modal naming the calling process before persisting. The
+      `vet allow add` CLI already writes the YAML directly via
+      `vetter_core::matcher::loader` and does not depend on the
+      admin-socket path. Also worth pairing with peer-cred on the
+      main `accept_loop` (currently absent — a same-UID caller can
+      submit fake `VetRequest`s for audit-log poisoning / phishing
+      prompts) for parity.
 
 ### H2 — Render trust & input safety  `[ ] not started`
 

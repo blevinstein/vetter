@@ -176,14 +176,27 @@ pub fn run(
     let admin_socket_path = admin_socket_path_for(&socket_path);
     let admin_listener = socket::listen(&admin_socket_path).map_err(DaemonError::Socket)?;
 
-    // Pidfile is co-located with the socket by default. Written
+    // Pidfile is co-located with the socket by default. Acquired
     // *after* the listener binds so a pidfile's existence implies the
-    // socket is also live; removed alongside the socket on shutdown so
-    // `vet daemon status` never sees a stale pid + missing socket
-    // pair on a clean exit.
+    // socket is also live; the file is removed alongside the socket
+    // on shutdown so `vet daemon status` never sees a stale pid +
+    // missing socket pair on a clean exit. The POSIX write-lock
+    // (held in `_pidfile_lock` for the daemon's lifetime) is what
+    // `vet`'s PID-attestation check on connect verifies — see
+    // `plans/ThreatModel.md` T1 sequencing #1. Closing the fd
+    // (drop on shutdown, panic, or `kill -9`) atomically releases
+    // the lock, so a stale pidfile can never look "live" to a
+    // client that probes via `pidfile::read_locker_pid`.
     let pidfile_path = paths::default_pidfile_path(&socket_path);
-    pidfile::write(&pidfile_path, std::process::id(), SystemTime::now())
-        .map_err(DaemonError::Pidfile)?;
+    let _pidfile_lock = pidfile::acquire(&pidfile_path, std::process::id(), SystemTime::now())
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::WouldBlock => DaemonError::Config(format!(
+                "another vetterd holds the pidfile lock at {}; \
+                     stop it with `vet daemon stop` before starting a new one",
+                pidfile_path.display(),
+            )),
+            _ => DaemonError::Pidfile(e),
+        })?;
 
     let pending = Arc::new(PendingQueue::new());
 

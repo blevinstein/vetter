@@ -237,8 +237,18 @@ pub struct Daemon {
     child: Child,
     pub socket: PathBuf,
     pub audit: PathBuf,
+    pub pidfile: PathBuf,
     pub ui: MockUi,
     _scratch: TempDir,
+}
+
+impl Daemon {
+    /// PID of the spawned `vetterd` process. Used by tests that want
+    /// to cross-check kernel-reported peer pid / lock holder pid
+    /// against the daemon's own identity.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
 }
 
 impl Daemon {
@@ -260,6 +270,11 @@ impl Daemon {
         let scratch = tempfile::tempdir().expect("tempdir");
         let socket = scratch.path().join("vetter.sock");
         let audit = scratch.path().join("audit.log");
+        // Co-located pidfile, matching `default_pidfile_path` when
+        // VETTERD_PIDFILE is unset. Surfaced on `Daemon` so tests can
+        // probe `pidfile::read_locker_pid` without re-deriving the
+        // path.
+        let pidfile = scratch.path().join("vetter.pid");
         let allow_path = scratch.path().join("allowlist.yaml");
         std::fs::write(&allow_path, allowlist_yaml).expect("write allowlist");
 
@@ -285,6 +300,7 @@ impl Daemon {
             child,
             socket,
             audit,
+            pidfile,
             ui,
             _scratch: scratch,
         }

@@ -1,16 +1,26 @@
-# Release — Developer ID signing, notarisation, Homebrew tap
+# Release — signing, notarisation, distribution
 
-Operational guide for cutting a distribution-quality `Vetter.app`:
-Developer-ID signed, notarised by Apple, stapled, packaged into a
-Homebrew cask. The everyday developer build path (ad-hoc signed,
-no notary round-trip) lives in [MacOSApp.md](MacOSApp.md); use that
-for local hacking, this for shipping.
+Operational guide for cutting a distribution-quality artefact on each
+supported platform: the Developer-ID signed + notarised + stapled
+`Vetter.app` shipped through the Homebrew cask (macOS), and the
+`.deb` shipped through the Launchpad PPA (Ubuntu / Linux).
 
-The pipeline is intentionally **local-only** for now —
-[`tools/release.sh`](../tools/release.sh) runs on a Mac with the
-credentials below in env. Wiring the same pipeline into a GitHub
-Actions release workflow on tag push is a tracked follow-up
-(`TODO.md` Phase 4).
+The everyday developer build paths (ad-hoc signed `.app` on macOS;
+`cargo build` + `cargo deb` on Ubuntu) live in
+[MacOSApp.md](MacOSApp.md) and [UbuntuApp.md](UbuntuApp.md)
+respectively; use those for local hacking, this for shipping.
+
+Both pipelines are intentionally **local-only** for now —
+[`tools/release.sh`](../tools/release.sh) (macOS) and
+[`tools/release-deb.sh`](../tools/release-deb.sh) (Ubuntu) run on a
+maintainer machine with the credentials below in env. Wiring the
+same pipelines into a GitHub Actions release workflow on tag push is
+a tracked follow-up (`TODO.md` *Backlog → Deferred from Phase 4 /
+Phase 5*).
+
+---
+
+# macOS / Homebrew tap
 
 ## Apple-side prerequisites (one-time)
 
@@ -260,9 +270,10 @@ already.
   /Applications/Vetter.app` once. Document this in any user-facing
   install doc; the script does not work around it.
 
-## What's not here yet
+## What's not here yet (macOS)
 
-Tracked in [`TODO.md`](../TODO.md) Phase 4:
+Tracked in [`TODO.md`](../TODO.md) *Backlog → Deferred from Phase 4 /
+Phase 5*:
 
 - **CI release workflow.** A GitHub Actions job that imports the
   Developer ID certificate from a base64 secret, the `.p8` from
@@ -275,3 +286,190 @@ Tracked in [`TODO.md`](../TODO.md) Phase 4:
   background). Zip is enough for v0.1.
 - **Sparkle / in-app updates.** Homebrew is the update channel for
   now; `brew upgrade --cask vetter` is the supported path.
+
+---
+
+# Linux / Launchpad PPA
+
+Operational guide for cutting a distribution-quality `.deb` and
+publishing it to the project's Launchpad PPA so end users get
+`sudo apt-get install vetter` semantics. Source-build instructions
+for local development live in [UbuntuApp.md](UbuntuApp.md).
+
+## Launchpad-side prerequisites (one-time)
+
+`tools/release-deb.sh` refuses to run without all four. Acquire
+them once; the GPG key is the only secret material that lives on
+disk, and it should be passphrase-protected.
+
+### 1. Launchpad account
+
+Sign up at <https://login.launchpad.net/>. Free; required for PPA
+hosting.
+
+### 2. PPA created on Launchpad
+
+At <https://launchpad.net/~blevinstein/+activate-ppa> create
+`ppa:blevinstein/vetter`. The form sets the PPA name, description,
+and the dependency series (jammy = 22.04, noble = 24.04 — enable
+both). Launchpad allocates a build farm slot for amd64 and arm64
+automatically.
+
+### 3. GPG signing key
+
+Source uploads to a PPA must be signed by a GPG key registered on
+the uploader's Launchpad profile.
+
+```sh
+gpg --full-generate-key                 # RSA, 4096 bits, no expiry
+gpg --list-secret-keys --keyid-format LONG
+gpg --send-keys <KEYID>                 # publishes to the GPG keyserver pool
+```
+
+At <https://launchpad.net/~blevinstein/+editpgpkeys> paste the key
+fingerprint and respond to the encrypted confirmation email. The
+profile shows the key as "verified" within ~5 minutes.
+
+### 4. `dput` configured
+
+`dput` ships with Ubuntu (`sudo apt-get install dput`). One-time
+config in `~/.dput.cf`:
+
+```ini
+[vetter-ppa]
+fqdn = ppa.launchpad.net
+method = ftp
+incoming = ~blevinstein/ubuntu/vetter/
+login = anonymous
+allow_unsigned_uploads = 0
+```
+
+### Putting it together
+
+A `~/.private/vetter-release-deb.env` like this is the recommended
+setup; `source` it before each release:
+
+```sh
+export GPG_SIGN_KEY="ABCDEF1234567890ABCDEF1234567890ABCDEF12"
+export DEBFULLNAME="Your Name"
+export DEBEMAIL="you@example.com"
+```
+
+`chmod 600 ~/.private/vetter-release-deb.env` and never check it in.
+
+## Cutting a release
+
+```sh
+# 1. Confirm Cargo.toml workspace.package.version is what you
+#    want to ship; bump if not.
+git diff Cargo.toml
+
+# 2. Tag the commit you intend to release.
+VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+git tag "v$VERSION"
+
+# 3. Source the credentials and run the release script.
+source ~/.private/vetter-release-deb.env
+tools/release-deb.sh
+```
+
+The script:
+
+1. Runs `cargo build --release -p vetterd -p vet` (host arch only;
+   Launchpad's build farm cross-compiles arm64 from the source
+   package).
+2. Calls `cargo deb -p vetterd --no-build` to produce the binary
+   `.deb` for local smoke (`sudo dpkg -i target/debian/vetter_*.deb`).
+3. Builds the source package with `debuild -S -sa -k$GPG_SIGN_KEY`,
+   producing `vetter_<VERSION>_source.changes` plus the `.dsc` /
+   `.tar.xz` pair under `target/source-package/`.
+4. Uploads via `dput vetter-ppa target/source-package/vetter_<VERSION>_source.changes`.
+
+Final stdout looks like:
+
+```
+release-deb.sh: source package uploaded to ppa:blevinstein/vetter.
+  source: vetter_0.2.0~jammy1
+  changes: target/source-package/vetter_0.2.0~jammy1_source.changes
+
+Track the build at:
+  https://launchpad.net/~blevinstein/+archive/ubuntu/vetter/+packages
+```
+
+Launchpad emails the result of each per-arch build (~10–30
+minutes); a successful build flips the package to "Published" and
+it becomes installable via `apt-get`.
+
+## Publishing across releases
+
+Each Ubuntu LTS series (jammy / noble / future) needs its own
+upload because the source package's `debian/changelog` distribution
+field pins it to one series. The release script loops the upload
+once per `[ jammy noble ]` entry in
+`tools/release-deb.sh` (the suffix `~jammy1` / `~noble1` keeps
+versions monotonic per series).
+
+## End-user verification
+
+After the PPA finishes building, verify on a fresh Ubuntu machine:
+
+```sh
+sudo add-apt-repository ppa:blevinstein/vetter
+sudo apt-get update
+sudo apt-get install vetter
+
+# Service is active under systemd --user:
+systemctl --user status vetter.service          # Active: active (running)
+
+# Daemon socket + admin socket are on the bus:
+vet daemon status                               # running, pid=…, pending=0
+
+# Notification + tray smoke (graphical session only):
+vet curl https://prompt-test.example/           # banner with Approve/Reject
+```
+
+If `apt-get install` reports `Unable to locate package vetter`, the
+PPA either failed to build (check the Launchpad URL above) or the
+machine's release series isn't enabled in the PPA settings. If
+`systemctl --user status` reports `not loaded`, the `postinst` did
+not run — confirm with `sudo dpkg --configure -a` and re-check.
+
+## Troubleshooting
+
+- **`debuild` fails with `gpg: signing failed: No secret key`.**
+  `$GPG_SIGN_KEY` is wrong or the key is not in the `gpg` keyring
+  the user invoking the script can read. `gpg --list-secret-keys`
+  must list it; `secret-tool` may need to unlock it.
+- **`dput` upload rejects with `incoming: not allowed`.** The PPA
+  was created under a different name or owner; the
+  `incoming = ~blevinstein/ubuntu/vetter/` path in `~/.dput.cf`
+  must match the URL Launchpad shows on the PPA page.
+- **Launchpad build fails with `dependencies not satisfied`.** The
+  `Build-Depends:` line in `debian/control` (generated by
+  `cargo-deb`) lists a package not in the target Ubuntu series.
+  Confirm with `apt-cache madison <pkg>` against the series chroot;
+  the most common offenders are `libgtk-4-dev` (jammy backports
+  vs. noble main) and `librust-zbus-dev` (we usually link against
+  the vendored crate, not the OS package, but `cargo-deb` can be
+  miscoaxed into adding it).
+- **`vetter.service` reports `condition failed`.** The unit's
+  `ConditionUser` and `ConditionEnvironment` guards fired; this is
+  expected on machines without a graphical session. See
+  [UbuntuApp.md](UbuntuApp.md) §"Headless / SSH path".
+
+## What's not here yet (Linux)
+
+Tracked in [`TODO.md`](../TODO.md) Phase 6:
+
+- **CI release workflow on tag push.** Same shape as the macOS
+  follow-up: a GitHub Actions job that imports the GPG private key
+  from a secret, runs `tools/release-deb.sh`, attaches the source
+  `.changes` pair to a GitHub Release, and uploads to the PPA via
+  `dput` from CI.
+- **AppImage / snap / Flatpak.** Out of scope for v0.2; the PPA
+  covers Ubuntu 22.04+ which is the supported baseline. Other
+  distros can `cargo install` from the source path.
+- **Debian-proper upload.** The `.deb` produced here is the
+  PPA flavour. Submitting to Debian unstable requires a Debian
+  Maintainer sponsor and conforming `debian/` packaging — a
+  separate, much longer cycle.

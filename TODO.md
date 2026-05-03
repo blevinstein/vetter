@@ -251,6 +251,124 @@ suggestions"), §11. Picker-sheet UI design lives in
       `Effect::FileRead` — **deferred to Backlog**. Engine returns
       empty for now; popover hides the button.
 
+## Phase 6 — Ubuntu support  `[ ] not started`  (v0.2 milestone)
+
+Roadmap: [plans/Overview.md](plans/Overview.md) §7 ("Linux"), §11.
+Operational notes + manual smoke procedure:
+[plans/UbuntuApp.md](plans/UbuntuApp.md). Distribution flow:
+[plans/Release.md](plans/Release.md) §"Linux / Launchpad PPA".
+
+End-state: `sudo add-apt-repository ppa:blevinstein/vetter && sudo
+apt-get install vetter` puts `vet` + `vetterd` on `$PATH`, starts
+the daemon under `systemd --user`, lights a tray icon, and routes
+prompt-class requests through D-Bus notifications + a GTK4 popover
+window — same separate-channel guarantee as macOS, no TTY prompt.
+
+### PR 1 — Linux daemon spine + admin-CLI approve/reject
+
+- [ ] Refactor [vetterd/src/runloop/](vetterd/src/runloop/) into
+      `runloop/mac/` (move-only, keep the diff reviewable). Add a
+      thin `runloop/mod.rs` that re-exports the right submodule
+      per `cfg(target_os)`.
+- [ ] Add `PlatformDriver::Glib` to
+      [vetterd/src/lib.rs](vetterd/src/lib.rs); `run_with_glib`
+      mirrors `run_with_appkit`, accept-loop on background thread.
+- [ ] Stub `notifier::linux::LinuxNotifier` (no-op `notify`,
+      session-bus availability check in `install`); flip
+      `default_kind()` in
+      [vetterd/src/notifier/mod.rs](vetterd/src/notifier/mod.rs)
+      to `"linux"` on Linux.
+- [ ] Add `MgmtRequest::ResolvePending { id, decision, reason }`
+      + matching `MgmtResponse::PendingResolved` to
+      [vetter-core/src/wire/mod.rs](vetter-core/src/wire/mod.rs);
+      handle in
+      [vetterd/src/lib.rs::handle_admin_request](vetterd/src/lib.rs).
+- [ ] `vet daemon approve <id>` and `vet daemon reject <id>`
+      subcommands in [vet/src/daemon.rs](vet/src/daemon.rs); both
+      take an optional `--reason <str>`.
+- [ ] CI: extend `.github/workflows/ci.yml` test job with
+      `apt-get install -y libgtk-4-dev libdbus-1-dev`.
+
+### PR 2 — D-Bus notifications via zbus
+
+- [ ] Real `LinuxNotifier::notify` against
+      `org.freedesktop.Notifications`; subscribe to
+      `ActionInvoked` and `NotificationClosed`; route to
+      `PendingQueue::resolve` (mirroring
+      `runloop/mac/mod.rs::did_receive_response`).
+- [ ] Coalesce after first banner per existing
+      `NotifyHint::was_empty_before`.
+- [ ] Capability fallback: when `GetCapabilities` lacks
+      `actions`, post a body-only notification and rely on the
+      tray (PR 3) / `vet daemon approve` (PR 1) to resolve.
+- [ ] Mock `org.freedesktop.Notifications` server in
+      `vetterd/tests/notifier_linux_dbus.rs` for E2E coverage of
+      action routing.
+
+### PR 3 — Tray (StatusNotifierItem)
+
+- [ ] `runloop/linux/status_item.rs` using `ksni`: shield icon,
+      pending-count badge, "Open vetter window…" / "Pending: N"
+      / "Quit Vetter" menu.
+- [ ] Wire the queue change-listener to call `ksni::Handle::update`
+      on every state flip (mirrors
+      `runloop/mac/status_item.rs::set_pending_count`).
+- [ ] Hicolor SVG asset under `vetterd/resources/icons/` with the
+      same shield silhouette as macOS.
+
+### PR 4 — GTK4 popover window
+
+- [ ] `runloop/linux/popover.rs` (and per-section helpers
+      `popover_url.rs`, `popover_pills.rs`, `popover_effects.rs`,
+      `popover_picker.rs` — same module split as macOS so the
+      port stays diff-reviewable).
+- [ ] Translate the `Style` SGR taxonomy from
+      [plans/ApprovalUI.md](plans/ApprovalUI.md) §"Body colouring"
+      into `pango::AttrList`. Add a port of the macOS
+      `popover_attr.rs` ANSI parser.
+- [ ] Reuse `vetter-core::suggest` and `vetterd::suggestions`
+      unchanged for the Allowlist… / Trust host… picker sheets;
+      replace `NSAlert + accessoryView` with `gtk::Dialog` +
+      `gtk::Box` of radio buttons.
+- [ ] Tray click opens the popover window; double-click on a
+      notification body opens it scrolled to the matching id
+      (mirrors macOS `focused_id` flow).
+
+### PR 5 — `.deb` packaging + systemd user service
+
+- [ ] `[package.metadata.deb]` block in
+      [vetterd/Cargo.toml](vetterd/Cargo.toml) describing
+      maintainer, description, depends, assets, and
+      `maintainer-scripts` directory.
+- [ ] `vetterd/resources/vetter.service` (systemd user unit;
+      `Environment=VETTERD_NOTIFIER=linux`,
+      `WantedBy=default.target`).
+- [ ] `vetterd/resources/vetter.desktop` (autostart entry under
+      `/etc/xdg/autostart/`).
+- [ ] `vetterd/resources/postinst` →
+      `systemctl --user --global enable vetter.service`.
+- [ ] `tools/release-deb.sh`: `cargo build --release` →
+      `cargo deb --no-build` → `debuild -S -sa -k$GPG_SIGN_KEY`.
+- [ ] CI smoke job: `cargo deb` then
+      `dpkg-deb --contents target/debian/*.deb` against an
+      expected manifest.
+
+### PR 6 — Launchpad PPA + Release.md update + README
+
+- [ ] Create `ppa:blevinstein/vetter` on Launchpad (manual; one-
+      time per maintainer).
+- [ ] First upload via `dput vetter-ppa target/source-package/
+      vetter_*_source.changes`; verify per-arch builds succeed
+      for jammy and noble.
+- [ ] Update `vet doctor` to surface Linux-specific rows: D-Bus
+      session bus reachable, notification daemon name + version,
+      StatusNotifierWatcher present, systemd user service status,
+      package source (`dpkg -S` lookup against the binary path).
+- [ ] Update [README.md](README.md) status section; add the
+      Ubuntu install block (parallel to the existing macOS one).
+- [ ] Update [TODO.md](TODO.md) (this file): flip Phase 6 boxes
+      to `[x]` and the phase tag to `[x] done` once PR 6 lands.
+
 ---
 
 ## Hardening — pre-release ship-blockers
@@ -548,13 +666,7 @@ quickly after v0.1.
 Tracked but not on the v0.1 critical path. Each is roughly
 self-contained; pull from this list when v0.1 is out and stable.
 
-### Phase 6 — Other platforms
-
-- [ ] Linux UI: libnotify + AppIndicator
-- [ ] Windows UI: WinRT toast + tray
-- [ ] localhost web UI (uniform fallback)
-
-### Phase 7+ — Additional command parsers
+### Phase 7 — Additional command parsers
 
 Each is a new file implementing `CommandParser` plus snapshot
 fixtures. The first one doubles as a generalisation check on the
@@ -568,6 +680,12 @@ fix those before the rest land.
 - [ ] `ssh` / `scp`
 - [ ] `rm`
 - [ ] `git push` / `git remote`
+
+### Phase 8 — Other platforms (post-v0.2)
+
+- [ ] Windows UI: WinRT toast + tray
+- [ ] localhost web UI (`http://127.0.0.1:<port>`) as a uniform
+      fallback for SSH / Chromebook / kiosk environments
 
 ### Deferred from Phase 4 / Phase 5
 

@@ -116,10 +116,19 @@ Both sets are merged by `extend` in the explain path (`vet/src/explain.rs`).
 | CLI explain + matcher wiring | `vet/src/explain.rs` |
 | Daemon policy evaluation | `vetterd/src/policy.rs` |
 | Daemon Phase-5 admin handlers | `vetterd/src/suggestions.rs` |
-| macOS picker sheets (`Allowlist…` / `Trust host…`) | `vetterd/src/runloop/popover_picker.rs` |
+| macOS notifier (UNUserNotificationCenter) | `vetterd/src/notifier/mac.rs` |
+| macOS runloop (AppKit, status item, popover) | `vetterd/src/runloop/mac/` |
+| macOS picker sheets (`Allowlist…` / `Trust host…`) | `vetterd/src/runloop/mac/popover_picker.rs` |
+| Linux notifier (D-Bus / zbus) | `vetterd/src/notifier/linux.rs` (Phase 6) |
+| Linux runloop (GTK4 popover, ksni tray) | `vetterd/src/runloop/linux/` (Phase 6) |
+| Linux picker sheets (`Allowlist…` / `Trust host…`) | `vetterd/src/runloop/linux/popover_picker.rs` (Phase 6) |
+| systemd user unit + autostart .desktop + tray icon | `vetterd/resources/{vetter.service,vetter.desktop,icons/}` (Phase 6) |
 | Architecture spec | `plans/Overview.md` |
 | Threat model | `plans/ThreatModel.md` |
 | Testing plan | `plans/TestingPlan.md` |
+| macOS operational guide | `plans/MacOSApp.md` |
+| Ubuntu operational guide | `plans/UbuntuApp.md` |
+| Release / signing / packaging | `plans/Release.md` |
 | Current tasks | `TODO.md` |
 
 ---

@@ -629,9 +629,16 @@ jobs:
 ```
 
 Ubuntu runner is used for headless tests of `vetter-core`, `vet` (without
-exec), and `vetterd` (without the Swift UI). macOS runner is required for
-the full E2E suite and for testing `UNUserNotificationCenter` integration
-(Phase 4+).
+exec), and `vetterd` — through Phase 5 the GTK / D-Bus side is gated
+behind `cfg(target_os = "linux")` and a `MockNotifier`-style mock D-Bus
+server, so neither a graphical session nor a real notification daemon
+is required. From Phase 6 onward the Ubuntu test job additionally runs
+`apt-get install -y libgtk-4-dev libdbus-1-dev` so the linux notifier
++ tray + popover code compiles, and a separate `deb` job runs
+`cargo install cargo-deb && cargo deb -p vetterd --no-build` to produce
+the package artifact and asserts its `dpkg-deb --contents` matches an
+expected manifest. macOS runner remains required for the full E2E suite
+and for testing `UNUserNotificationCenter` integration (Phase 4+).
 
 ---
 
@@ -646,8 +653,9 @@ the full E2E suite and for testing `UNUserNotificationCenter` integration
 | **3** (Daemon + IPC) | §5.1–5.5; §6.1–6.2; §4.9 fail-closed test; §4.1 exit codes (stub UI: prompts auto-deny) |
 | **4** (macOS UI) | §7 full security properties matrix; E2E happy path; E2E deny path; audit log populated |
 | **5** (Suggestions) | Rule generalization unit tests (exact → glob → method+host); UI picker integration test |
-| **6** (Other platforms) | Platform-specific UI integration tests (Linux: libnotify; Windows: WinRT) |
-| **7+** (More parsers) | §8 per-parser checklist for each new command |
+| **6** (Ubuntu support) | Mock-`org.freedesktop.Notifications` server drives an `ActionInvoked` round-trip for Approve / Reject; `ksni` tray data assertions over the queue change-listener; `MgmtRequest::ResolvePending` admin round-trip exercised by `vet daemon approve` / `reject`; `cargo deb` produces an artifact whose `dpkg-deb --contents` matches the expected manifest; `lintian` runs clean on the source `.changes` |
+| **7** (More parsers) | §8 per-parser checklist for each new command |
+| **8** (Other platforms) | Platform-specific UI integration tests (Windows: WinRT toast + tray; web UI: HTTP fixture + browser action smoke) |
 
 ---
 
@@ -664,6 +672,14 @@ the full E2E suite and for testing `UNUserNotificationCenter` integration
   set post-MVP.
 - **Protocol fuzzing**: §6.3 outlines fuzzing; consider adding `cargo-fuzz`
   targets for the socket framing and YAML loader in a post-MVP hardening pass.
-- **Windows tests**: Not needed until Phase 6; ensure the core library unit
-  tests (no UI, no Unix sockets) compile and pass on Windows CI from Phase 1
-  onward to avoid a large cross-platform debt later.
+- **GTK runtime tests**: Phase 6 lands the GTK4 popover; assertions
+  that exercise `gtk::Box::append`, `pango::AttrList`, and
+  `StatusNotifierItem` registration require an X / Wayland session and
+  a tray host on the bus. CI runs the *non-GTK* half (queue → card-data
+  lowering, `ResolvePending` admin round-trip, mock-D-Bus `ActionInvoked`
+  routing) headlessly; the popover-widget side stays manual via
+  [`plans/UbuntuApp.md`](UbuntuApp.md) §"Manual smoke test" until we
+  invest in a `Xvfb` + `dbus-run-session` harness.
+- **Windows tests**: Not needed until Phase 8; ensure the core library
+  unit tests (no UI, no Unix sockets) compile and pass on Windows CI
+  from Phase 1 onward to avoid a large cross-platform debt later.

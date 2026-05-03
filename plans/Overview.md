@@ -315,12 +315,14 @@ alongside the project.
 
 ---
 
-## 7. Approval UI — macOS only for MVP
+## 7. Approval UI — per-platform
 
 The approver surface is a separate-channel UI: a different process, a
-different window, owned by the human. The agent's terminal never sees it.
-For the MVP we ship one platform — macOS — and design the protocol so
-other platforms drop in later without rework.
+different window, owned by the human. The agent's terminal never sees
+it. v0.1 shipped macOS only; v0.2 adds Ubuntu / Linux. The wire
+protocol (§3) is platform-agnostic, so the per-platform code is
+contained to `vetterd/src/notifier/<os>.rs` plus
+`vetterd/src/runloop/<os>/`.
 
 ### macOS
 
@@ -338,13 +340,53 @@ other platforms drop in later without rework.
 - If multiple requests are queued, notifications coalesce into the
   menu-bar popover after the first; we don't spam banners.
 
+Operational guide: [MacOSApp.md](MacOSApp.md). Card catalogue:
+[ApprovalUI.md](ApprovalUI.md).
+
+### Linux (Ubuntu 22.04+)
+
+- `vetterd` runs as a `systemd --user` service, started at login by
+  `vetter.service` (installed under `/usr/lib/systemd/user/` by the
+  `.deb`). The service is the Linux equivalent of the macOS `.app`
+  bundle: it owns the lifecycle, sets `VETTERD_NOTIFIER=linux` in
+  the unit `Environment`, and integrates with journald.
+- Approval surface uses `org.freedesktop.Notifications` over D-Bus
+  (via the `zbus` crate — no libnotify C dep). Each pending request
+  raises a notification with `Approve` and `Reject` actions; the
+  `ActionInvoked` signal feeds the same `PendingQueue::resolve`
+  path the macOS notification delegate uses. `Allowlist…` lives on
+  the popover card rather than the notification banner because
+  D-Bus notification action support is uneven across daemons.
+- A system-tray icon (StatusNotifierItem via the `ksni` crate)
+  shows a shield + pending-count badge. Clicking it opens a GTK4
+  popover window whose card layout mirrors macOS card-for-card:
+  URL row, signal pills, effect rows, Show raw, Allowlist… /
+  Trust host… picker sheets. The data layer
+  (`PromptSummary` → card fields) is shared with macOS;
+  `vetterd/src/runloop/linux/` only owns the GTK widget assembly
+  and `pango::AttrList` translation of the `Style` SGR taxonomy
+  in [ApprovalUI.md](ApprovalUI.md) §"Body colouring".
+- Notifications coalesce after the first banner per the same
+  `NotifyHint::was_empty_before` mechanism as macOS.
+- **Headless / SSH path.** When `$DBUS_SESSION_BUS_ADDRESS` is
+  unset (CI, containers, SSH without a graphical session), the
+  daemon refuses to install the `linux` notifier and exits with
+  code 78 — the same fail-closed shape as the macOS bundle guard.
+  Users who legitimately want to drive the daemon from a TTY set
+  `VETTERD_NOTIFIER=noop` and resolve requests via the admin
+  socket: `vet daemon list` to enumerate, `vet daemon approve <id>`
+  / `vet daemon reject <id>` to resolve. The admin protocol is
+  the same `vetter-admin.sock` that backs `vet daemon status`.
+
+Operational guide: [UbuntuApp.md](UbuntuApp.md). Distribution flow:
+[Release.md](Release.md) §"Linux / Launchpad PPA".
+
 ### Other platforms
 
-Out of scope for MVP. `vet` will refuse to run on non-macOS with a clear
-"only macOS is supported in this release" message until we add a UI.
-The wire protocol (§3) is platform-agnostic, so adding Linux (libnotify
-+ AppIndicator), Windows (WinRT toast + tray), or a localhost web UI
-later is a UI-only project — no daemon or CLI changes required.
+Windows (WinRT toast + tray) and a localhost web UI remain on the
+backlog (TODO.md *Backlog → Phase 7*). Both reuse the existing wire
+protocol and the platform-agnostic card-data layer; only the UI
+shell is new work.
 
 ### Audit log
 
@@ -685,11 +727,28 @@ slower CLI cold start and worse parser ergonomics.)
 - macOS popover: per-card `Allowlist…` / `Trust host…` buttons
   open `NSAlert` picker sheets backed by the suggestion engine.
 
-### Phase 6 — Other platforms (post-MVP, opportunistic)
-- Linux: libnotify + AppIndicator.
-- Windows: WinRT toast + tray.
-- localhost web UI (`http://127.0.0.1:<port>`) as a uniform option.
-- All three reuse the existing socket protocol; no daemon/CLI changes.
+### Phase 6 — Ubuntu support (v0.2 milestone)
+- D-Bus desktop notifications via `zbus` with Approve / Reject actions
+  (no libnotify C dep). Coalesce after first banner, mirroring macOS.
+- StatusNotifierItem tray (via `ksni`) with shield icon + pending-count
+  badge + "Open vetter window…" / "Pending: N" / "Quit Vetter" menu.
+- GTK4 popover window mirroring the macOS card catalogue card-for-card
+  (URL row, signal pills, effect rows, Show raw, Allowlist… / Trust
+  host… picker sheets). Card-data lowering is shared with macOS;
+  `vetterd/src/runloop/linux/` only owns widget assembly + SGR-to-
+  `pango::AttrList` translation.
+- `.deb` packaged via `cargo-deb`; ships `/usr/bin/{vet,vetterd}`,
+  `/usr/lib/systemd/user/vetter.service`,
+  `/etc/xdg/autostart/vetter.desktop`, and a hicolor SVG tray icon.
+  `postinst` runs `systemctl --user --global enable vetter.service`.
+- Distribution: Launchpad PPA (`ppa:blevinstein/vetter`), GPG-signed
+  source upload via `dput`. End-user install:
+  `sudo add-apt-repository ppa:blevinstein/vetter && sudo apt-get
+  install vetter`. See [Release.md](Release.md) §"Linux / Launchpad
+  PPA".
+- Headless / SSH: new admin commands `vet daemon approve <id>` and
+  `vet daemon reject <id>` over the existing `vetter-admin.sock` so
+  users can resolve from a TTY when no D-Bus session is available.
 
 ### Phase 7 — Additional command parsers
 - `wget`, `gh`, `aws`, `gcloud`, `ssh/scp`, `rm`, `git push`/`git remote`
@@ -701,6 +760,13 @@ slower CLI cold start and worse parser ergonomics.)
   changes to `Effect`/`ParsedCommand`, that's a useful signal we
   under-designed and should fix before the rest land.
 
+### Phase 8 — Other platforms (post-v0.2, opportunistic)
+- Windows: WinRT toast + tray.
+- localhost web UI (`http://127.0.0.1:<port>`) as a uniform option for
+  remote / chrome-OS-style environments.
+- Both reuse the existing socket protocol and the platform-agnostic
+  card-data layer; only the UI shell is new work.
+
 ---
 
 ## 12. Open questions
@@ -710,10 +776,12 @@ slower CLI cold start and worse parser ergonomics.)
    `query:` matcher.
 2. **Telemetry.** None by default. Opt-in local-only metrics for
    diagnosing the project's own behavior.
-3. **Distribution.** MVP is macOS only: Homebrew tap delivering the
-   notarised `.app` (which contains both `vet` and `vetterd`), with
-   symlinks into `/usr/local/bin` for the CLI. Linux/Windows packaging
-   waits until Phase 6.
+3. **Distribution.** v0.1 ships macOS only via a Homebrew tap
+   delivering the notarised `.app` (which contains both `vet` and
+   `vetterd`), with symlinks into `/usr/local/bin` for the CLI. v0.2
+   adds Ubuntu via a Launchpad PPA delivering a `.deb` that installs
+   `/usr/bin/{vet,vetterd}` plus a systemd user unit. Windows
+   packaging waits for Phase 8.
 
 ---
 

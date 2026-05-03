@@ -4,7 +4,7 @@ A local security gate that sits between an LLM coding agent and "dangerous"
 CLI commands. The agent runs `vet curl …` instead of `curl …`; `vet` parses
 the invocation, applies a layered allowlist, and either lets it through
 silently, blocks it outright, or prompts you for a per-call decision via a
-native macOS notification.
+native desktop notification (macOS today, Ubuntu in v0.2).
 
 For the architecture, threat model, and rule semantics see
 [plans/Overview.md](plans/Overview.md).
@@ -70,18 +70,29 @@ What's deliberately not there yet (all tracked in
   symlink semantics for file effects. Won't expose a known
   privilege escalation; first batch of users will surface them
   and we'll land them quickly after v0.1.
-- **Backlog (post-MVP)** — Linux/Windows UIs, additional command
-  parsers (`wget`, `gh`, `aws`, `gcloud`, `ssh`, `rm`, `git
-  push`), an automated CI release workflow on tag push, an E2E
-  suite against the signed bundle, the banner-side `Allowlist…`
-  notification action, the `vet allow suggest` CLI shim, and
-  allowlist suggestions over file effects.
+- **Phase 6 (v0.2 milestone, in design)** — Ubuntu support: D-Bus
+  notifications via `zbus`, StatusNotifierItem tray via `ksni`,
+  GTK4 popover window mirroring the macOS card catalogue, and a
+  `.deb` package shipped through a Launchpad PPA so end users get
+  `sudo apt-get install vetter`. New admin commands `vet daemon
+  approve <id>` and `vet daemon reject <id>` cover the headless /
+  SSH path. See [TODO.md](TODO.md) Phase 6 for the six-PR slice
+  plan and [plans/UbuntuApp.md](plans/UbuntuApp.md) for the
+  operational target.
+- **Backlog (post-v0.2)** — Windows UI (WinRT toast + tray) and a
+  localhost web UI, additional command parsers (`wget`, `gh`,
+  `aws`, `gcloud`, `ssh`, `rm`, `git push`), an automated CI
+  release workflow on tag push, an E2E suite against the signed
+  bundle, the banner-side `Allowlist…` notification action, the
+  `vet allow suggest` CLI shim, and allowlist suggestions over
+  file effects.
 
 ## Trying it locally
 
-macOS only for now (Phase 4 ships the macOS UI; non-macOS UIs are
-Phase 6 territory). Walkthrough including first-run permission
-prompts, gotchas, and the audit-log check is in
+### macOS
+
+Walkthrough including first-run permission prompts, gotchas, and
+the audit-log check is in
 [plans/MacOSApp.md](plans/MacOSApp.md). Short version (build from
 source):
 
@@ -117,10 +128,49 @@ default `VETTERD_NOTIFIER=mac` notifier refuses to install if the
 executable is not under `Vetter.app/Contents/MacOS/`, and the
 process exits with code 78.
 
-For non-macOS targets, headless CI, or dev workflows that
+### Ubuntu (Phase 6, planned for v0.2)
+
+Once the Phase 6 slice lands the install path will be:
+
+```sh
+sudo add-apt-repository ppa:blevinstein/vetter
+sudo apt-get update
+sudo apt-get install vetter
+# log out and back in so `systemd --user` picks up vetter.service
+vet curl https://prompt-test.example/  # D-Bus banner with Approve/Reject;
+                                       # click the tray icon for the popover
+```
+
+The `.deb` ships `/usr/bin/{vet,vetterd}`,
+`/usr/lib/systemd/user/vetter.service`, an autostart `.desktop`
+entry, and a hicolor SVG tray icon. See
+[plans/UbuntuApp.md](plans/UbuntuApp.md) for the full operational
+guide and [plans/Release.md](plans/Release.md) §"Linux / Launchpad
+PPA" for the maintainer-side flow.
+
+Source-build path for Ubuntu development:
+
+```sh
+sudo apt-get install -y libgtk-4-dev libdbus-1-dev pkg-config build-essential
+cargo build --release -p vetterd -p vet
+cargo install cargo-deb && cargo deb -p vetterd
+sudo dpkg -i target/debian/vetter_*.deb
+```
+
+On Ubuntu the daemon **expects** a graphical session: the default
+`VETTERD_NOTIFIER=linux` refuses to install if
+`$DBUS_SESSION_BUS_ADDRESS` is unset, and exits with code 78. For
+SSH / CI / container use set `VETTERD_NOTIFIER=noop` and resolve
+prompts via the admin socket (`vet daemon list`,
+`vet daemon approve <id>`, `vet daemon reject <id>`).
+
+### Headless / CI / dev workflows that skip the UI
+
+For non-graphical targets, headless CI, or dev workflows that
 intentionally skip the UI, set `VETTERD_NOTIFIER=noop` (every
-prompt-class request will then hang until the daemon is killed —
-useful for lifecycle smoke checks, not for actual use).
+prompt-class request will then hang until the daemon is killed
+*or* a request is resolved via `vet daemon approve` / `reject` —
+useful for lifecycle smoke checks and headless approver flows).
 
 ## Workspace layout
 

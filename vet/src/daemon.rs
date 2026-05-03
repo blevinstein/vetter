@@ -252,6 +252,13 @@ pub fn list() -> ExitCode {
             eprintln!("vet daemon list: daemon error: {message}");
             ExitCode::from(EXIT_CONFIG)
         }
+        Ok(other) => {
+            // The daemon answered with the wrong response variant. This
+            // is a protocol-level bug; surface it loudly rather than
+            // silently misreporting "no pending approvals".
+            eprintln!("vet daemon list: unexpected daemon response: {other:?}");
+            ExitCode::from(EXIT_CONFIG)
+        }
         Err(e) => {
             eprintln!("vet daemon list: {e}");
             ExitCode::from(EXIT_CONFIG)

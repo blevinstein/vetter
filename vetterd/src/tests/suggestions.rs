@@ -1,0 +1,100 @@
+//! Unit tests for [`crate::suggestions`].
+//!
+//! Integration coverage (admin socket round-trip + auto-approve
+//! reaches the worker) lives in `vetterd/tests/suggestions_admin.rs`.
+//! These tests exercise the helpers directly against an in-process
+//! [`crate::Context`] so failures point at the suggestions module
+//! rather than the IPC plumbing.
+
+use std::sync::{Arc, RwLock};
+
+use crate::audit::AuditLog;
+use crate::notifier::NoopNotifier;
+use crate::pending::PendingQueue;
+use crate::testutil::tmpdir;
+use crate::Context;
+use vetter_core::known_hosts::{self, KnownHostEntry, KnownHostsStore};
+use vetter_core::matcher::loader as allow_loader;
+use vetter_core::wire::WireScope;
+
+fn build_ctx(allow_path: &std::path::Path) -> Arc<Context> {
+    let allowlist = Arc::new(RwLock::new(
+        allow_loader::load_default(None, Some(allow_path)).unwrap(),
+    ));
+    let known_hosts = Arc::new(RwLock::new(known_hosts::load_default(None).unwrap()));
+    let audit_path = allow_path.with_file_name("audit.log");
+    let audit = Arc::new(AuditLog::open(&audit_path).unwrap());
+    let pending = Arc::new(PendingQueue::new());
+    let notifier: Arc<dyn crate::notifier::Notifier> = Arc::new(NoopNotifier);
+    Arc::new(Context {
+        socket_path: allow_path.with_file_name("ignored.sock"),
+        audit,
+        allowlist,
+        known_hosts,
+        pending,
+        notifier,
+        allowlist_override: Some(allow_path.to_path_buf()),
+    })
+}
+
+#[test]
+fn add_allowlist_rule_rejects_project_scope() {
+    let dir = tmpdir("vetterd-suggestions-");
+    let allow_path = dir.path().join("allowlist.yaml");
+    std::fs::write(&allow_path, "rules: []\n").unwrap();
+    let ctx = build_ctx(&allow_path);
+    let rule = vetter_core::matcher::Rule {
+        id: String::new(),
+        command: None,
+        when: vetter_core::matcher::RuleWhen {
+            http: None,
+            file_write: None,
+            file_read: None,
+        },
+        note: None,
+        created_by: None,
+        created_at: None,
+    };
+    let err = super::add_allowlist_rule(&ctx, WireScope::Project, rule)
+        .expect_err("project scope should be rejected in v1");
+    assert!(
+        matches!(err, super::AddError::UnsupportedScope(WireScope::Project)),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn add_known_host_rejects_project_scope() {
+    let dir = tmpdir("vetterd-suggestions-kh-");
+    let allow_path = dir.path().join("allowlist.yaml");
+    std::fs::write(&allow_path, "rules: []\n").unwrap();
+    let ctx = build_ctx(&allow_path);
+    let entry = KnownHostEntry {
+        pattern: "example.com".into(),
+        note: None,
+    };
+    let err = super::add_known_host(&ctx, WireScope::Project, entry)
+        .expect_err("project scope should be rejected in v1");
+    assert!(matches!(
+        err,
+        super::AddError::UnsupportedScope(WireScope::Project)
+    ));
+}
+
+#[test]
+fn suggestions_for_unknown_id_returns_none() {
+    let dir = tmpdir("vetterd-suggestions-id-");
+    let allow_path = dir.path().join("allowlist.yaml");
+    std::fs::write(&allow_path, "rules: []\n").unwrap();
+    let ctx = build_ctx(&allow_path);
+    assert!(super::suggestions_for(&ctx, "no-such-id").is_none());
+}
+
+#[test]
+fn known_hosts_default_loads_clean_store_for_test() {
+    // Sanity: default known-hosts loads without error in our test
+    // sandbox so failures in subsequent tests aren't masked by a
+    // panic during ctx construction.
+    let store = known_hosts::load_default(None).unwrap();
+    let _ = KnownHostsStore { ..store }; // confirms type fields match.
+}

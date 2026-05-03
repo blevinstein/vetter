@@ -15,11 +15,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use vetter_core::matcher::{
-    self, add_rule, discover_project_root, remove_rule, user_allowlist_path, AllowlistStore,
-    LoadError, Rule, RuleWhen, Scope,
+    self, add_rule, derive_auto_id, discover_project_root, remove_rule, user_allowlist_path,
+    AllowlistStore, LoadError, Rule, RuleWhen, Scope,
 };
 
 use crate::AllowScope;
@@ -257,15 +256,6 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
         here = dir.parent();
     }
     None
-}
-
-fn derive_auto_id(rule: &Rule) -> String {
-    let canon = serde_yaml_ng::to_string(rule).unwrap_or_default();
-    let mut hasher = Sha256::new();
-    hasher.update(canon.as_bytes());
-    let digest = hasher.finalize();
-    let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
-    format!("auto-{hex}")
 }
 
 fn load_error(e: &LoadError) -> String {

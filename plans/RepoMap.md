@@ -110,8 +110,13 @@ Both sets are merged by `extend` in the explain path (`vet/src/explain.rs`).
 | Signals types + `analyze` | `vetter-core/src/signals/mod.rs` |
 | Shared HTTP / parsed types | `vetter-core/src/parsers/types.rs` |
 | Curl parser | `vetter-core/src/parsers/curl/` |
+| Known-hosts loader + atomic write API | `vetter-core/src/known_hosts.rs` |
+| Suggestion engine (allowlist + known-host tiers) | `vetter-core/src/suggest/mod.rs` |
+| Wire types (incl. `MgmtRequest::{SuggestionsFor,AddRule,AddKnownHost}`) | `vetter-core/src/wire/mod.rs` |
 | CLI explain + matcher wiring | `vet/src/explain.rs` |
 | Daemon policy evaluation | `vetterd/src/policy.rs` |
+| Daemon Phase-5 admin handlers | `vetterd/src/suggestions.rs` |
+| macOS picker sheets (`Allowlist…` / `Trust host…`) | `vetterd/src/runloop/popover_picker.rs` |
 | Architecture spec | `plans/Overview.md` |
 | Threat model | `plans/ThreatModel.md` |
 | Testing plan | `plans/TestingPlan.md` |

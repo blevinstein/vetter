@@ -30,7 +30,10 @@ use std::io::{Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::known_hosts::KnownHostEntry;
+use crate::matcher::rule::Rule;
 use crate::matcher::Decision as MatchDecision;
+use crate::suggest::{HostSuggestion, RuleSuggestion};
 
 /// The wire-format version this build speaks. Bumping this requires
 /// either a backward-compatible schema (default-able new fields) or
@@ -285,22 +288,80 @@ pub struct PendingItem {
     pub force_prompt: bool,
 }
 
+/// Which allowlist / known-hosts file scope a write should target.
+/// Phase 5 wires `User` end-to-end through the popover picker;
+/// `Project` is reserved on the wire so future UI surfaces can pick
+/// a project-scoped destination without bumping the protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireScope {
+    User,
+    Project,
+}
+
 /// Request sent by `vet` to the admin socket. Uses a serde-tagged enum so
 /// additional management operations can be added in future without a version
 /// bump on the main socket protocol.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MgmtRequest {
     /// Return all requests currently parked in the pending-prompt queue.
     ListPending,
+    /// Return generalisation candidates (allowlist + known-host) for
+    /// a request the daemon already knows about. `id` may name a
+    /// pending entry or a recently-resolved one in the popover's
+    /// history ring; unknown ids return [`MgmtResponse::Error`].
+    SuggestionsFor { id: String },
+    /// Append `rule` to the indicated allowlist scope. The daemon
+    /// reloads the in-memory store and re-decides every pending
+    /// entry against the new store; matches are auto-resolved with
+    /// `Allow` and listed in `MgmtResponse::RuleAdded::auto_approved_ids`.
+    /// `rule` is boxed so this variant doesn't bloat the whole
+    /// enum's stack footprint (clippy::large_enum_variant —
+    /// `Rule` is ~320 bytes, the other variants are ~50).
+    AddRule { scope: WireScope, rule: Box<Rule> },
+    /// Append `entry` to the indicated known-hosts scope. Adding a
+    /// known-host never auto-approves anything (known-hosts only
+    /// affect the `UnknownHost` *signal*, not the policy decision)
+    /// but does refresh the popover's pending cards so the host
+    /// pill flips from orange (unknown) to green (known).
+    AddKnownHost {
+        scope: WireScope,
+        entry: KnownHostEntry,
+    },
 }
 
 /// Response returned by `vetterd` on the admin socket.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MgmtResponse {
-    PendingList { items: Vec<PendingItem> },
-    Error { message: String },
+    PendingList {
+        items: Vec<PendingItem>,
+    },
+    /// Result of [`MgmtRequest::SuggestionsFor`].
+    Suggestions {
+        allowlist: Vec<RuleSuggestion>,
+        known_host: Vec<HostSuggestion>,
+    },
+    /// Result of [`MgmtRequest::AddRule`].
+    RuleAdded {
+        /// The id used to persist the rule (auto-derived if the
+        /// caller didn't set one). Echoed for confirmation.
+        id: String,
+        scope: WireScope,
+        /// Pending request ids that were auto-approved as a side
+        /// effect of adding this rule. Empty when the new rule
+        /// did not cover any pending entry.
+        auto_approved_ids: Vec<String>,
+    },
+    /// Result of [`MgmtRequest::AddKnownHost`].
+    KnownHostAdded {
+        pattern: String,
+        scope: WireScope,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// Generate a fresh ULID-based correlation id. Time-sortable and

@@ -1,6 +1,8 @@
 //! Tests for [`crate`] root. Layout convention is described in
 //! `AGENTS.md`.
 
+use std::sync::RwLock;
+
 use super::*;
 use crate::notifier::NoopNotifier;
 use crate::pending::PendingQueue;
@@ -12,11 +14,11 @@ fn handle_connection_evaluates_and_responds() {
     let dir = tmpdir("vetterd-lib-test-");
     let sock = dir.path().join("test.sock");
     let audit_path = dir.path().join("audit.log");
-    let allowlist = load_default(None, None).unwrap();
+    let allowlist = Arc::new(RwLock::new(load_default(None, None).unwrap()));
     let audit = Arc::new(AuditLog::open(&audit_path).unwrap());
     let pending = Arc::new(PendingQueue::new());
     let notifier: Arc<dyn crate::notifier::Notifier> = Arc::new(NoopNotifier);
-    let known_hosts = load_known_hosts_default(None).unwrap();
+    let known_hosts = Arc::new(RwLock::new(load_known_hosts_default(None).unwrap()));
     let _ctx = Context {
         socket_path: sock,
         audit,
@@ -24,6 +26,7 @@ fn handle_connection_evaluates_and_responds() {
         known_hosts,
         pending,
         notifier,
+        allowlist_override: None,
     };
     // Smoke-only: full e2e is in vetterd/tests/daemon_e2e.rs.
     // Here we just confirm Context can be assembled.

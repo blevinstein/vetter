@@ -39,7 +39,7 @@ use crate::matcher::loader::discover_project_root;
 // ---------------------------------------------------------------------------
 
 /// A single entry in a known-hosts file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KnownHostEntry {
     /// Host pattern: exact (`api.github.com`) or wildcard (`*.github.com`).
@@ -163,6 +163,14 @@ pub enum KnownHostsError {
         #[source]
         source: serde_yaml_ng::Error,
     },
+    #[error("serialising known-hosts for {path}: {source}")]
+    Serialize {
+        path: PathBuf,
+        #[source]
+        source: serde_yaml_ng::Error,
+    },
+    #[error("duplicate known-host pattern `{pattern}` in {path}")]
+    DuplicatePattern { pattern: String, path: PathBuf },
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +229,78 @@ pub fn load_file(path: &Path) -> Result<KnownHostsFile, KnownHostsError> {
         path: path.to_path_buf(),
         source,
     })
+}
+
+/// Atomically write `file` to `path`, creating parent dirs as needed.
+///
+/// Mirrors [`crate::matcher::loader::write_file`]: serialise to YAML,
+/// land in a sibling tempfile, then `persist` (which is rename-or-
+/// copy) over `path`. If the process is killed before the rename
+/// completes the prior file (if any) is intact.
+pub fn write_file(path: &Path, file: &KnownHostsFile) -> Result<(), KnownHostsError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|source| KnownHostsError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+    }
+    let yaml = serde_yaml_ng::to_string(file).map_err(|source| KnownHostsError::Serialize {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let tmp = match parent {
+        Some(p) => tempfile::NamedTempFile::new_in(p),
+        None => tempfile::NamedTempFile::new_in("."),
+    }
+    .map_err(|source| KnownHostsError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    {
+        use std::io::Write as _;
+        let mut handle = tmp.as_file();
+        handle
+            .write_all(yaml.as_bytes())
+            .map_err(|source| KnownHostsError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        handle.sync_all().map_err(|source| KnownHostsError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+    tmp.persist(path).map_err(|e| KnownHostsError::Io {
+        path: path.to_path_buf(),
+        source: e.error,
+    })?;
+    Ok(())
+}
+
+/// Append `entry` to `path`'s `hosts:` list, creating the file if it
+/// does not exist. Rejects entries whose `pattern` already exists
+/// (case-insensitive).
+pub fn add_host(path: &Path, entry: KnownHostEntry) -> Result<(), KnownHostsError> {
+    let mut file = if path.exists() {
+        load_file(path)?
+    } else {
+        KnownHostsFile::default()
+    };
+    if file
+        .hosts
+        .iter()
+        .any(|e| e.pattern.eq_ignore_ascii_case(&entry.pattern))
+    {
+        return Err(KnownHostsError::DuplicatePattern {
+            pattern: entry.pattern,
+            path: path.to_path_buf(),
+        });
+    }
+    file.hosts.push(entry);
+    write_file(path, &file)
 }
 
 #[cfg(test)]

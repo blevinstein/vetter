@@ -31,7 +31,6 @@ procedures see [MacOSApp.md](MacOSApp.md).
   the [Future work](#future-work) section.
 - Per-query-param coloring or body-diff highlighting on mutating
   methods.
-- Allowlist-pattern picker / "Allow this host" pill action.
 - Replacing the §8.5 text body entirely. The new structured layout is
   *additive* in the sense that the raw text is always one click away
   through the per-card "Show raw" disclosure.
@@ -303,6 +302,47 @@ classes reads at a glance when both sit in the same popover.
   reserves it for dismissal, so the user can always back out without
   resolving a card.
 
+### Allowlist / Trust-host picker (Phase 5)
+
+Source: [`runloop::popover_picker`](../vetterd/src/runloop/popover_picker.rs).
+Both pickers live above the Approve / Reject row on every pending
+card and on every Allow-resolved card. Deny-resolved cards hide
+both buttons (the user just rejected — surfacing "Allowlist…" right
+after would be confusing). `Trust host…` is additionally hidden
+when the card has no `UnknownHost` signal: trusting an
+already-trusted host is a no-op.
+
+Picker shape:
+
+- `NSAlert` with `setAccessoryView:` of a vertical `NSStackView`.
+- One row per generalisation tier (`vetter_core::suggest::SuggestionTier`
+  / `HostTier`): a left-aligned `NSButton::Radio` plus a
+  monospaced `NSTextField` showing the YAML preview of just the
+  rule's `when:` block (so the user reads what they will see in
+  their `allowlist.yaml`).
+- Buttons: **Add to user allowlist** / **Trust this host** on the
+  left (default, accepts Return), **Cancel** on the right.
+
+Wire flow on dismiss (Add):
+
+1. `runModal()` returns `NSAlertFirstButtonReturn`.
+2. The chosen radio's index resolves to the matching
+   `RuleSuggestion` / `HostSuggestion`.
+3. `vetterd::suggestions::add_allowlist_rule` /
+   `add_known_host` is dispatched onto the global concurrent
+   queue (so file IO + YAML reload doesn't stall the main thread).
+4. The result hops back to the main queue and surfaces through a
+   second `NSAlert` ("Rule added — auto-approved 2 pending
+   request(s)" / "Could not add rule: …").
+
+The popover already auto-refreshes off the queue's change
+listener, so auto-approved cards flip from pending → resolved
+without bespoke UI work in the picker module.
+
+Scope default in v1: every picker writes to the user scope (the
+chosen-option from Phase-5 design). Project-scope writes still
+work through the existing `vet allow add --scope project` CLI.
+
 ## Data flow
 
 ```mermaid
@@ -349,9 +389,7 @@ In rough priority order:
    (`api_key=`, `token=`, ...) the way headers are already redacted.
 3. **Mutating-method body diff.** For PATCH/PUT, show a structural
    diff cell instead of a raw bytes dump.
-4. **Allowlist-pattern picker.** A "Generalise…" button that opens
-   a sheet with proposed YAML rules to add to the allowlist.
-5. **Project trust classes.** Beyond binary known/unknown, model
+4. **Project trust classes.** Beyond binary known/unknown, model
    "this is the project's own host" vs. "this is a third-party
    known host" so the pill can reflect more than two states.
 

@@ -50,10 +50,12 @@ use objc2_user_notifications::{
 };
 
 use crate::pending::{PendingDecision, PendingQueue};
+use crate::Context;
 
 mod popover;
 pub(crate) mod popover_attr;
 pub(crate) mod popover_effects;
+pub(crate) mod popover_picker;
 pub(crate) mod popover_pills;
 pub(crate) mod popover_url;
 mod status_item;
@@ -84,7 +86,7 @@ const REASON_POPOVER_REJECT: &str = "rejected via popover";
 ///
 /// The caller is expected to have already spawned the daemon's
 /// accept-loop on a background thread.
-pub fn run_app_kit(queue: Arc<PendingQueue>, shutdown: Arc<AtomicBool>) {
+pub fn run_app_kit(ctx: Arc<Context>, shutdown: Arc<AtomicBool>) {
     let mtm = MainThreadMarker::new()
         .expect("runloop::run_app_kit must be called on the process main thread");
 
@@ -95,7 +97,8 @@ pub fn run_app_kit(queue: Arc<PendingQueue>, shutdown: Arc<AtomicBool>) {
     // `cargo run --release --bin vetterd` dev path too.
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
-    let delegate = AppDelegate::new(mtm, Arc::clone(&queue), Arc::clone(&shutdown));
+    let queue = Arc::clone(&ctx.pending);
+    let delegate = AppDelegate::new(mtm, Arc::clone(&ctx), Arc::clone(&shutdown));
     let proto = ProtocolObject::from_ref(&*delegate);
     app.setDelegate(Some(proto));
 
@@ -271,7 +274,13 @@ fn install_notification_machinery(_mtm: MainThreadMarker, delegate: &AppDelegate
 /// mutability so the delegate methods can mutate without `&mut self`.
 #[derive(Default)]
 pub struct AppDelegateIvars {
-    queue: std::sync::OnceLock<Arc<PendingQueue>>,
+    /// Full daemon context. Used by the popover's Phase-5 picker
+    /// flow to call [`crate::suggestions::add_allowlist_rule`] and
+    /// [`crate::suggestions::add_known_host`] on a background
+    /// dispatch (file IO + reload happens off the main thread).
+    /// The pending queue is reachable through `ctx.pending` so we
+    /// only carry one shared handle here.
+    ctx: std::sync::OnceLock<Arc<Context>>,
     /// Shared shutdown flag. SIGTERM/SIGINT (via signal-hook) and
     /// the popover's Quit button both flip this to `true`; the
     /// observer thread spawned in `run_app_kit` notices the flip
@@ -290,10 +299,14 @@ pub struct AppDelegateIvars {
 }
 
 impl AppDelegateIvars {
-    pub(crate) fn queue(&self) -> &Arc<PendingQueue> {
-        self.queue
+    pub(crate) fn ctx(&self) -> &Arc<Context> {
+        self.ctx
             .get()
-            .expect("queue is set immediately after AppDelegate::new")
+            .expect("ctx is set immediately after AppDelegate::new")
+    }
+
+    pub(crate) fn queue(&self) -> &Arc<PendingQueue> {
+        &self.ctx().pending
     }
 
     pub(crate) fn take_focused_id(&self) -> Option<String> {
@@ -331,7 +344,7 @@ define_class!(
             // The popover holds a strong ref to a controller object;
             // the status item button's action targets `self` and
             // calls into `togglePopover:`.
-            let popover = Popover::new(mtm, Arc::clone(self.ivars().queue()), self);
+            let popover = Popover::new(mtm, Arc::clone(self.ivars().ctx()), self);
             self.ivars().popover.set(popover).ok();
 
             let status = StatusItem::install(mtm, self);
@@ -458,14 +471,10 @@ define_class!(
 );
 
 impl AppDelegate {
-    fn new(
-        mtm: MainThreadMarker,
-        queue: Arc<PendingQueue>,
-        shutdown: Arc<AtomicBool>,
-    ) -> Retained<Self> {
+    fn new(mtm: MainThreadMarker, ctx: Arc<Context>, shutdown: Arc<AtomicBool>) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(AppDelegateIvars::default());
         let this: Retained<Self> = unsafe { objc2::msg_send![super(this), init] };
-        this.ivars().queue.set(queue).ok();
+        this.ivars().ctx.set(ctx).ok();
         this.ivars().shutdown.set(shutdown).ok();
         this
     }

@@ -247,15 +247,47 @@ a yellow warning that prompts human review without auto-denying.
 
 ### Pattern suggestions
 
-When a request reaches the human and they approve, the daemon proposes
-1–3 generalised rules ordered from tightest to loosest:
+The daemon ships two parallel suggestion engines, both reachable from
+per-card `Allowlist…` / `Trust host…` actions on every pending and
+Allow-resolved popover card:
+
+**Allowlist generalisation** (HTTP requests). For the request's first
+`Effect::HttpRequest`, propose 1–3 rules ordered tightest → loosest:
 
 1. Exact match (host + method + full path).
-2. Path-glob generalisation (`/repos/foo/bar` → `/repos/*/*`).
-3. Method-and-host only.
+2. Path-glob generalisation (last segment → `*`; emitted only when
+   the request path has at least two segments — single-segment
+   paths reduce to the method+host tier anyway).
+3. Method-and-host only (`path: /**`).
 
-Human picks one (or none) via the UI; chosen rule is appended to user
-or project scope per their selection.
+**Known-host trust** (host pattern). For the request's host, propose
+1–2 trust patterns:
+
+1. Exact host (`api.example.com`).
+2. Wildcard parent domain (`*.example.com`). Emitted only when the
+   host has ≥3 labels and the leftmost is not `www`; loopback
+   hosts and IP literals are skipped entirely.
+
+Both engines live in `vetter-core::suggest` so the macOS picker and
+any future `vet allow suggest` CLI share one implementation. Rule
+ids are derived deterministically from the rule body
+(`vetter_core::matcher::derive_auto_id`) so re-clicking the same tier
+is idempotent.
+
+Adding an allowlist rule that covers a currently-pending request
+auto-resolves the matching pending entries with `Allow` and an
+"auto-approved by newly added rule `<id>`" reason. Adding a known
+host never auto-approves anything (known-host membership only
+affects the `UnknownHost` signal, not the policy decision) but does
+refresh the popover so the host pill flips orange → green.
+
+Picker UI design: the v1 popover hands picker selection through an
+`NSAlert` with a vertical `NSStackView` of radio buttons (one per
+tier) plus a YAML preview of the rule body — see
+[ApprovalUI.md §1.4](ApprovalUI.md). New rules / known hosts default
+to the user scope (`~/.config/vet/allowlist.yaml`,
+`~/.vet/known-hosts.yaml`) in v1; project-scope writes still work
+through the existing `vet allow add --scope project` CLI.
 
 ---
 
@@ -640,9 +672,18 @@ slower CLI cold start and worse parser ergonomics.)
 - This is the MVP-complete milestone: with Phase 4 landed, an agent
   harness with `vet *` allowlisted can do useful work end-to-end.
 
-### Phase 5 — Pattern suggestions (2–4 days)
-- Generalisation engine (host, path-glob, method buckets).
-- "Allowlist…" action opens the picker UI from Phase 4.
+### Phase 5 — Pattern + known-host suggestions (2–4 days)
+- Generalisation engine in `vetter-core::suggest`: allowlist tiers
+  (Exact / PathGlob / MethodHost) + known-host tiers (Exact /
+  Wildcard).
+- `vetter-core::known_hosts` write API mirroring `matcher::loader`
+  (atomic temp + rename, case-insensitive dedup).
+- Admin protocol: `MgmtRequest::{SuggestionsFor, AddRule,
+  AddKnownHost}` + matching responses.
+- Daemon: shared `Arc<RwLock<…>>` stores; `vetterd::suggestions`
+  module wires admin handlers into auto-approve + signal-refresh.
+- macOS popover: per-card `Allowlist…` / `Trust host…` buttons
+  open `NSAlert` picker sheets backed by the suggestion engine.
 
 ### Phase 6 — Other platforms (post-MVP, opportunistic)
 - Linux: libnotify + AppIndicator.

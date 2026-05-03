@@ -239,3 +239,124 @@ fn empty_effects_produces_no_signals() {
     };
     assert!(check_known_hosts(&p, &store).is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// write_file / add_host
+// ---------------------------------------------------------------------------
+
+#[test]
+fn write_file_creates_parent_dirs() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir
+        .path()
+        .join("nested")
+        .join(".vet")
+        .join("known-hosts.yaml");
+    let file = KnownHostsFile {
+        hosts: vec![KnownHostEntry {
+            pattern: "api.example.com".into(),
+            note: Some("test".into()),
+        }],
+    };
+    write_file(&path, &file).unwrap();
+    let round = load_file(&path).unwrap();
+    assert_eq!(round.hosts.len(), 1);
+    assert_eq!(round.hosts[0].pattern, "api.example.com");
+    assert_eq!(round.hosts[0].note.as_deref(), Some("test"));
+}
+
+#[test]
+fn add_host_creates_file_when_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known-hosts.yaml");
+    add_host(
+        &path,
+        KnownHostEntry {
+            pattern: "api.example.com".into(),
+            note: None,
+        },
+    )
+    .unwrap();
+    let file = load_file(&path).unwrap();
+    assert_eq!(file.hosts.len(), 1);
+    assert_eq!(file.hosts[0].pattern, "api.example.com");
+}
+
+#[test]
+fn add_host_appends_to_existing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known-hosts.yaml");
+    std::fs::write(&path, "hosts:\n  - pattern: \"first.example.com\"\n").unwrap();
+    add_host(
+        &path,
+        KnownHostEntry {
+            pattern: "second.example.com".into(),
+            note: None,
+        },
+    )
+    .unwrap();
+    let file = load_file(&path).unwrap();
+    let patterns: Vec<_> = file.hosts.iter().map(|h| h.pattern.as_str()).collect();
+    assert_eq!(patterns, vec!["first.example.com", "second.example.com"]);
+}
+
+#[test]
+fn add_host_rejects_duplicate_case_insensitive() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known-hosts.yaml");
+    add_host(
+        &path,
+        KnownHostEntry {
+            pattern: "api.example.com".into(),
+            note: None,
+        },
+    )
+    .unwrap();
+    let err = add_host(
+        &path,
+        KnownHostEntry {
+            pattern: "API.EXAMPLE.COM".into(),
+            note: None,
+        },
+    )
+    .expect_err("duplicate should error");
+    match err {
+        KnownHostsError::DuplicatePattern { pattern, .. } => {
+            assert_eq!(pattern, "API.EXAMPLE.COM");
+        }
+        other => panic!("expected DuplicatePattern, got {other:?}"),
+    }
+    // Original entry must still be there.
+    let file = load_file(&path).unwrap();
+    assert_eq!(file.hosts.len(), 1);
+}
+
+#[test]
+fn write_file_replaces_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known-hosts.yaml");
+    let v1 = KnownHostsFile {
+        hosts: vec![KnownHostEntry {
+            pattern: "v1.example.com".into(),
+            note: None,
+        }],
+    };
+    write_file(&path, &v1).unwrap();
+    let v2 = KnownHostsFile {
+        hosts: vec![KnownHostEntry {
+            pattern: "v2.example.com".into(),
+            note: None,
+        }],
+    };
+    write_file(&path, &v2).unwrap();
+    let round = load_file(&path).unwrap();
+    assert_eq!(round.hosts.len(), 1);
+    assert_eq!(round.hosts[0].pattern, "v2.example.com");
+    // Sibling tempfile should be cleaned up by `persist`.
+    let leaked: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name() != "known-hosts.yaml")
+        .collect();
+    assert!(leaked.is_empty(), "leftover tempfile(s): {leaked:?}");
+}

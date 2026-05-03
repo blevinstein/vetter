@@ -34,10 +34,11 @@ pub mod policy;
 #[cfg(target_os = "macos")]
 pub mod runloop;
 pub mod socket;
+pub mod suggestions;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
 use vetter_core::known_hosts::{load_default as load_known_hosts_default, KnownHostsStore};
@@ -66,13 +67,26 @@ pub use pending::{NotifyHint, PendingDecision, PendingQueue, PromptSummary, Reso
 pub use policy::{evaluate, PolicyOutcome};
 
 /// Per-process context shared by every connection worker.
+///
+/// `allowlist` and `known_hosts` are wrapped in `Arc<RwLock<…>>`
+/// because Phase-5 admin handlers (`AddRule`, `AddKnownHost`)
+/// rewrite the in-memory stores after persisting changes to YAML.
+/// Connection workers hold a read lock for the duration of one
+/// `evaluate(...)` call (sub-millisecond) so contention with admin
+/// writes is irrelevant in practice.
 pub struct Context {
     pub socket_path: PathBuf,
     pub audit: Arc<AuditLog>,
-    pub allowlist: AllowlistStore,
-    pub known_hosts: KnownHostsStore,
+    pub allowlist: Arc<RwLock<AllowlistStore>>,
+    pub known_hosts: Arc<RwLock<KnownHostsStore>>,
     pub pending: Arc<PendingQueue>,
     pub notifier: Arc<dyn notifier::Notifier>,
+    /// `Some(path)` when the daemon was started with
+    /// `--allowlist <path>` (test escape hatch). Admin write
+    /// handlers persist into this same file rather than the
+    /// XDG-discovered user file when set, so integration tests
+    /// can sandbox writes inside a tempdir.
+    pub allowlist_override: Option<PathBuf>,
 }
 
 /// Top-level daemon error. Recoverable framing errors are *not*
@@ -126,9 +140,12 @@ pub fn run(
     let shutdown = Arc::new(AtomicBool::new(false));
     install_signal_handlers(Arc::clone(&shutdown));
 
-    let allowlist =
-        load_default(None, allowlist_override.as_deref()).map_err(DaemonError::Allowlist)?;
-    let known_hosts = load_known_hosts_default(None).map_err(DaemonError::KnownHosts)?;
+    let allowlist = Arc::new(RwLock::new(
+        load_default(None, allowlist_override.as_deref()).map_err(DaemonError::Allowlist)?,
+    ));
+    let known_hosts = Arc::new(RwLock::new(
+        load_known_hosts_default(None).map_err(DaemonError::KnownHosts)?,
+    ));
     let audit = Arc::new(AuditLog::open(&audit_path).map_err(DaemonError::Audit)?);
     let listener = socket::listen(&socket_path).map_err(DaemonError::Socket)?;
 
@@ -171,17 +188,19 @@ pub fn run(
         known_hosts,
         pending: Arc::clone(&pending),
         notifier: Arc::clone(&notifier),
+        allowlist_override: allowlist_override.clone(),
     });
 
     eprintln!("vetterd: listening on {}", socket_path.display());
 
-    // Admin accept loop runs on a background thread regardless of the
-    // platform driver; it only needs the pending queue and shutdown flag.
-    let admin_pending = Arc::clone(&pending);
+    // Admin accept loop runs on a background thread; it carries the
+    // full daemon `Context` so the Phase-5 suggestion handlers can
+    // mutate the allowlist + known-hosts stores.
+    let admin_ctx = Arc::clone(&ctx);
     let admin_shutdown = Arc::clone(&shutdown);
     std::thread::Builder::new()
         .name("vetterd-admin".into())
-        .spawn(move || run_admin_loop(admin_listener, admin_pending, admin_shutdown))
+        .spawn(move || run_admin_loop(admin_listener, admin_ctx, admin_shutdown))
         .map_err(DaemonError::Socket)?;
 
     let result = match driver {
@@ -236,7 +255,7 @@ fn run_with_appkit(
         .spawn(move || accept_loop(listener, accept_ctx, accept_shutdown))
         .map_err(DaemonError::Socket)?;
 
-    runloop::run_app_kit(Arc::clone(&pending), Arc::clone(&shutdown));
+    runloop::run_app_kit(Arc::clone(&ctx), Arc::clone(&shutdown));
 
     // AppKit returned: signal the accept loop to wind down and join.
     shutdown.store(true, Ordering::SeqCst);
@@ -266,7 +285,7 @@ fn admin_socket_path_for(main: &Path) -> PathBuf {
 /// O(pending queue size) and never block on user input).
 fn run_admin_loop(
     listener: std::os::unix::net::UnixListener,
-    pending: Arc<PendingQueue>,
+    ctx: Arc<Context>,
     shutdown: Arc<AtomicBool>,
 ) {
     if listener.set_nonblocking(true).is_err() {
@@ -290,22 +309,7 @@ fn run_admin_loop(
                         continue;
                     }
                 };
-                let resp = match req {
-                    MgmtRequest::ListPending => {
-                        let items = pending
-                            .pending_summaries()
-                            .into_iter()
-                            .map(|s| PendingItem {
-                                id: s.id,
-                                command: s.command,
-                                primary_verb: s.primary_verb,
-                                primary_target: s.primary_target,
-                                force_prompt: s.force_prompt,
-                            })
-                            .collect();
-                        MgmtResponse::PendingList { items }
-                    }
-                };
+                let resp = handle_admin_request(&ctx, req);
                 if let Err(e) = write_frame(&mut stream, &resp) {
                     eprintln!("vetterd: admin: write error: {e}");
                 }
@@ -316,6 +320,60 @@ fn run_admin_loop(
             Err(e) => {
                 eprintln!("vetterd: admin: accept error: {e}");
                 return;
+            }
+        }
+    }
+}
+
+/// Translate one [`MgmtRequest`] into the corresponding
+/// [`MgmtResponse`]. Split out so the admin loop's accept/read/write
+/// scaffolding stays thin and the per-variant logic is unit-test
+/// reachable through `Context` directly.
+fn handle_admin_request(ctx: &Arc<Context>, req: MgmtRequest) -> MgmtResponse {
+    match req {
+        MgmtRequest::ListPending => {
+            let items = ctx
+                .pending
+                .pending_summaries()
+                .into_iter()
+                .map(|s| PendingItem {
+                    id: s.id,
+                    command: s.command,
+                    primary_verb: s.primary_verb,
+                    primary_target: s.primary_target,
+                    force_prompt: s.force_prompt,
+                })
+                .collect();
+            MgmtResponse::PendingList { items }
+        }
+        MgmtRequest::SuggestionsFor { id } => match suggestions::suggestions_for(ctx, &id) {
+            Some((allowlist, known_host)) => MgmtResponse::Suggestions {
+                allowlist,
+                known_host,
+            },
+            None => MgmtResponse::Error {
+                message: format!("no pending or resolved entry with id `{id}`"),
+            },
+        },
+        MgmtRequest::AddRule { scope, rule } => {
+            match suggestions::add_allowlist_rule(ctx, scope, *rule) {
+                Ok(added) => MgmtResponse::RuleAdded {
+                    id: added.id,
+                    scope,
+                    auto_approved_ids: added.auto_approved_ids,
+                },
+                Err(e) => MgmtResponse::Error {
+                    message: e.to_string(),
+                },
+            }
+        }
+        MgmtRequest::AddKnownHost { scope, entry } => {
+            let pattern = entry.pattern.clone();
+            match suggestions::add_known_host(ctx, scope, entry) {
+                Ok(()) => MgmtResponse::KnownHostAdded { pattern, scope },
+                Err(e) => MgmtResponse::Error {
+                    message: e.to_string(),
+                },
             }
         }
     }
@@ -388,17 +446,24 @@ pub fn handle_connection(
 
     let (decision, reason, command_for_audit, prompt_ctx) = match parse_request(&req) {
         Ok(mut parsed) => {
+            // Read-lock both stores for the duration of evaluate;
+            // admin write handlers acquire the write lock briefly
+            // when persisting + reloading, so contention is bounded
+            // by the number of in-flight admin operations (typically
+            // zero).
+            let allowlist = ctx.allowlist.read().expect("allowlist lock poisoned");
+            let known_hosts = ctx.known_hosts.read().expect("known_hosts lock poisoned");
             parsed
                 .signals
-                .extend(check_known_hosts(&parsed, &ctx.known_hosts));
+                .extend(check_known_hosts(&parsed, &known_hosts));
             let command_for_audit = parsed.command.clone();
-            let outcome = evaluate(
-                &parsed,
-                &req.id,
-                req.force_prompt,
-                &ctx.allowlist,
-                &ctx.known_hosts,
-            );
+            let outcome = evaluate(&parsed, &req.id, req.force_prompt, &allowlist, &known_hosts);
+            // Drop the read locks before resolve_outcome, which can
+            // block the worker on the pending queue waiting for a
+            // human decision; holding either lock across that wait
+            // would deadlock against admin AddRule / AddKnownHost.
+            drop(allowlist);
+            drop(known_hosts);
             let (decision, reason, prompt_ctx) = resolve_outcome(outcome, &parsed, &req, ctx);
             (decision, reason, command_for_audit, prompt_ctx)
         }

@@ -26,3 +26,24 @@ pub use loader::{
 pub use rule::{
     FileReadClause, FileWriteClause, HostPattern, HttpClause, Rule, RuleWhen, UrlClause,
 };
+
+use sha2::{Digest, Sha256};
+
+/// Deterministic id for a rule whose author did not supply one.
+///
+/// Computes `auto-<8-hex>` over the canonical YAML serialisation of
+/// `rule` (with the `id` field cleared first so id-derivation is
+/// idempotent regardless of any preset id). Used by both `vet allow
+/// add` and the daemon's pattern-suggestion engine so re-clicking
+/// the same suggestion produces the same id (the loader's
+/// duplicate-id check then short-circuits a second persist).
+pub fn derive_auto_id(rule: &Rule) -> String {
+    let mut canon = rule.clone();
+    canon.id = String::new();
+    let yaml = serde_yaml_ng::to_string(&canon).unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(yaml.as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    format!("auto-{hex}")
+}

@@ -19,11 +19,16 @@ If it exits 77 (denied), stop and tell the user.
 The skill lives outside this repo because it applies globally across all
 projects, not just `vetter`. The canonical source is kept in the repo at
 [`skills/use-vet/SKILL.md`](skills/use-vet/SKILL.md). New users should
-install it once:
+install it once for each agent runtime they use:
 
 ```bash
+# Claude Code
 mkdir -p ~/.claude/skills/use-vet
 cp skills/use-vet/SKILL.md ~/.claude/skills/use-vet/SKILL.md
+
+# Cursor
+mkdir -p ~/.cursor/skills/use-vet
+cp skills/use-vet/SKILL.md ~/.cursor/skills/use-vet/SKILL.md
 ```
 
 ## What this project is

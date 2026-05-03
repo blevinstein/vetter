@@ -123,7 +123,15 @@ fn prompt_summary(
     }
 }
 
-fn is_known_host(req: &vetter_core::parsers::HttpRequest, store: &KnownHostsStore) -> bool {
+/// Decide whether an HttpRequest's host is "known" for UI purposes
+/// (loopback or matched by some layer of `store`). Exposed at
+/// crate visibility so [`crate::pending::PendingQueue::refresh_with`]
+/// can reuse the exact same rule when recomputing host_known after
+/// an admin AddKnownHost write.
+pub(crate) fn is_known_host(
+    req: &vetter_core::parsers::HttpRequest,
+    store: &KnownHostsStore,
+) -> bool {
     use std::net::IpAddr;
     use std::str::FromStr;
 

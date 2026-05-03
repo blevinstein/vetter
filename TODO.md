@@ -169,15 +169,62 @@ and notarised distribution are still deferred.
       [vetter-core/src/wire/mod.rs](vetter-core/src/wire/mod.rs),
       [vetterd/tests/admin_ipc.rs](vetterd/tests/admin_ipc.rs))
 
-## Phase 5 — Pattern suggestions  `[ ] not started`
+## Phase 5 — Pattern + Known-Host Suggestions  `[~] in progress`
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §5 ("Pattern
-suggestions"), §11.
+suggestions"), §11. Picker-sheet UI design lives in
+[plans/ApprovalUI.md](plans/ApprovalUI.md) §1.4.
 
-- [ ] Generalisation engine: exact → path-glob → method+host
-- [ ] "Allowlist…" action opens picker UI from Phase 4
-- [ ] Chosen rule appended to user or project scope per selection
-- [ ] Unit tests over each generalisation tier
+- [x] Allowlist generalisation engine in
+      [vetter-core/src/suggest/](vetter-core/src/suggest/) emits
+      Exact → PathGlob → MethodHost tiers from a `ParsedCommand`'s
+      first HttpRequest effect; lifted `derive_auto_id` from
+      `vet/src/allow.rs` into `vetter-core::matcher` so daemon and
+      CLI share one impl
+- [x] Known-host suggestion engine in the same module emits Exact +
+      `*.parent.tld` Wildcard tiers; skips loopback / IP literals /
+      apex / leading-`www` / already-known hosts
+- [x] `vetter-core::known_hosts` write API: atomic `write_file` +
+      `add_host` (case-insensitive dedup) mirroring
+      `matcher::loader`
+- [x] Admin protocol: `MgmtRequest::{SuggestionsFor, AddRule,
+      AddKnownHost}` and matching `MgmtResponse::{Suggestions,
+      RuleAdded { auto_approved_ids }, KnownHostAdded}` over
+      `vetter-admin.sock`
+      ([vetter-core/src/wire/mod.rs](vetter-core/src/wire/mod.rs))
+- [x] Daemon: shared mutable stores
+      (`Arc<RwLock<AllowlistStore>>` /
+      `Arc<RwLock<KnownHostsStore>>`) so admin handlers can persist
+      + reload without restarting the daemon
+      ([vetterd/src/lib.rs](vetterd/src/lib.rs))
+- [x] `vetterd::suggestions` module: `add_allowlist_rule` writes
+      YAML, reloads the store, and auto-resolves any pending
+      requests the new rule covers (reason "auto-approved by newly
+      added rule `<id>`"). `add_known_host` writes + reloads +
+      refreshes pending signals via
+      `PendingQueue::refresh_with(known_hosts)`. `suggestions_for`
+      returns the picker payload for any pending or Allow-resolved
+      id. ([vetterd/src/suggestions.rs](vetterd/src/suggestions.rs))
+- [x] Popover: `Allowlist…` and `Trust host…` buttons on every
+      pending and Allow-resolved card, picker sheets via
+      `NSAlert + accessoryView`
+      ([vetterd/src/runloop/popover.rs](vetterd/src/runloop/popover.rs),
+      [vetterd/src/runloop/popover_picker.rs](vetterd/src/runloop/popover_picker.rs))
+- [x] Integration coverage in
+      [vetterd/tests/suggestions_admin.rs](vetterd/tests/suggestions_admin.rs):
+      AddRule auto-approves matching pending + writes YAML +
+      audits the auto-approve reason; non-covering AddRule leaves
+      pending untouched; AddKnownHost does NOT auto-approve but
+      flips `UnknownHost` signals away
+- [ ] `vet allow suggest <id>` CLI prints the suggestions payload
+      as YAML (deferred — engine is reachable through the admin
+      socket already, this is just a developer-ergonomics shim)
+- [ ] Allowlist suggestions over `Effect::FileWrite` /
+      `Effect::FileRead` (engine returns empty for now; UI hides
+      the button)
+- [ ] Project-scope writes from the popover (CLI
+      `vet allow add --scope project` still works; v1 picker
+      lands on user scope only per the picked design option)
 
 ## Phase 6 — Other platforms  `[ ] not started`  (post-MVP)
 

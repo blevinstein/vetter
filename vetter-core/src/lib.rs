@@ -6,6 +6,8 @@
 //! - [`matcher`]     — rule matcher (Phase 2; placeholder until then).
 //! - [`signals`]     — generic risk-signal analyzer.
 //! - [`known_hosts`] — known-hosts list loader and host-familiarity check.
+//! - [`suggest`]     — generalisation engine (allowlist + known-host) for
+//!   the macOS approver picker.
 //! - [`wire`]        — JSON wire types (Phase 3; placeholder until then).
 //! - [`paths`]       — shared socket / pidfile resolution used by both
 //!   `vet` and `vetterd`.
@@ -18,6 +20,7 @@ pub mod peer_cred;
 pub mod pidfile;
 pub mod render;
 pub mod signals;
+pub mod suggest;
 pub mod wire;
 
 pub use known_hosts::{load_default as load_known_hosts_default, KnownHostsStore};
@@ -34,10 +37,14 @@ pub use render::{
     signal_kind_label, AnsiWriter, DefaultRenderer, PlainWriter, Renderer, Style, StyledWriter,
 };
 pub use signals::{analyze, check_known_hosts, RiskSignal, SignalKind};
+pub use suggest::{
+    allowlist_suggestions, host_suggestions, HostSuggestion, HostTier, RuleSuggestion,
+    SuggestionTier,
+};
 pub use wire::{
     new_request_id, read_decision, read_frame, read_request, write_frame, MgmtRequest,
-    MgmtResponse, PendingItem, VetDecision, VetRequest, WireDecision, WireError, MAX_FRAME_BYTES,
-    PROTOCOL_VERSION,
+    MgmtResponse, PendingItem, VetDecision, VetRequest, WireDecision, WireError, WireScope,
+    MAX_FRAME_BYTES, PROTOCOL_VERSION,
 };
 
 /// Returns the crate version. Used by `vet doctor` for diagnostics.

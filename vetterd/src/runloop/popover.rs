@@ -41,8 +41,11 @@ use objc2_foundation::{
     NSRect, NSRectEdge, NSSize, NSString,
 };
 
-use super::{popover_attr, popover_effects, popover_pills, popover_url, AppDelegate};
+use super::{
+    popover_attr, popover_effects, popover_picker, popover_pills, popover_url, AppDelegate,
+};
 use crate::pending::{PendingQueue, PromptSummary, ResolvedEntry};
+use crate::Context;
 
 /// Outer popover dimensions. Width is fixed; height grows with
 /// content up to this cap, then the inner scroll view scrolls.
@@ -98,7 +101,8 @@ pub struct Popover {
 }
 
 impl Popover {
-    pub fn new(mtm: MainThreadMarker, queue: Arc<PendingQueue>, delegate: &AppDelegate) -> Self {
+    pub fn new(mtm: MainThreadMarker, ctx: Arc<Context>, delegate: &AppDelegate) -> Self {
+        let queue = Arc::clone(&ctx.pending);
         // Build the cards stack first; the controller borrows a
         // strong ref to it so refresh can rebuild children.
         let cards = NSStackView::new(mtm);
@@ -220,7 +224,7 @@ impl Popover {
         // Construct the controller before creating the popover so
         // we can install it as the popover's delegate (for the
         // popoverWillShow: refresh hook).
-        let controller = PopoverController::new(mtm, queue, cards);
+        let controller = PopoverController::new(mtm, ctx, queue, cards);
 
         let popover = NSPopover::new(mtm);
         popover.setBehavior(NSPopoverBehavior::Transient);
@@ -303,6 +307,13 @@ impl Popover {
 /// closure-bearing target object per card.
 #[derive(Default)]
 pub struct PopoverControllerIvars {
+    /// Full daemon context. Used by the Phase-5 picker actions
+    /// (`allowlistClicked:` / `trustHostClicked:`) so the picker
+    /// flow can call into [`crate::suggestions::*`] without going
+    /// through the admin socket. The pending queue is reachable
+    /// through `ctx.pending`; we cache it separately under `queue`
+    /// to keep the existing `resolve_for_tag` call site cheap.
+    ctx: std::sync::OnceLock<Arc<Context>>,
     queue: std::sync::OnceLock<Arc<PendingQueue>>,
     cards: std::sync::OnceLock<Retained<NSStackView>>,
     /// Ids of currently-rendered cards, indexed by button tag.
@@ -322,6 +333,12 @@ pub struct PopoverControllerIvars {
     /// Resolved cards store `Some(container)` and the
     /// `toggleDetailsDisclosure:` selector flips `setHidden` on it.
     details_views: Mutex<Vec<Option<Retained<NSView>>>>,
+    /// Request ids keyed by the same global `disclosure_idx`
+    /// counter `body_scrolls` / `details_views` use. Powers the
+    /// Phase-5 `Allowlist…` / `Trust host…` buttons, which can
+    /// appear on both pending and Allow-resolved cards (so the
+    /// per-section `card_ids` mapping isn't enough).
+    picker_ids: Mutex<Vec<String>>,
 }
 
 define_class!(
@@ -390,20 +407,99 @@ define_class!(
         fn toggle_details_disclosure(&self, sender: Option<&NSButton>) {
             self.toggle_details_for_tag(sender);
         }
+
+        /// "Allowlist…" picker selector. `sender.tag` indexes into
+        /// `card_ids` from the most recent refresh; the matching id
+        /// drives [`crate::suggestions::suggestions_for`] and the
+        /// returned [`vetter_core::suggest::RuleSuggestion`] list
+        /// powers the picker sheet.
+        #[unsafe(method(allowlistClicked:))]
+        fn allowlist_clicked(&self, sender: Option<&NSButton>) {
+            self.open_allowlist_picker(sender);
+        }
+
+        /// "Trust host…" picker selector. Symmetric with
+        /// `allowlistClicked:` but feeds
+        /// [`vetter_core::suggest::HostSuggestion`] into the
+        /// host picker. Hidden by `build_card` when the matching
+        /// card has no `UnknownHost` signal, so a stray firing
+        /// (out-of-range tag, picker offered with empty
+        /// suggestions) drops into a no-op.
+        #[unsafe(method(trustHostClicked:))]
+        fn trust_host_clicked(&self, sender: Option<&NSButton>) {
+            self.open_host_picker(sender);
+        }
     }
 );
 
 impl PopoverController {
     fn new(
         mtm: MainThreadMarker,
+        ctx: Arc<Context>,
         queue: Arc<PendingQueue>,
         cards: Retained<NSStackView>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(PopoverControllerIvars::default());
         let this: Retained<Self> = unsafe { objc2::msg_send![super(this), init] };
+        this.ivars().ctx.set(ctx).ok();
         this.ivars().queue.set(queue).ok();
         this.ivars().cards.set(cards).ok();
         this
+    }
+
+    fn ctx(&self) -> &Arc<Context> {
+        self.ivars()
+            .ctx
+            .get()
+            .expect("ctx is set in PopoverController::new")
+    }
+
+    fn id_for_tag(&self, sender: Option<&NSButton>) -> Option<String> {
+        let button = sender?;
+        let tag = button.tag();
+        let g = self.ivars().picker_ids.lock().expect("picker_ids poisoned");
+        g.get(tag as usize).cloned()
+    }
+
+    /// Body of `allowlistClicked:`. Looks up the request id for
+    /// the clicked card, asks `suggestions::suggestions_for` for
+    /// the rule candidates, then hands them to
+    /// [`super::popover_picker::show_allowlist_picker`].
+    /// Tag-out-of-range / unknown id / empty suggestion list all
+    /// silently drop — the button should not have been visible in
+    /// the first place, but a stale popover snapshot can race.
+    fn open_allowlist_picker(&self, sender: Option<&NSButton>) {
+        let Some(id) = self.id_for_tag(sender) else {
+            return;
+        };
+        let Some((allowlist, _)) = crate::suggestions::suggestions_for(self.ctx(), &id) else {
+            return;
+        };
+        if allowlist.is_empty() {
+            return;
+        }
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        popover_picker::show_allowlist_picker(mtm, Arc::clone(self.ctx()), allowlist);
+    }
+
+    /// Body of `trustHostClicked:`. Mirror image of
+    /// `open_allowlist_picker` for the known-host suggestion list.
+    fn open_host_picker(&self, sender: Option<&NSButton>) {
+        let Some(id) = self.id_for_tag(sender) else {
+            return;
+        };
+        let Some((_, host)) = crate::suggestions::suggestions_for(self.ctx(), &id) else {
+            return;
+        };
+        if host.is_empty() {
+            return;
+        }
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        popover_picker::show_host_picker(mtm, Arc::clone(self.ctx()), host);
     }
 
     fn ivars_queue(&self) -> &Arc<PendingQueue> {
@@ -549,6 +645,11 @@ impl PopoverController {
             .details_views
             .lock()
             .expect("details_views poisoned")
+            .clear();
+        self.ivars()
+            .picker_ids
+            .lock()
+            .expect("picker_ids poisoned")
             .clear();
 
         if entries.is_empty() && resolved.is_empty() {
@@ -1020,6 +1121,95 @@ impl PopoverController {
             .push(body_scroll.clone());
 
         card.addArrangedSubview(&body_scroll);
+
+        // Phase-5 picker buttons. Available on:
+        // - every pending card (so the user can pre-emptively
+        //   broaden the allowlist instead of one-shot Approving)
+        // - every Allow / AllowOnce resolved card (the user often
+        //   realises post-decision that they want to memoise the
+        //   pattern; this row keeps the affordance one click away).
+        // Deny-resolved cards intentionally hide both buttons —
+        // surfacing "Allowlist…" right after the user denied a
+        // request would be confusing at best.
+        let allow_picker = matches!(
+            outcome,
+            None | Some(vetter_core::wire::WireDecision::Allow)
+                | Some(vetter_core::wire::WireDecision::AllowOnce)
+        );
+        if allow_picker {
+            // Register the request id under the same global
+            // `disclosure_idx` slot we'll use for the buttons' tag.
+            // Done unconditionally even when no buttons end up
+            // visible (e.g. the engine returned zero suggestions)
+            // so the registry stays in lockstep with the global
+            // counter — the action handler short-circuits on empty
+            // suggestion lists anyway.
+            self.ivars()
+                .picker_ids
+                .lock()
+                .expect("picker_ids poisoned")
+                .push(summary.id.clone());
+
+            let picker_row = NSStackView::new(mtm);
+            picker_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+            picker_row.setSpacing(8.0);
+            picker_row.setDistribution(NSStackViewDistribution::Fill);
+
+            let allow_btn = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    ns_string!("Allowlist…"),
+                    Some(&*(self as *const Self).cast::<AnyObject>()),
+                    Some(sel!(allowlistClicked:)),
+                    mtm,
+                )
+            };
+            allow_btn.setBordered(false);
+            allow_btn.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+            allow_btn.setTag(disclosure_idx as isize);
+            picker_row.addArrangedSubview(&allow_btn);
+
+            // Trust host… is gated on the `UnknownHost` signal
+            // being present — when the host is already trusted
+            // (builtin or previously-added), there is nothing to
+            // suggest. Mirrors the `host_suggestions(...)` engine
+            // contract so the button visibility matches the
+            // picker's emission rule.
+            let has_unknown = summary
+                .signals
+                .iter()
+                .any(|s| s.kind == vetter_core::SignalKind::UnknownHost);
+            if has_unknown {
+                let host_btn = unsafe {
+                    NSButton::buttonWithTitle_target_action(
+                        ns_string!("Trust host…"),
+                        Some(&*(self as *const Self).cast::<AnyObject>()),
+                        Some(sel!(trustHostClicked:)),
+                        mtm,
+                    )
+                };
+                host_btn.setBordered(false);
+                host_btn.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+                host_btn.setTag(disclosure_idx as isize);
+                picker_row.addArrangedSubview(&host_btn);
+            }
+
+            // Trailing flexible spacer so the buttons cluster
+            // left, leaving the right edge of the row clean for
+            // future overflow controls (e.g. `…` menu).
+            let spacer = NSView::new(mtm);
+            picker_row.addArrangedSubview(&spacer);
+            card.addArrangedSubview(&picker_row);
+        } else {
+            // Deny-resolved card: keep the registry slot so
+            // disclosure_idx-based tags stay aligned. We push a
+            // sentinel that the action handlers will never look up
+            // (Deny cards don't render any picker buttons).
+            self.ivars()
+                .picker_ids
+                .lock()
+                .expect("picker_ids poisoned")
+                .push(String::new());
+        }
 
         // Pending cards get Approve/Reject buttons. Resolved cards
         // already carry an outcome badge in the header; no further

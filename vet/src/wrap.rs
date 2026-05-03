@@ -21,8 +21,8 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
-use vetter_core::matcher::{self, LoadError};
-use vetter_core::parsers::{self, EnvSnapshot, ParseError, StdinHandle};
+use vetter_core::matcher;
+use vetter_core::parsers::{self, EnvSnapshot, StdinHandle};
 use vetter_core::peer_cred::{assert_peer_is_self, peer_pid};
 use vetter_core::pidfile;
 use vetter_core::wire::{
@@ -35,6 +35,7 @@ use vetter_core::{
 };
 
 use crate::color::{self, Style};
+use crate::messages::{explain_load_error, explain_parse_error, explain_resolve_error};
 
 const EXIT_CONFIG: u8 = 78;
 const EXIT_DENY: u8 = 77;
@@ -56,22 +57,28 @@ pub fn run(
         }
     };
 
-    let parser = match parsers::dispatch(cmd) {
-        Some(p) => p,
-        None => {
-            eprintln!(
-                "vet: no parser registered for `{cmd}`. Phase 1b ships with `curl` only; \
-                 see plans/Overview.md §11 for the parser roadmap."
-            );
+    // Hybrid argv0 resolution closes ThreatModel.md T4: a hardlink /
+    // symlink / copy named `curl` that actually points at bash is
+    // rejected here before any parser claims it. The returned
+    // `resolved.resolved_path` is then used for the `exec` below so
+    // vetting and execution bind to the same `(dev, ino)`.
+    let resolved = match parsers::resolve_for_dispatch(cmd) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("vet: cannot route `{cmd}`: {}", explain_resolve_error(&e));
             return ExitCode::from(EXIT_CONFIG);
         }
     };
+    let parser = resolved.parser;
 
     let env = EnvSnapshot::from_process();
     let mut parsed = match parser.parse(&argv, StdinHandle::empty(), &env) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("vet: cannot vet `{cmd}` invocation: {}", explain_error(&e));
+            eprintln!(
+                "vet: cannot vet `{cmd}` invocation: {}",
+                explain_parse_error(&e)
+            );
             return ExitCode::from(EXIT_CONFIG);
         }
     };
@@ -95,7 +102,7 @@ pub fn run(
     // the local copy (so `vet` and `vetterd` agree on the rule set).
     if let Some(p) = allowlist_override {
         if let Err(e) = matcher::load_default(env.cwd.as_deref(), Some(p)) {
-            eprintln!("vet: --allowlist load failed: {}", load_error(&e));
+            eprintln!("vet: --allowlist load failed: {}", explain_load_error(&e));
             return ExitCode::from(EXIT_CONFIG);
         }
     }
@@ -133,7 +140,16 @@ pub fn run(
             // execvp: replaces the current process. On success it
             // never returns; on failure it returns an io::Error and
             // we exit 78 without ever exec'ing.
-            let err = Command::new(&argv[0]).args(&argv[1..]).exec();
+            //
+            // We exec the canonical `resolved.resolved_path` (not the
+            // user-supplied `argv[0]`) so a same-UID racer cannot swap
+            // the binary out from under us between vetting and exec.
+            // `arg0(&argv[0])` keeps the program-visible argv[0]
+            // unchanged — curl and friends inspect it.
+            let err = Command::new(&resolved.resolved_path)
+                .arg0(&argv[0])
+                .args(&argv[1..])
+                .exec();
             eprintln!("vet: failed to exec `{}`: {err}", argv[0]);
             ExitCode::from(EXIT_CONFIG)
         }
@@ -253,33 +269,5 @@ fn daemon_error(socket: &Path, e: &WireError) -> String {
             "daemon protocol error talking to {}: {other}",
             socket.display()
         ),
-    }
-}
-
-fn explain_error(e: &ParseError) -> String {
-    match e {
-        ParseError::MissingArgument(what) => format!("missing required argument `{what}`"),
-        ParseError::ConflictingArgs(detail) => format!("conflicting arguments: {detail}"),
-        ParseError::UnknownArgument(name) => format!("unknown argument `{name}`"),
-        ParseError::StreamingUnsupported => {
-            "streaming bodies are not supported in this MVP (`-T -`, chunked transfer, \
-             or `-d @-` over 1 MiB). See plans/Overview.md §8.4."
-                .into()
-        }
-        ParseError::Other(s) => s.clone(),
-    }
-}
-
-fn load_error(e: &LoadError) -> String {
-    match e {
-        LoadError::Io { path, source } => format!("read {}: {source}", path.display()),
-        LoadError::Yaml { path, source } => format!("parse {}: {source}", path.display()),
-        LoadError::Serialize { path, source } => format!("serialise {}: {source}", path.display()),
-        LoadError::DuplicateId { id, path } => {
-            format!("duplicate rule id `{id}` in {}", path.display())
-        }
-        LoadError::RuleNotFound { id, path } => {
-            format!("no rule with id `{id}` in {}", path.display())
-        }
     }
 }

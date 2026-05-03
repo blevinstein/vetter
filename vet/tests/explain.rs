@@ -64,11 +64,24 @@ fn explain_quiet_suppresses_render_block_keeps_policy_line() {
 
 #[test]
 fn explain_unknown_command_exits_78() {
+    // `definitely-not-a-tool` is neither on $PATH nor a path on disk,
+    // so the argv0 resolver bails with NotFound before dispatch.
     let (mut cmd, _scratch) = vet_nocolor_clean();
     cmd.args(["--explain", "definitely-not-a-tool", "anything"])
         .assert()
         .code(78)
-        .stderr(contains("no parser"));
+        .stderr(contains("not found on $PATH"));
+}
+
+#[test]
+fn explain_known_path_without_parser_exits_78() {
+    // /bin/sh exists, is executable, and resolves cleanly — but no
+    // parser is registered for `sh`, so dispatch reports NoParser.
+    let (mut cmd, _scratch) = vet_nocolor_clean();
+    cmd.args(["--explain", "/bin/sh", "-c", "true"])
+        .assert()
+        .code(78)
+        .stderr(contains("no parser registered"));
 }
 
 #[test]

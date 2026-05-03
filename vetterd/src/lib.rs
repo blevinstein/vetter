@@ -847,6 +847,13 @@ fn parse_request(req: &VetRequest) -> Result<ParsedCommand, ParseError> {
         .first()
         .ok_or_else(|| ParseError::Other("argv is empty".into()))?
         .as_str();
+    // Deliberately uses `parsers::dispatch` (basename match) rather
+    // than `parsers::resolve_for_dispatch`. ThreatModel.md T4 (argv0
+    // spoofing) is closed client-side in `vet`'s wrap and explain
+    // paths, where the resolver gates both the parser dispatch and
+    // the eventual `exec`. The daemon never executes the wrapped
+    // binary, so the worst a spoofed argv0 can do here is misname an
+    // audit row for a request the client will refuse to run anyway.
     let parser = parsers::dispatch(argv0)
         .ok_or_else(|| ParseError::Other(format!("no parser registered for `{argv0}`")))?;
 

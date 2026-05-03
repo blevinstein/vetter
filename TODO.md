@@ -295,9 +295,20 @@ these in smallest-blast-radius-first order; same order here.
       [vet/src/wrap.rs](vet/src/wrap.rs) — `round_trip` cross-checks
       `peer_pid` against `read_locker_pid` before sending the
       request frame)
-- [ ] Resolve `argv[0]` to a real path / inode before parser dispatch
+- [x] Resolve `argv[0]` to a real path / inode before parser dispatch
       so `ln /bin/bash /tmp/curl && vet /tmp/curl …` can't route to
       the wrong parser — ThreatModel T4
+      ([vetter-core/src/parsers/mod.rs](vetter-core/src/parsers/mod.rs) —
+      `resolve_for_dispatch` / `ResolvedCommand` / `ResolveError`,
+      hybrid `(dev,ino)` match against `which <parser_name>` plus a
+      trusted-install-dir fallback (`$VETTER_PARSER_TRUSTED_DIRS`
+      colon-separated extension);
+      [vet/src/wrap.rs](vet/src/wrap.rs) and
+      [vet/src/explain.rs](vet/src/explain.rs) route through the
+      resolver and `wrap.rs` execs `resolved.resolved_path` with
+      `arg0(&argv[0])` so vetting and exec bind to the same inode;
+      [vet/tests/argv0_spoof.rs](vet/tests/argv0_spoof.rs) end-to-end
+      refusal coverage)
 - [ ] `FD_CLOEXEC` on daemon + client sockets and the audit fd; test
       that the exec'd child inherits only 0/1/2 (no leaked daemon fd
       survives the `execvp` into the wrapped command)

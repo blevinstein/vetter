@@ -9,15 +9,6 @@ closes it. When a threat ships, delete its entry.
 
 ---
 
-## T4 — argv0 spoofing
-
-`ln /bin/bash /tmp/curl && vet /tmp/curl …` — basename dispatch
-routes to the curl parser, but exec runs bash. Parser-emitted effects
-describe a curl call that won't happen.
-
-**Fix**: dispatcher resolves argv[0] to a real path and refuses
-unknown inodes (or matches against an expected install path list).
-
 ## T5 — Lookalike / homograph domain
 
 An adversarial prompt instructs the agent to `curl https://g0ogle.com/…`
@@ -44,10 +35,9 @@ Unicode confusable analysis) — that is future work.
 
 ## Sequencing
 
-Remaining work, smallest blast radius first:
-
-1. **PR — argv0 inode resolution.** Closes T4. Small, orthogonal
-  change in `vetter-core/src/parsers/mod.rs`.
+All threats listed in earlier revisions of this file have shipped.
+T5 above is partial-mitigation only and tracks the open homograph
+detection work; everything below is the closed list.
 
 Already shipped:
 
@@ -76,4 +66,17 @@ binds on macOS); `vetterd::accept_loop` keeps an `Arc<AtomicUsize>`
 inflight counter under an RAII `InflightGuard`, refusing new
 connections beyond `$VETTERD_MAX_INFLIGHT` (default 16) by
 accept-then-close so a half-open peer cannot pin every worker.
+- **T4 argv0 resolution** — `vet`'s wrap and explain paths route
+argv[0] through `vetter_core::parsers::resolve_for_dispatch`, which
+canonicalises the path and accepts it iff its `(dev, ino)` matches
+`which <parser_name>` on `$PATH` **or** its parent directory is
+inside the trusted-install-dir set (`/usr/bin`, `/usr/local/bin`,
+`/opt/homebrew/bin`, `/opt/local/bin`, plus the
+`$VETTER_PARSER_TRUSTED_DIRS` colon-separated extension). Wrap mode
+then `exec`s the resolved canonical path with `arg0(&original_argv0)`
+so vetting and execution bind to the same inode and a same-UID racer
+cannot swap the binary out between them. Daemon-side dispatch stays
+basename-only by design — the `exec` is client-side and the worst a
+spoofed argv0 can do on the wire is misname an audit row for a
+request the client will refuse to run.
 

@@ -18,9 +18,10 @@ use serde::Deserialize;
 
 use vetter_core::matcher::{
     self, add_rule, derive_auto_id, discover_project_root, remove_rule, user_allowlist_path,
-    AllowlistStore, LoadError, Rule, RuleWhen, Scope,
+    AllowlistStore, Rule, RuleWhen, Scope,
 };
 
+use crate::messages::explain_load_error;
 use crate::AllowScope;
 
 /// Exit code for "config / cannot vet" per `plans/Overview.md` §4.
@@ -89,7 +90,7 @@ pub fn add(pattern: &str, scope: AllowScope, override_path: Option<&Path>) -> Ex
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("vet allow: {}", load_error(&e));
+            eprintln!("vet allow: {}", explain_load_error(&e));
             ExitCode::from(EXIT_CONFIG)
         }
     }
@@ -109,7 +110,7 @@ pub fn rm(id: &str, scope: AllowScope, override_path: Option<&Path>) -> ExitCode
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("vet allow: {}", load_error(&e));
+            eprintln!("vet allow: {}", explain_load_error(&e));
             ExitCode::from(EXIT_CONFIG)
         }
     }
@@ -132,7 +133,10 @@ pub fn list(
     let store = match matcher::load_default(cwd.as_deref(), override_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("vet allow: allowlist load failed: {}", load_error(&e));
+            eprintln!(
+                "vet allow: allowlist load failed: {}",
+                explain_load_error(&e)
+            );
             return ExitCode::from(EXIT_CONFIG);
         }
     };
@@ -256,18 +260,4 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
         here = dir.parent();
     }
     None
-}
-
-fn load_error(e: &LoadError) -> String {
-    match e {
-        LoadError::Io { path, source } => format!("read {}: {source}", path.display()),
-        LoadError::Yaml { path, source } => format!("parse {}: {source}", path.display()),
-        LoadError::Serialize { path, source } => format!("serialise {}: {source}", path.display()),
-        LoadError::DuplicateId { id, path } => {
-            format!("duplicate rule id `{id}` in {}", path.display())
-        }
-        LoadError::RuleNotFound { id, path } => {
-            format!("no rule with id `{id}` in {}", path.display())
-        }
-    }
 }

@@ -11,14 +11,15 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use vetter_core::matcher::{self, Decision, LoadError};
+use vetter_core::matcher::{self, Decision};
 use vetter_core::{
     analyze, check_known_hosts, load_known_hosts_default,
-    parsers::{self, EnvSnapshot, ParseError, StdinHandle},
+    parsers::{self, EnvSnapshot, StdinHandle},
     AnsiWriter, DefaultRenderer, PlainWriter, Renderer,
 };
 
 use crate::color::{self, Style};
+use crate::messages::{explain_load_error, explain_parse_error, explain_resolve_error};
 
 /// Exit code for "config / not yet implemented / cannot vet" per
 /// `plans/Overview.md` §4. Mirrors `crate::EXIT_CONFIG`.
@@ -39,22 +40,26 @@ pub fn run(argv: Vec<String>, quiet: bool, allowlist_override: Option<&Path>) ->
         }
     };
 
-    let parser = match parsers::dispatch(cmd) {
-        Some(p) => p,
-        None => {
-            eprintln!(
-                "vet: no parser registered for `{cmd}`. Phase 1b ships with `curl` only; \
-                 see plans/Overview.md §11 for the parser roadmap."
-            );
+    // Hybrid argv0 resolution closes ThreatModel.md T4 even on the
+    // non-executing `--explain` path: a hardlinked `curl` that points
+    // at bash should not be misrendered as a curl invocation.
+    let resolved = match parsers::resolve_for_dispatch(cmd) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("vet: cannot route `{cmd}`: {}", explain_resolve_error(&e));
             return ExitCode::from(EXIT_CONFIG);
         }
     };
+    let parser = resolved.parser;
 
     let env = EnvSnapshot::from_process();
     let mut parsed = match parser.parse(&argv, StdinHandle::empty(), &env) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("vet: cannot vet `{cmd}` invocation: {}", explain_error(&e));
+            eprintln!(
+                "vet: cannot vet `{cmd}` invocation: {}",
+                explain_parse_error(&e)
+            );
             return ExitCode::from(EXIT_CONFIG);
         }
     };
@@ -74,7 +79,7 @@ pub fn run(argv: Vec<String>, quiet: bool, allowlist_override: Option<&Path>) ->
     let store = match matcher::load_default(env.cwd.as_deref(), allowlist_override) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("vet: allowlist load failed: {}", load_error(&e));
+            eprintln!("vet: allowlist load failed: {}", explain_load_error(&e));
             return ExitCode::from(EXIT_CONFIG);
         }
     };
@@ -119,36 +124,6 @@ fn decision_summary(d: &Decision) -> String {
         ),
         Decision::Prompt => {
             "vet: decision = prompt (no rule matched; daemon will escalate when wired)".to_string()
-        }
-    }
-}
-
-/// Stable, human-readable summary of a [`ParseError`] for the CLI's
-/// stderr output. Matches the variant names so users can grep them.
-fn explain_error(e: &ParseError) -> String {
-    match e {
-        ParseError::MissingArgument(what) => format!("missing required argument `{what}`"),
-        ParseError::ConflictingArgs(detail) => format!("conflicting arguments: {detail}"),
-        ParseError::UnknownArgument(name) => format!("unknown argument `{name}`"),
-        ParseError::StreamingUnsupported => {
-            "streaming bodies are not supported in this MVP (`-T -`, chunked transfer, \
-             or `-d @-` over 1 MiB). See plans/Overview.md §8.4."
-                .into()
-        }
-        ParseError::Other(s) => s.clone(),
-    }
-}
-
-fn load_error(e: &LoadError) -> String {
-    match e {
-        LoadError::Io { path, source } => format!("read {}: {source}", path.display()),
-        LoadError::Yaml { path, source } => format!("parse {}: {source}", path.display()),
-        LoadError::Serialize { path, source } => format!("serialise {}: {source}", path.display()),
-        LoadError::DuplicateId { id, path } => {
-            format!("duplicate rule id `{id}` in {}", path.display())
-        }
-        LoadError::RuleNotFound { id, path } => {
-            format!("no rule with id `{id}` in {}", path.display())
         }
     }
 }

@@ -14,6 +14,7 @@ mod color;
 mod daemon;
 mod doctor;
 mod explain;
+mod messages;
 mod wrap;
 
 #[derive(Parser, Debug)]

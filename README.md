@@ -11,9 +11,11 @@ For the architecture, threat model, and rule semantics see
 
 ## Status
 
-Pre-MVP. Phases 0–3 (workspace, parser plugin contract, curl parser,
-allowlist evaluation, daemon + IPC) are complete. Phase 4 (the
-all-in-Rust macOS approver) is feature-complete for everyday use:
+v0.1 release-candidate, with pre-release security hardening in
+flight before the first public Homebrew tag. Phases 0–3 (workspace,
+parser plugin contract, curl parser, allowlist evaluation, daemon +
+IPC) are complete. Phase 4 (the all-in-Rust macOS approver) is
+feature-complete for everyday use:
 
 - `Vetter.app` menu-bar bundle, built from `vetterd` via
   [`tools/build-app.sh`](tools/build-app.sh).
@@ -48,14 +50,27 @@ its own repo,
 [`blevinstein/homebrew-vetter`](https://github.com/blevinstein/homebrew-vetter)
 (a Homebrew tap has to be a standalone `homebrew-<name>` repo).
 
-What's deliberately not there yet (tracked in [TODO.md](TODO.md)):
-the **Allowlist…** action (Phase 5), an automated CI release on tag
-push, an E2E suite against the signed bundle, the full §7
-cross-cutting security property suite, and non-macOS UIs (Phase 6).
-Several pre-MVP hardening items (read-deadline + worker cap,
-`FD_CLOEXEC` on the daemon's fds, ANSI / C0 sanitisation in the
-renderer, ruleset hashing in the audit log) are also still open
-under "Hardening — cross-cutting" in TODO.
+What's deliberately not there yet (all tracked in
+[TODO.md](TODO.md)):
+
+- **Pre-release ship-blockers** — Hardening §H1 (PID attestation,
+  request read deadlines + worker cap, `argv[0]` inode resolution,
+  `FD_CLOEXEC`), §H2 (ANSI / C0 sanitisation in the renderer,
+  curl-parser fuzzing, wire-protocol fuzzing), §H3 (`cargo-deny`
+  + `cargo-audit` in CI, MSRV pin), and §H4 (LICENSE files,
+  SECURITY.md, CHANGELOG, README polish). These must close before
+  the first public Homebrew tag.
+- **Post-launch follow-ups** — audit log rotation, ruleset hashing
+  in the audit row, stdin forwarding for `curl -d @-`, and
+  symlink semantics for file effects. Won't expose a known
+  privilege escalation; first batch of users will surface them
+  and we'll land them quickly after v0.1.
+- **Backlog (post-MVP)** — Linux/Windows UIs, additional command
+  parsers (`wget`, `gh`, `aws`, `gcloud`, `ssh`, `rm`, `git
+  push`), an automated CI release workflow on tag push, an E2E
+  suite against the signed bundle, the banner-side `Allowlist…`
+  notification action, the `vet allow suggest` CLI shim, and
+  allowlist suggestions over file effects.
 
 ## Trying it locally
 
@@ -134,4 +149,17 @@ cargo test  --workspace --all-features
 
 ## License
 
-Not yet chosen; the repo is private during pre-MVP development.
+Licensed under MIT (see
+[`Cargo.toml`](Cargo.toml) `workspace.package.license`); choose
+whichever fits your downstream use. The canonical license texts
+will land as `LICENSE-MIT` in the repo root as part of Hardening
+§H4 before the first public Homebrew tag.
+
+## Security
+
+A `SECURITY.md` with a vulnerability-reporting contact and
+disclosure policy lands as part of Hardening §H4 before the first
+public Homebrew tag. Until then please open a private GitHub
+Security Advisory or email the repo owner directly. The active
+threat model and the unmitigated attacks we plan to fix are
+catalogued in [plans/ThreatModel.md](plans/ThreatModel.md).

@@ -115,8 +115,12 @@ Approve / Reject buttons, and the full pending-queue → notifier round
 trip. PR 2 adds the menu-bar shield icon, a pending-count badge, an
 `NSPopover` listing every pending request with §8.5 detail and
 per-card Approve / Reject, and click-through routing from the
-notification body into that popover. Allowlist…, banner coalescing,
-and notarised distribution are still deferred.
+notification body into that popover. Banner coalescing and the
+local Developer-ID signing + notarisation pipeline have since
+landed. Remaining open items below are all deferred to the Backlog
+(CI release workflow, signed-bundle E2E, banner-side
+`Allowlist…` action) — they are convenience, not v0.1
+ship-blockers.
 
 - [x] All-in-Rust menu-bar `.app` bundle, `LSUIElement`, no dock icon
       (`tools/build-app.sh`,
@@ -151,7 +155,10 @@ and notarised distribution are still deferred.
       Approves / Rejects in the popover
 - [x] Banner removed via `removeDeliveredNotificationsWithIdentifiers:`
       on every resolve path so Notification Center stays clean
-- [ ] `Allowlist…` action (Phase 5 territory anyway)
+- [ ] `Allowlist…` action on the notification banner itself
+      (Phase 5 added per-card popover buttons, which cover the
+      user need; the notification-button variant is convenience
+      only — deferred to Backlog)
 - [x] Notification coalescing into menu-bar after the first banner
       ([vetterd/src/notifier/mac.rs](vetterd/src/notifier/mac.rs)
       consumes `NotifyHint::was_empty_before` from
@@ -164,15 +171,16 @@ and notarised distribution are still deferred.
       separate [`blevinstein/homebrew-vetter`](https://github.com/blevinstein/homebrew-vetter)
       tap repo). Local pipeline only; automated CI release workflow
       tracked separately below.
-- [ ] CI release workflow on tag push: imports the Developer-ID
-      cert + Notary `.p8` from repo secrets, runs
-      `tools/release.sh`, attaches the zip to a GitHub Release,
-      and opens a PR against `blevinstein/homebrew-vetter` with
-      the bumped cask
-- [ ] Full §7 cross-cutting security property suite passes
-- [ ] E2E happy-path + deny-path tests against the signed bundle
-      (PR 1/2 cover them via `MockNotifier`; signed-app E2E waits on
-      the notarisation pipeline)
+- [ ] CI release workflow on tag push — **deferred to Backlog**.
+      Local `tools/release.sh` is sufficient for v0.1; automating
+      from CI is convenience.
+- [ ] Full §7 cross-cutting security property suite passes —
+      **superseded by Hardening §H1–H2 below**, which track the
+      §7 properties as concrete owning items.
+- [ ] E2E happy-path + deny-path tests against the signed bundle —
+      **deferred to Backlog**. PR 1/2 cover the logic via
+      `MockNotifier`; a signed-app E2E job waits on the
+      notarisation pipeline being stable across releases.
 - [x] `vet daemon list` — CLI command to list pending approvals over
       a new admin socket (`vetter-admin.sock`); `vet daemon status`
       now shows real pending count
@@ -229,42 +237,23 @@ suggestions"), §11. Picker-sheet UI design lives in
       pending untouched; AddKnownHost does NOT auto-approve but
       flips `UnknownHost` signals away
 - [ ] `vet allow suggest <id>` CLI prints the suggestions payload
-      as YAML (deferred — engine is reachable through the admin
-      socket already, this is just a developer-ergonomics shim)
+      as YAML — **deferred to Backlog**. The engine is reachable
+      through the admin socket already; this is a developer-
+      ergonomics shim.
 - [ ] Allowlist suggestions over `Effect::FileWrite` /
-      `Effect::FileRead` (engine returns empty for now; UI hides
-      the button)
-
-## Phase 6 — Other platforms  `[ ] not started`  (post-MVP)
-
-- [ ] Linux UI: libnotify + AppIndicator
-- [ ] Windows UI: WinRT toast + tray
-- [ ] localhost web UI (uniform fallback)
-
-## Phase 7+ — Additional command parsers  `[ ] not started`
-
-Each is a new file implementing `CommandParser` plus snapshot fixtures.
-The first one doubles as a generalisation check on the Phase 1a
-interface — if it forces `Effect`/`ParsedCommand` changes, fix those
-before the rest land.
-
-- [ ] `wget`  (Phase 1a interface check; do this first)
-- [ ] `gh`
-- [ ] `aws`
-- [ ] `gcloud`
-- [ ] `ssh` / `scp`
-- [ ] `rm`
-- [ ] `git push` / `git remote`
+      `Effect::FileRead` — **deferred to Backlog**. Engine returns
+      empty for now; popover hides the button.
 
 ---
 
-## Hardening — cross-cutting (pre-MVP gate)
+## Hardening — pre-release ship-blockers
 
-Roadmap source: tech-debt audit, 2026-05. None of these block a phase
-by themselves, but Phase 4 (UI) shouldn't ship without them — they are
-the difference between "demo-quality daemon" and "I'd run this on my
-machine". Per-threat detail in
-[plans/ThreatModel.md](plans/ThreatModel.md).
+These must close before the first public Homebrew release. None are
+blocked by Phase 4 / Phase 5; pick them up in any order. Per-threat
+detail in [plans/ThreatModel.md](plans/ThreatModel.md); per-task code
+site noted inline.
+
+### Already shipped
 
 - [x] Write `plans/ThreatModel.md` (assets, attackers, in-scope /
       out-of-scope, residual risks) — landed in PR #4
@@ -274,58 +263,172 @@ machine". Per-threat detail in
 - [x] Drop `parsed` from `VetRequest`; daemon re-parses argv before
       matcher runs (T2). Wire bumped to v2; client / daemon /
       audit-log all re-derive command from `argv[0]`
-- [ ] Verify socket parent dir owner + mode before `vet` connects;
-      refuse on mismatch. (Daemon enforces `0700` at bind; the
-      client-side check is the residual gap — peer-cred largely
-      neutralises it.)
-- [ ] PID attestation on connect (`vetterd` flocks the pidfile;
-      `vet` asserts the locking PID equals the peer PID) — closes
-      the rest of T1
-- [ ] Read deadline on `vetterd`'s request frame + cap inflight
-      workers (T3)
-- [ ] Resolve `argv[0]` to a real path / inode before parser dispatch
-      so `ln /bin/bash /tmp/curl && vet /tmp/curl …` can't route to
-      the wrong parser (T4)
-- [ ] `FD_CLOEXEC` on daemon + client sockets and the audit fd; test
-      that the exec'd child inherits only 0/1/2
-- [ ] Sanitise ANSI / C0 control bytes in renderer output (header
-      values, URLs, paths, argv echo) before any TTY write — argv is
-      attacker-controlled and the user is being asked to trust what
-      they see
-- [ ] `cargo-fuzz` target for `parsers::curl` over random argv;
-      remove `expect("Value flag has value")` from
-      `parsers/curl/state.rs` by encoding flag-has-value at the type
-      level
-- [ ] Decide symlink semantics for `Effect::FileWrite` /
-      `Effect::FileRead` (canonicalise vs. reject vs.
-      accept-and-document); add tests
-- [ ] Audit log rotation + size cap; explicit behaviour when audit
-      dir is unwritable (warn loudly, don't silently drop)
 - [x] `serde(deny_unknown_fields)` on `VetRequest` / `VetDecision`
       (already in place; new wire-format test enforces that legacy
       `parsed` payloads are rejected)
-- [ ] Document wire evolution rules (additive-only fields, unknown
-      enum variants rejected) in `plans/Overview.md` §3
-- [ ] Hash the loaded ruleset; record digest in each audit row so
-      decisions remain replayable after `allowlist.yaml` edits
 - [x] Expand `vet doctor` checks: socket perms, audit dir writable,
       allowlist parses, daemon reachable
       ([vet/src/doctor.rs](vet/src/doctor.rs) walks the
       pidfile → live-PID → socket → peer-cred state machine and
       reports OK/WARN/ERROR/INFO/SKIP per row; exit 78 on any error)
+
+### H1 — Daemon protocol & process hardening  `[ ] not started`
+
+Closes the rest of T1, T3, and T4. ThreatModel.md §"Sequencing" lists
+these in smallest-blast-radius-first order; same order here.
+
+- [ ] Read deadline on `vetterd`'s request frame + cap inflight
+      workers (default 16, configurable via `VETTERD_MAX_INFLIGHT`,
+      accept-and-immediately-close above the cap) — ThreatModel T3
+- [ ] PID attestation on connect (`vetterd` flocks the pidfile;
+      `vet` asserts the locking PID equals the peer PID) —
+      ThreatModel T1 sequencing #2
+- [ ] Resolve `argv[0]` to a real path / inode before parser dispatch
+      so `ln /bin/bash /tmp/curl && vet /tmp/curl …` can't route to
+      the wrong parser — ThreatModel T4
+- [ ] `FD_CLOEXEC` on daemon + client sockets and the audit fd; test
+      that the exec'd child inherits only 0/1/2 (no leaked daemon fd
+      survives the `execvp` into the wrapped command)
+- [ ] Verify socket parent dir owner + mode before `vet` connects;
+      refuse on mismatch. (Daemon enforces `0700` at bind; the
+      client-side check is the residual T1 gap — peer-cred largely
+      neutralises it but the check is cheap.)
+
+### H2 — Render trust & input safety  `[ ] not started`
+
+The renderer is the surface the user trusts before clicking Approve.
+Argv-controlled bytes (URLs, header values, paths) must not be able
+to inject control sequences that hide or fake content, and the
+parser/wire layers must not panic on malformed input.
+
+- [ ] Sanitise ANSI / C0 control bytes in renderer output (header
+      values, URLs, paths, argv echo) before any TTY or popover
+      write. Corpus test with embedded ANSI cursor moves, RTLO
+      (U+202E), zero-width chars, and bare CR / BS so a malicious
+      argv can't repaint the screen or hide a path segment.
+- [ ] `cargo-fuzz` target for `parsers::curl` over random argv;
+      remove `expect("Value flag has value")` from
+      `vetter-core/src/parsers/curl/state.rs` by encoding
+      flag-has-value at the type level
+- [ ] Wire-protocol fuzzing entry — was Phase 3 §6.3; promoted out
+      of "Phase 3b polish" because peer-cred narrows but doesn't
+      eliminate the local-attacker surface
+
+### H3 — Supply chain  `[ ] not started`
+
+Cheap, high-value, expected for a security tool.
+
 - [ ] CI: `cargo-deny check` (advisories, bans, sources, licenses)
-      and `cargo-audit`
+      on every PR; treat advisory hits as build failures by default
+- [ ] CI: `cargo-audit` on every PR + a daily scheduled run on
+      `main` so we don't sit on a fresh advisory between PRs
+- [ ] Pin MSRV in CI matrix to match `rust-toolchain.toml` (1.95);
+      add a "MSRV bump" PR template so toolchain changes are
+      explicit, not silent
+
+### H4 — Public-release hygiene  `[ ] not started`
+
+A security tool published on Homebrew needs a license, a
+vulnerability-reporting policy, and a discoverable changelog. Without
+these we can't reasonably ask anyone to trust the binary.
+
+- [ ] Add `LICENSE-MIT` file in repo root.
+      `Cargo.toml` already declares `license = "MIT"`
+      but the canonical license text is missing from the repo.
+- [ ] Add `SECURITY.md` with vulnerability reporting contact +
+      disclosure policy (90-day default, GitHub Security Advisory
+      preferred + email fallback). Link from README.
+- [ ] Add `CHANGELOG.md` (Keep-a-Changelog style); seed with the
+      v0.1.0 entry generated from git log + this TODO. Future
+      releases: every PR that ships behaviour change updates the
+      `[Unreleased]` section.
+- [ ] Update `Cargo.toml` workspace.package metadata: add
+      `description`, `homepage`, `documentation`, `keywords`,
+      `categories`. Same metadata propagates into `vet --version`
+      build info and into any future crates.io publish.
+- [ ] README updates: drop "Pre-MVP" / "Not yet chosen" language,
+      add a Security section pointing at SECURITY.md, add a
+      License section pointing at the LICENSE files, link
+      CHANGELOG, and update the "deliberately not there yet"
+      paragraph against the new Backlog section below.
+- [ ] Verify the signed bundle launches cleanly on a fresh user
+      account: run the manual smoke procedure in
+      [plans/MacOSApp.md](plans/MacOSApp.md) end-to-end after
+      `xattr -d com.apple.quarantine target/Vetter.app` to
+      simulate Gatekeeper's first-launch path
+
+---
+
+## Hardening — post-launch follow-ups
+
+Operational hygiene and audit fidelity. Not ship-blockers — none
+expose a known privilege-escalation or render-spoofing path — but the
+first batch of real users will surface them and we should land them
+quickly after v0.1.
+
+- [ ] Audit log rotation + size cap; explicit behaviour when audit
+      dir is unwritable (warn loudly, don't silently drop)
+- [ ] Hash the loaded ruleset; record digest in each audit row so
+      decisions remain replayable after `allowlist.yaml` edits
 - [ ] Forward stdin bytes for parsers that read stdin (curl `-d @-`)
-      and re-inject on exec; today daemon parses with empty stdin so
-      `-d @-` round-trips as `Body::FromStdin{len: 0}`. Audit logs
-      and policy decisions for those calls reflect the empty body,
-      not the bytes curl actually sees. Tracked here because it
-      surfaced while landing T2.
+      and re-inject on exec; today daemon parses with empty stdin
+      so `-d @-` round-trips as `Body::FromStdin{len: 0}`. Audit
+      logs and policy decisions for those calls reflect the empty
+      body, not the bytes curl actually sees. Surfaced while
+      landing T2.
+- [ ] Decide symlink semantics for `Effect::FileWrite` /
+      `Effect::FileRead` (canonicalise vs. reject vs.
+      accept-and-document); add tests
+- [ ] Document wire evolution rules (additive-only fields, unknown
+      enum variants rejected) in `plans/Overview.md` §3
 
-Promoted from elsewhere because the audit raised their priority:
+---
 
-- [ ] Wire protocol fuzzing — was Phase 3 §6.3; promote out of
-      "Phase 3b polish"
+## Backlog — post-MVP
+
+Tracked but not on the v0.1 critical path. Each is roughly
+self-contained; pull from this list when v0.1 is out and stable.
+
+### Phase 6 — Other platforms
+
+- [ ] Linux UI: libnotify + AppIndicator
+- [ ] Windows UI: WinRT toast + tray
+- [ ] localhost web UI (uniform fallback)
+
+### Phase 7+ — Additional command parsers
+
+Each is a new file implementing `CommandParser` plus snapshot
+fixtures. The first one doubles as a generalisation check on the
+Phase 1a interface — if it forces `Effect`/`ParsedCommand` changes,
+fix those before the rest land.
+
+- [ ] `wget`  (Phase 1a interface check; do this first)
+- [ ] `gh`
+- [ ] `aws`
+- [ ] `gcloud`
+- [ ] `ssh` / `scp`
+- [ ] `rm`
+- [ ] `git push` / `git remote`
+
+### Deferred from Phase 4 / Phase 5
+
+- [ ] CI release workflow on tag push: imports the Developer-ID
+      cert + Notary `.p8` from repo secrets, runs
+      `tools/release.sh`, attaches the zip to a GitHub Release,
+      and opens a PR against `blevinstein/homebrew-vetter` with
+      the bumped cask
+- [ ] E2E happy-path + deny-path tests against the signed bundle
+      (PR 1/2 cover them via `MockNotifier`; signed-app E2E waits
+      on the notarisation pipeline being stable across releases)
+- [ ] `Allowlist…` button on the notification banner itself
+      (Phase 5's per-card popover buttons cover the user need;
+      adding the action to the banner is convenience)
+- [ ] `vet allow suggest <id>` CLI prints the suggestions payload
+      as YAML (developer-ergonomics shim — engine is reachable
+      through the admin socket already)
+- [ ] Allowlist suggestions over `Effect::FileWrite` /
+      `Effect::FileRead` (engine returns empty for now; popover
+      hides the button)
 
 ---
 

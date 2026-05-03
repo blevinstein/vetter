@@ -62,7 +62,7 @@ use vetter_core::wire::{
 use vetter_core::{analyze, check_known_hosts, ParsedCommand};
 
 pub use audit::{AuditEntry, AuditLog};
-pub use pending::{NotifyHint, PendingDecision, PendingQueue, PromptSummary};
+pub use pending::{NotifyHint, PendingDecision, PendingQueue, PromptSummary, ResolvedEntry};
 pub use policy::{evaluate, PolicyOutcome};
 
 /// Per-process context shared by every connection worker.
@@ -145,6 +145,23 @@ pub fn run(
         .map_err(DaemonError::Pidfile)?;
 
     let pending = Arc::new(PendingQueue::new());
+
+    // Rehydrate the popover's resolved-history ring from the audit
+    // log so "Recent" entries survive a daemon restart. Best-effort:
+    // a failed read (log file unreadable, torn line, etc.) leaves the
+    // ring empty rather than blocking start-up. Must happen before
+    // the notifier's change listener is registered by
+    // `build_from_env` so the seeded entries don't fire a spurious
+    // UI refresh on an already-empty popover.
+    match audit.tail_prompt_entries(pending::RESOLVED_CAP) {
+        Ok(rows) => {
+            pending.warm_resolved(rows.into_iter().filter_map(ResolvedEntry::try_from_audit));
+        }
+        Err(e) => {
+            eprintln!("vetterd: audit log tail (history warm-up) failed: {e}");
+        }
+    }
+
     let (notifier, driver) = notifier::build_from_env(Arc::clone(&pending))?;
 
     let ctx = Arc::new(Context {
@@ -369,7 +386,7 @@ pub fn handle_connection(
 ) -> Result<(), WireError> {
     let req = read_request(&mut stream)?;
 
-    let (decision, reason, command_for_audit) = match parse_request(&req) {
+    let (decision, reason, command_for_audit, prompt_ctx) = match parse_request(&req) {
         Ok(mut parsed) => {
             parsed
                 .signals
@@ -382,15 +399,15 @@ pub fn handle_connection(
                 &ctx.allowlist,
                 &ctx.known_hosts,
             );
-            let (decision, reason) = resolve_outcome(outcome, &parsed, &req, ctx);
-            (decision, reason, command_for_audit)
+            let (decision, reason, prompt_ctx) = resolve_outcome(outcome, &parsed, &req, ctx);
+            (decision, reason, command_for_audit, prompt_ctx)
         }
         Err(e) => {
             // Fail closed: a request the daemon cannot parse is one the
             // daemon cannot reason about. Refuse and surface a usable
             // explanation so the user knows what argv tripped us.
             let reason = format!("parse failed: {}", explain_parse_error(&e));
-            (WireDecision::Deny, reason, parser_name_hint(&req))
+            (WireDecision::Deny, reason, parser_name_hint(&req), None)
         }
     };
 
@@ -405,6 +422,34 @@ pub fn handle_connection(
     // Audit BEFORE replying so the log entry is durable even if the
     // client crashes mid-write. We only need `sync_data`, not the
     // whole-tree fsync; see audit::AuditLog::append.
+    //
+    // For prompt-class resolutions the `prompt_ctx` carries the full
+    // `PromptSummary` + pre-rendered §8.5 detail. Those feed the
+    // audit log's optional rich fields so the popover's Recent
+    // section survives a daemon restart (see
+    // `AuditLog::tail_prompt_entries` / `PendingQueue::warm_resolved`).
+    // Auto-decision rows leave those fields empty and
+    // `skip_serializing_if` keeps them compact on disk.
+    let (primary_verb, primary_target, signals, parsed_payload, host_known, rendered) =
+        match prompt_ctx {
+            Some(pc) => (
+                pc.summary.primary_verb,
+                pc.summary.primary_target,
+                pc.summary.signals,
+                pc.summary.parsed,
+                pc.summary.host_known,
+                pc.rendered,
+            ),
+            None => (
+                String::new(),
+                String::new(),
+                Vec::new(),
+                None,
+                Vec::new(),
+                String::new(),
+            ),
+        };
+
     let entry = AuditEntry {
         id: req.id.clone(),
         timestamp: timestamp_iso8601(),
@@ -414,6 +459,12 @@ pub fn handle_connection(
         reason,
         rule_id: None,
         force_prompt: req.force_prompt,
+        primary_verb,
+        primary_target,
+        signals,
+        parsed: parsed_payload,
+        host_known,
+        rendered,
     };
     if let Err(e) = ctx.audit.append(&entry) {
         eprintln!("vetterd: audit log append failed: {e}");
@@ -421,6 +472,15 @@ pub fn handle_connection(
 
     write_frame(&mut stream, &resp)?;
     Ok(())
+}
+
+/// Context captured on the prompt-class branch of [`resolve_outcome`]
+/// and threaded back to the audit-write site so prompt-class rows
+/// on disk carry everything the popover needs to repaint a card.
+/// `None` for auto-decision rows.
+struct PromptContext {
+    summary: PromptSummary,
+    rendered: String,
 }
 
 /// Map a [`PolicyOutcome`] onto the final wire `(decision, reason)`.
@@ -433,9 +493,9 @@ fn resolve_outcome(
     parsed: &ParsedCommand,
     _req: &VetRequest,
     ctx: &Context,
-) -> (WireDecision, String) {
+) -> (WireDecision, String, Option<PromptContext>) {
     match outcome {
-        PolicyOutcome::Auto { decision, reason } => (decision, reason),
+        PolicyOutcome::Auto { decision, reason } => (decision, reason, None),
         PolicyOutcome::Prompt(summary) => {
             // Unbox once: the pending queue and notifier both want
             // `PromptSummary` / `&PromptSummary`, not `Box<…>`.
@@ -451,10 +511,13 @@ fn resolve_outcome(
             // `vet --explain`'s TTY output, just translated into
             // `NSAttributedString` attributes on the AppKit side.
             let rendered = render_detail(parsed);
-            let (rx, hint) = ctx.pending.submit_with_render(summary.clone(), rendered);
+            let (rx, hint) = ctx
+                .pending
+                .submit_with_render(summary.clone(), rendered.clone());
             ctx.notifier.notify(&summary, hint);
+            let prompt_ctx = PromptContext { summary, rendered };
             match rx.recv() {
-                Ok(dec) => (dec.decision, dec.reason),
+                Ok(dec) => (dec.decision, dec.reason, Some(prompt_ctx)),
                 Err(_) => {
                     // Sender was dropped — daemon shutdown wiped the
                     // pending entry before any decision arrived. Fall
@@ -471,6 +534,7 @@ fn resolve_outcome(
                             "{} (pending request `{id}` cancelled)",
                             pending::SHUTDOWN_REASON
                         ),
+                        Some(prompt_ctx),
                     )
                 }
             }

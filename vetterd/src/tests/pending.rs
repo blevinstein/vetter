@@ -331,6 +331,132 @@ fn concurrent_submits_have_exactly_one_first() {
     assert_eq!(q.len(), THREADS);
 }
 
+// -- warm_resolved ---------------------------------------------
+
+fn resolved(id: &str, decision: WireDecision) -> ResolvedEntry {
+    ResolvedEntry {
+        summary: summary(id, "https://example.test/"),
+        rendered: format!("rendered-{id}"),
+        decision,
+    }
+}
+
+#[test]
+fn warm_resolved_populates_ring_in_order() {
+    let q = PendingQueue::new();
+    // Caller hands entries newest-first; the ring should surface
+    // them in the same order via `resolved_entries()`.
+    q.warm_resolved(vec![
+        resolved("newest", WireDecision::Allow),
+        resolved("middle", WireDecision::Deny),
+        resolved("oldest", WireDecision::Allow),
+    ]);
+    let got = q.resolved_entries();
+    let ids: Vec<&str> = got.iter().map(|e| e.summary.id.as_str()).collect();
+    assert_eq!(ids, vec!["newest", "middle", "oldest"]);
+    assert_eq!(got[0].decision, WireDecision::Allow);
+    assert_eq!(got[1].decision, WireDecision::Deny);
+}
+
+#[test]
+fn warm_resolved_respects_cap() {
+    let q = PendingQueue::new();
+    let entries: Vec<ResolvedEntry> = (0..RESOLVED_CAP + 5)
+        .map(|i| resolved(&format!("id-{i}"), WireDecision::Allow))
+        .collect();
+    q.warm_resolved(entries);
+    assert_eq!(q.resolved_entries().len(), RESOLVED_CAP);
+    // We kept the first RESOLVED_CAP entries the caller handed us
+    // (newest-first), i.e. `id-0`..`id-{RESOLVED_CAP - 1}`.
+    assert_eq!(q.resolved_entries()[0].summary.id, "id-0");
+}
+
+#[test]
+fn warm_resolved_fires_change_listener_once() {
+    let q = Arc::new(PendingQueue::new());
+    let count = Arc::new(AtomicUsize::new(0));
+    let count2 = Arc::clone(&count);
+    q.set_change_listener(move || {
+        count2.fetch_add(1, Ordering::SeqCst);
+    });
+    q.warm_resolved(vec![
+        resolved("a", WireDecision::Allow),
+        resolved("b", WireDecision::Allow),
+    ]);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    // Empty warm should not fire.
+    q.warm_resolved(Vec::<ResolvedEntry>::new());
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn try_from_audit_accepts_rich_prompt_row() {
+    use vetter_core::parsers::{
+        Body, DisplayHints, Effect, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy,
+    };
+    let parsed = ParsedCommand {
+        command: "curl".into(),
+        argv: vec!["curl".into(), "https://example.test/".into()],
+        cwd: None,
+        stdin_digest: None,
+        effects: vec![Effect::HttpRequest(HttpRequest {
+            method: HttpMethod::Get,
+            url: url::Url::parse("https://example.test/").unwrap(),
+            headers: vec![],
+            body: Body::None,
+            auth: None,
+            tls: TlsPolicy::Strict,
+            follow_redirects: false,
+            proxy: None,
+        })],
+        signals: vec![],
+        display_hints: DisplayHints::default(),
+        extras: serde_json::Value::Null,
+    };
+    let audit = crate::audit::AuditEntry {
+        id: "abc".into(),
+        timestamp: "epoch:0.0".into(),
+        command: "curl".into(),
+        argv: vec!["curl".into(), "https://example.test/".into()],
+        decision: WireDecision::Allow,
+        reason: "approved".into(),
+        rule_id: None,
+        force_prompt: false,
+        primary_verb: "GET".into(),
+        primary_target: "https://example.test/".into(),
+        signals: Vec::new(),
+        parsed: Some(parsed),
+        host_known: vec![false],
+        rendered: "rendered".into(),
+    };
+    let entry = ResolvedEntry::try_from_audit(audit).expect("prompt row");
+    assert_eq!(entry.summary.id, "abc");
+    assert_eq!(entry.summary.primary_verb, "GET");
+    assert_eq!(entry.decision, WireDecision::Allow);
+    assert_eq!(entry.rendered, "rendered");
+}
+
+#[test]
+fn try_from_audit_rejects_auto_decision_row() {
+    let audit = crate::audit::AuditEntry {
+        id: "auto".into(),
+        timestamp: "epoch:0.0".into(),
+        command: "curl".into(),
+        argv: vec!["curl".into(), "https://example.test/".into()],
+        decision: WireDecision::Allow,
+        reason: "rule allow".into(),
+        rule_id: None,
+        force_prompt: false,
+        primary_verb: String::new(),
+        primary_target: String::new(),
+        signals: Vec::new(),
+        parsed: None,
+        host_known: Vec::new(),
+        rendered: String::new(),
+    };
+    assert!(ResolvedEntry::try_from_audit(audit).is_none());
+}
+
 // -- PromptSummary serde round-trip ----------------------------
 
 /// The new `parsed`, `host_known`, and `signals` fields must

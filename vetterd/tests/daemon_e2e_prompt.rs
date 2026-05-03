@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use vetter_core::wire::{write_frame, WireDecision};
-use vetterd::AuditEntry;
+use vetterd::{AuditEntry, AuditLog, PendingQueue, ResolvedEntry};
 
 mod common;
 use common::{curl_get, make_req, round_trip, Daemon, MockResponse};
@@ -282,6 +282,91 @@ fn coalescing_does_not_drop_mock_observations() {
     let mut targets: Vec<_> = observed.iter().map(|s| s.primary_target.clone()).collect();
     targets.sort();
     assert_eq!(targets, vec!["https://first.test/", "https://second.test/"]);
+}
+
+/// Prompt-class audit rows carry the richer `PromptSummary`-derived
+/// fields so `AuditLog::tail_prompt_entries` + `ResolvedEntry::try_from_audit`
+/// can rebuild the popover's resolved-history ring on a fresh
+/// daemon start. This test stands in for "restart the daemon and
+/// observe Recent history" — we can't reach into the daemon subprocess's
+/// `PendingQueue::resolved_entries()` directly, so instead we drive
+/// two prompts through the live daemon, shut it down, then re-open
+/// the same audit log from the test process and warm an in-process
+/// `PendingQueue` the same way `run()` does at startup.
+#[test]
+fn resolved_history_survives_a_daemon_restart_via_audit_log_warm_up() {
+    let d = Daemon::spawn(ALLOWLIST);
+    d.ui.expect_target(
+        "https://kept-a.test/",
+        MockResponse::allow("user approved a"),
+    );
+    d.ui.expect_target(
+        "https://kept-b.test/",
+        MockResponse::deny("user rejected b"),
+    );
+
+    let req_a = make_req(curl_get("https://kept-a.test/"), false);
+    let req_b = make_req(curl_get("https://kept-b.test/"), false);
+    let id_a = req_a.id.clone();
+    let id_b = req_b.id.clone();
+
+    let dec_a = round_trip(&d.socket, &req_a);
+    let dec_b = round_trip(&d.socket, &req_b);
+    assert_eq!(dec_a.decision, WireDecision::Allow);
+    assert_eq!(dec_b.decision, WireDecision::Deny);
+
+    // Pluck the audit contents out *before* dropping the daemon;
+    // `Daemon` owns the tempdir so the file vanishes on drop.
+    let audit_body = std::fs::read_to_string(&d.audit).expect("audit readable");
+
+    // Keep the scratch dir alive by copying the audit log into a
+    // test-owned tempdir — this is the "second daemon's audit log"
+    // and the one we'll open() + tail from the test process.
+    let scratch = tempfile::tempdir().expect("scratch");
+    let audit_path = scratch.path().join("audit.log");
+    std::fs::write(&audit_path, &audit_body).expect("copy audit");
+
+    drop(d);
+
+    // Sanity: the audit log contains rich fields for both prompts.
+    for id in [&id_a, &id_b] {
+        let line = audit_body
+            .lines()
+            .find(|l| l.contains(id))
+            .unwrap_or_else(|| panic!("no audit row for id {id}: {audit_body}"));
+        let entry: AuditEntry = serde_json::from_str(line).expect("parse audit");
+        assert_eq!(entry.primary_verb, "GET", "{entry:?}");
+        assert!(
+            entry.primary_target.starts_with("https://kept-"),
+            "{entry:?}"
+        );
+        assert!(entry.parsed.is_some(), "{entry:?}");
+        assert!(!entry.rendered.is_empty(), "{entry:?}");
+    }
+
+    // Now simulate a fresh daemon's startup warm-up against that
+    // audit file the way `run()` does.
+    let log = AuditLog::open(&audit_path).unwrap();
+    let tailed = log
+        .tail_prompt_entries(vetterd::pending::RESOLVED_CAP)
+        .expect("tail prompt entries");
+    assert_eq!(tailed.len(), 2);
+
+    let queue = PendingQueue::new();
+    queue.warm_resolved(tailed.into_iter().filter_map(ResolvedEntry::try_from_audit));
+
+    let ring = queue.resolved_entries();
+    assert_eq!(ring.len(), 2, "ring should be populated from audit tail");
+    // Newest-first ordering: the second round-trip (id_b / deny) is
+    // at index 0, the first (id_a / allow) at index 1.
+    assert_eq!(ring[0].summary.id, id_b);
+    assert_eq!(ring[0].decision, WireDecision::Deny);
+    assert_eq!(ring[0].summary.primary_target, "https://kept-b.test/");
+    assert!(ring[0].summary.parsed.is_some());
+
+    assert_eq!(ring[1].summary.id, id_a);
+    assert_eq!(ring[1].decision, WireDecision::Allow);
+    assert_eq!(ring[1].summary.primary_target, "https://kept-a.test/");
 }
 
 /// Mock notifier connection failure → daemon falls back to deny so

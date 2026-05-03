@@ -114,6 +114,37 @@ pub struct ResolvedEntry {
     pub decision: WireDecision,
 }
 
+impl ResolvedEntry {
+    /// Reconstruct a ring-entry from an [`crate::audit::AuditEntry`]
+    /// tailed off disk at daemon startup. Returns `None` when the
+    /// entry lacks the rich prompt-class payload (`parsed` / non-
+    /// empty `rendered`) — auto-decision rows don't belong in the
+    /// popover's "Recent" section.
+    ///
+    /// This is the only bridge from the durable audit log back into
+    /// the in-memory ring; tests lean on it heavily.
+    pub fn try_from_audit(entry: crate::audit::AuditEntry) -> Option<Self> {
+        if entry.rendered.is_empty() || entry.parsed.is_none() {
+            return None;
+        }
+        let summary = PromptSummary {
+            id: entry.id,
+            command: entry.command,
+            primary_verb: entry.primary_verb,
+            primary_target: entry.primary_target,
+            force_prompt: entry.force_prompt,
+            signals: entry.signals,
+            parsed: entry.parsed,
+            host_known: entry.host_known,
+        };
+        Some(Self {
+            summary,
+            rendered: entry.rendered,
+            decision: entry.decision,
+        })
+    }
+}
+
 /// Decision posted back by the UI. Mirrors the wire's
 /// [`WireDecision`] but carries an explicit human-readable reason so
 /// `vet`'s `allow (…)` / `deny (…)` line is informative.
@@ -291,6 +322,38 @@ impl PendingQueue {
                 sent
             }
             None => false,
+        }
+    }
+
+    /// Preload the resolved-history ring with entries tailed off disk
+    /// at daemon startup. `entries` is expected **newest-first** (the
+    /// order [`crate::audit::AuditLog::tail_prompt_entries`] returns)
+    /// so we can push straight onto the deque without reversing.
+    ///
+    /// The ring is capped at [`RESOLVED_CAP`]; we truncate silently
+    /// if the caller passes more than that. Fires the change listener
+    /// once if the call actually populated any entries, so a popover
+    /// whose listener was registered pre-warm also repaints.
+    pub fn warm_resolved<I>(&self, entries: I)
+    where
+        I: IntoIterator<Item = ResolvedEntry>,
+    {
+        let (added, listener) = {
+            let mut g = self.inner.lock().expect("pending mutex poisoned");
+            let mut added = 0usize;
+            for entry in entries {
+                if g.resolved.len() >= RESOLVED_CAP {
+                    break;
+                }
+                g.resolved.push_back(entry);
+                added += 1;
+            }
+            (added, g.listener.clone())
+        };
+        if added > 0 {
+            if let Some(cb) = listener {
+                cb();
+            }
         }
     }
 

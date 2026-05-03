@@ -156,7 +156,19 @@ and notarised distribution are still deferred.
       ([vetterd/src/notifier/mac.rs](vetterd/src/notifier/mac.rs)
       consumes `NotifyHint::was_empty_before` from
       [vetterd/src/pending.rs](vetterd/src/pending.rs))
-- [ ] Real Developer-ID signing + notarisation pipeline; Homebrew tap
+- [x] Real Developer-ID signing + notarisation pipeline; Homebrew tap
+      ([tools/release.sh](tools/release.sh),
+      [tools/_bundle_layout.sh](tools/_bundle_layout.sh),
+      [vetterd/resources/vetterd.entitlements](vetterd/resources/vetterd.entitlements),
+      [plans/Release.md](plans/Release.md); cask lives in the
+      separate [`blevinstein/homebrew-vetter`](https://github.com/blevinstein/homebrew-vetter)
+      tap repo). Local pipeline only; automated CI release workflow
+      tracked separately below.
+- [ ] CI release workflow on tag push: imports the Developer-ID
+      cert + Notary `.p8` from repo secrets, runs
+      `tools/release.sh`, attaches the zip to a GitHub Release,
+      and opens a PR against `blevinstein/homebrew-vetter` with
+      the bumped cask
 - [ ] Full §7 cross-cutting security property suite passes
 - [ ] E2E happy-path + deny-path tests against the signed bundle
       (PR 1/2 cover them via `MockNotifier`; signed-app E2E waits on
@@ -222,9 +234,6 @@ suggestions"), §11. Picker-sheet UI design lives in
 - [ ] Allowlist suggestions over `Effect::FileWrite` /
       `Effect::FileRead` (engine returns empty for now; UI hides
       the button)
-- [ ] Project-scope writes from the popover (CLI
-      `vet allow add --scope project` still works; v1 picker
-      lands on user scope only per the picked design option)
 
 ## Phase 6 — Other platforms  `[ ] not started`  (post-MVP)
 
@@ -329,7 +338,11 @@ Tracked from [plans/Overview.md](plans/Overview.md) §12:
 - [ ] Decide telemetry policy (default none; opt-in local-only metrics)
       — close this explicitly in `ThreatModel.md` rather than leaving
       it open
-- [ ] Distribution: Homebrew tap publishing the notarised `.app`
+- [x] Distribution: Homebrew tap publishing the notarised `.app`
+      (cask lives in the standalone
+      [`blevinstein/homebrew-vetter`](https://github.com/blevinstein/homebrew-vetter)
+      tap repo; release walkthrough in
+      [plans/Release.md](plans/Release.md))
 
 ---
 

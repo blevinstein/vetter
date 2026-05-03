@@ -19,9 +19,10 @@
 #
 # Output: target/Vetter.app
 #
-# Real notarised/distribution builds are a follow-up; this script is
-# the one-line developer experience and intentionally does not try to
-# notarise.
+# This script is the developer experience and intentionally does NOT
+# notarise. For a Developer-ID signed + notarised + stapled bundle
+# suitable for distribution (Homebrew cask, GitHub Release upload), use
+# `tools/release.sh` and follow `plans/Release.md`.
 
 set -euo pipefail
 
@@ -43,35 +44,19 @@ fi
 # 1. Build both workspace binaries in one cargo invocation.
 cargo build -p vetterd -p vet $CARGO_FLAG
 
-VETTERD_BIN="target/$PROFILE/vetterd"
-VET_BIN="target/$PROFILE/vet"
-for bin in "$VETTERD_BIN" "$VET_BIN"; do
-    if [[ ! -x "$bin" ]]; then
-        echo "build-app.sh: $bin missing — cargo build failed?" >&2
-        exit 1
-    fi
-done
+# 2. Lay out the bundle via the shared helper (also used by release.sh)
+#    so dev and release builds can never drift on bundle structure.
+# shellcheck source=tools/_bundle_layout.sh
+source "$ROOT/tools/_bundle_layout.sh"
+VERSION=$(vetter_workspace_version)
 
-# 2. Lay out the bundle.
 APP="target/Vetter.app"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
-mkdir -p "$APP/Contents/Resources"
-cp "$VETTERD_BIN" "$APP/Contents/MacOS/vetterd"
-cp "$VET_BIN"     "$APP/Contents/MacOS/vet"
-chmod +x "$APP/Contents/MacOS/vetterd" "$APP/Contents/MacOS/vet"
+vetter_layout_app "target/$PROFILE" "$APP"
 
-# 3. Render Info.plist from the template.
-VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-sed "s/__VERSION__/$VERSION/g" \
-    vetterd/resources/Info.plist.template \
-    > "$APP/Contents/Info.plist"
-
-# 4. Ad-hoc code-sign so UNUserNotifications recognises the bundle.
+# 3. Ad-hoc code-sign so UNUserNotifications recognises the bundle.
 #    `--deep` re-signs every Mach-O inside (vetterd + vet) so the
-#    helper binary is also covered. For real distribution: replace
-#    `-` with a Developer ID identity and add notarisation (a Phase
-#    4 follow-up PR).
+#    helper binary is also covered. For real distribution the
+#    Developer-ID + notarisation path lives in `tools/release.sh`.
 codesign --sign - --force --deep "$APP" >/dev/null
 
 echo "built $APP (profile=$PROFILE, version=$VERSION)"
@@ -80,3 +65,5 @@ echo "  - $APP/Contents/MacOS/vet      (CLI helper)"
 echo "next:"
 echo "  open $APP                                         # launch the menu-bar daemon"
 echo "  export PATH=\"\$PWD/$APP/Contents/MacOS:\$PATH\"     # put vet on PATH"
+echo
+echo "for a notarised distribution build, see tools/release.sh + plans/Release.md"

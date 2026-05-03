@@ -26,7 +26,9 @@ The script:
 2. Lays out `Vetter.app/Contents/{MacOS,Resources}` and copies both
    binaries into `Contents/MacOS/` (`vetterd` is the bundle's main
    executable; `vet` rides along as a CLI helper so a developer can
-   put one directory on PATH).
+   put one directory on PATH). The layout step lives in
+   `tools/_bundle_layout.sh` and is shared with the release pipeline
+   so dev and distribution bundles can never drift.
 3. Renders `vetterd/resources/Info.plist.template` (substitutes
    `__VERSION__` from Cargo.toml).
 4. Ad-hoc signs the bundle with `codesign --sign -` (`--deep` so the
@@ -34,6 +36,12 @@ The script:
    `UNUserNotificationCenter` to recognise the bundle on the
    developer's own machine; a Developer-ID identity is required to
    distribute it.
+
+For a Developer-ID signed + notarised + stapled bundle (the artifact
+the Homebrew cask serves), use `tools/release.sh` and follow
+[Release.md](Release.md). That doc owns the Apple-side prerequisites
+(Developer Program membership, certificate, Notary API key, Team ID),
+the cross-arch toolchain setup, and the cask-publish flow.
 
 The Info.plist sets:
 

@@ -33,9 +33,6 @@ objc2-app-kit = "0.3"
 objc2-user-notifications = "0.3"
 block2 = "0.6"
 dispatch2 = "0.3"
-# Phase-5 picker sheets render the YAML preview of each suggested
-# rule in their accessory view; pulled in only on macOS because the
-# headless test path has no use for it.
 serde_yaml_ng = "0.10"
 
 [dev-dependencies]

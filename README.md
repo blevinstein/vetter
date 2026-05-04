@@ -9,20 +9,27 @@ asking you to **Approve** or **Reject** — before the command runs.
 
 ## How it works
 
-1. **Install** vetter and tell your agent to prefix `curl` (and other commands)
-   with `vet`.
-2. **Set your allowlist** — rules covering hosts, paths, methods, and risk
-   signals that you always want to allow through.
-3. **Stay in control** — anything outside the allowlist reaches you as a
-   native notification with full context: URL, headers (secrets redacted),
-   body, and a summary of what the command would affect.
+**Step 1 — Install vetter** and start it as a menu-bar app.
+
+**Step 2 — Allow `vet` in your agent harness.** In Claude Code, Cursor, or
+whichever tool you use, add `vet` to the list of commands the agent can run
+without asking you first. This is the key insight: you're not allowing `curl`
+directly (which would be unsafe), you're allowing `vet curl …`, and vetter
+enforces the real policy. The agent can't bypass vetter by tweaking flags.
+
+**Step 3 — Set your allowlist.** Rules covering hosts, paths, HTTP methods,
+and risk signals that should always pass through silently. Everything else
+triggers a notification.
+
+**Step 4 — Stay in control.** Anything outside the allowlist reaches you as a
+native notification with full context: URL, headers (secrets redacted), body,
+and a summary of what the command would affect. Approve or reject with one
+click.
 
 ## Status
 
-**v0.1 release candidate** — macOS support is feature-complete and in use
-daily. Ubuntu is planned for v0.2. A pre-release security hardening pass is in
-flight before the first public Homebrew tag; see [TODO.md](TODO.md) for the
-full checklist.
+**v0.1** — macOS support is feature-complete and in use daily. Ubuntu is
+planned for v0.2.
 
 What works today on macOS:
 
@@ -35,23 +42,23 @@ What works today on macOS:
 
 ## Installation
 
-### macOS (Homebrew coming soon — build from source today)
-
-```sh
-tools/build-app.sh --release
-open target/Vetter.app
-export PATH="$PWD/target/Vetter.app/Contents/MacOS:$PATH"
-```
-
-After the first launch, click the menu-bar shield and tick **Start at login**
-so Vetter restarts automatically after every reboot.
-
-Once the first release is published the install path will simplify to:
+### macOS
 
 ```sh
 brew tap blevinstein/vetter
 brew install --cask vetter
 open /Applications/Vetter.app
+```
+
+After the first launch, click the menu-bar shield and tick **Start at login**
+so Vetter restarts automatically after every reboot.
+
+**Building from source** (for development or if you prefer not to use the tap):
+
+```sh
+tools/build-app.sh --release
+open target/Vetter.app
+export PATH="$PWD/target/Vetter.app/Contents/MacOS:$PATH"
 ```
 
 ### Ubuntu (v0.2, planned)
@@ -76,18 +83,16 @@ log is in [plans/MacOSApp.md](plans/MacOSApp.md).
 
 | Milestone | Status |
 |---|---|
-| v0.1 — macOS, `curl` parser, allowlist, notification UI | Release candidate |
+| v0.1 — macOS, `curl` parser, allowlist, notification UI | Released |
 | v0.2 — Ubuntu (D-Bus notifications, GTK4 popover, `.deb` / PPA) | Design |
-| Backlog — Windows, `wget` / `gh` / `aws` / `gcloud` / `ssh` / `rm` / `git push` parsers, web UI | Planned |
+| Backlog — Windows, additional parsers, web UI | Planned |
 
 ## License
 
-MIT — see [`Cargo.toml`](Cargo.toml). Full `LICENSE-MIT` file lands before the
-first public Homebrew tag.
+[MIT](LICENSE) — Copyright (c) 2024 Brian Levinstein.
 
 ## Security
 
-A `SECURITY.md` with a vulnerability-reporting contact and disclosure policy
-lands before the first public Homebrew tag. Until then, please open a private
-GitHub Security Advisory or email the repo owner directly. The threat model is
-catalogued in [plans/ThreatModel.md](plans/ThreatModel.md).
+Please open a private GitHub Security Advisory or email the repo owner
+directly to report vulnerabilities. The threat model is catalogued in
+[plans/ThreatModel.md](plans/ThreatModel.md).

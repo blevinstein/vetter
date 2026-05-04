@@ -160,24 +160,34 @@ once:
 git clone git@github.com:blevinstein/homebrew-vetter ~/dev/homebrew-vetter
 ```
 
-Then for each release:
+Then for each release, run [`tools/publish-cask.sh`](../tools/publish-cask.sh)
+from the `vetter` repo root:
 
-1. Edit `~/dev/homebrew-vetter/Casks/vetter.rb` to match the printed
-   `version` + `sha256` lines.
-2. Commit + push on `main`:
-   ```sh
-   cd ~/dev/homebrew-vetter
-   git commit -am "vetter v$VERSION"
-   git push
-   ```
-3. Create a GitHub Release on `blevinstein/vetter` tagged
-   `v$VERSION` and attach `target/Vetter-$VERSION.zip` so the cask
-   `url` (`.../releases/download/v$VERSION/Vetter-$VERSION.zip`)
-   resolves.
+```sh
+tools/publish-cask.sh
+```
 
-Until the CI release workflow lands the cask edit + tap push are
-manual; the workflow will eventually open a PR against
-`blevinstein/homebrew-vetter` from CI using a deploy key.
+The script (1) creates the GitHub Release on `blevinstein/vetter`
+tagged `v$VERSION` with `target/Vetter-$VERSION.zip` attached so
+the cask `url` resolves, (2) bumps the `version` + `sha256`
+stanzas in the tap's `Casks/vetter.rb` in place, and (3) commits
+and pushes the cask change to `main`. It is idempotent — re-runs
+after a botched publish re-upload the asset (`--clobber`) and
+skip the cask commit when nothing changed.
+
+Override the defaults via env vars when needed:
+
+```sh
+TAP_DIR=/some/other/clone RELEASE_REPO=fork-owner/vetter tools/publish-cask.sh
+```
+
+Until the CI release workflow lands this is a manual invocation;
+the workflow will eventually `tools/release.sh && tools/publish-cask.sh`
+from a job triggered on tag push (with `GITHUB_TOKEN` instead of
+`gh auth login`, and a deploy-key https remote on the tap clone
+instead of ssh), and will likely open a PR against
+`blevinstein/homebrew-vetter` rather than pushing directly to
+`main` so the tap stays reviewable.
 
 End users then install with:
 
@@ -188,7 +198,9 @@ open /Applications/Vetter.app                  # first launch grants notificatio
 ```
 
 `vet` lands in `$(brew --prefix)/bin` via the cask's `binary`
-stanza, so `vet curl …` works immediately.
+stanza, so `vet curl …` works immediately. Existing users on a
+prior version pick up the bump with
+`brew update && brew upgrade --cask vetter`.
 
 ## Verification
 
@@ -260,6 +272,24 @@ already.
   `tools/release.sh` is hitting the wrong one — be more specific in
   `$DEVELOPER_ID_APPLICATION`, including the parenthesised Team ID.
 
+- **`brew install --cask vetter` fails with HTTP 404 on the
+  download URL, or `brew info` keeps showing the previous
+  version after a release.** Two failure modes look the same
+  from the outside; check both:
+  1. The cask was bumped + pushed but the GitHub Release was
+     never created (or the `.zip` asset wasn't attached). The
+     cask `url` resolves to a real Release page, not just a tag,
+     so a bare tag without a Release returns 404. Confirm with
+     `gh release view "v$VERSION" --repo blevinstein/vetter`; if
+     it errors, run step 1 of the publish block above.
+  2. The user's local tap clone at
+     `$(brew --repository blevinstein/vetter)` hasn't fetched
+     the new cask commit yet. `brew update` (or
+     `brew tap --repair blevinstein/vetter`) refreshes it. CI
+     can't help here — it's a per-user cache miss — so the
+     end-user-install instructions always recommend
+     `brew update && brew upgrade --cask vetter` for upgrades.
+
 - **`vet daemon start` works locally but fails after `brew install
   --cask vetter`.** The cask installs `Vetter.app` to
   `/Applications/`; the daemon's bundle-location check (the
@@ -280,10 +310,12 @@ Phase 5*:
 
 - **CI release workflow.** A GitHub Actions job that imports the
   Developer ID certificate from a base64 secret, the `.p8` from
-  another secret, runs `tools/release.sh`, attaches the zip to a
-  GitHub Release, and opens a PR against `blevinstein/homebrew-vetter`
-  with the bumped cask. This script is structured so the workflow
-  can call it verbatim — only the env-var sourcing differs.
+  another secret, then runs `tools/release.sh` followed by
+  `tools/publish-cask.sh` (ideally pointing the latter at a PR
+  branch on `blevinstein/homebrew-vetter` rather than direct-to-
+  `main`). Both scripts are structured so the workflow can call
+  them verbatim — only the auth sourcing differs (`gh auth login`
+  → `GITHUB_TOKEN`; ssh tap remote → deploy-key https remote).
 - **DMG packaging.** Cask handles either `app "..."` (zip-style,
   what we ship) or `app "..." within ".dmg"` (DMG with custom
   background). Zip is enough for v0.1.

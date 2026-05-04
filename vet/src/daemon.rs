@@ -266,6 +266,77 @@ pub fn list() -> ExitCode {
     }
 }
 
+/// `vet daemon autostart enable` — register Vetter.app as a macOS
+/// Login Item so the daemon comes back after every reboot.
+pub fn autostart_enable() -> ExitCode {
+    autostart_set(true)
+}
+
+/// `vet daemon autostart disable` — unregister from Login Items.
+pub fn autostart_disable() -> ExitCode {
+    autostart_set(false)
+}
+
+/// `vet daemon autostart status` — print the current OS-level
+/// state and the user's persisted preference.
+pub fn autostart_status() -> ExitCode {
+    match query_admin(MgmtRequest::GetAutostart) {
+        Ok(MgmtResponse::AutostartState { desired, status }) => {
+            print_autostart_state(desired, status);
+            ExitCode::from(EXIT_OK)
+        }
+        Ok(MgmtResponse::Error { message }) => {
+            eprintln!("vet daemon autostart: daemon error: {message}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+        Ok(other) => {
+            eprintln!("vet daemon autostart: unexpected daemon response: {other:?}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+        Err(e) => {
+            eprintln!("vet daemon autostart: {e}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+    }
+}
+
+fn autostart_set(enabled: bool) -> ExitCode {
+    let verb = if enabled { "enable" } else { "disable" };
+    match query_admin(MgmtRequest::SetAutostart { enabled }) {
+        Ok(MgmtResponse::AutostartState { desired, status }) => {
+            print_autostart_state(desired, status);
+            ExitCode::from(EXIT_OK)
+        }
+        Ok(MgmtResponse::Error { message }) => {
+            eprintln!("vet daemon autostart {verb}: daemon error: {message}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+        Ok(other) => {
+            eprintln!("vet daemon autostart {verb}: unexpected daemon response: {other:?}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+        Err(e) => {
+            eprintln!("vet daemon autostart {verb}: {e}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+    }
+}
+
+fn print_autostart_state(desired: bool, status: vetter_core::settings::AutostartStatus) {
+    use vetter_core::settings::AutostartStatus as S;
+    let extra = match status {
+        S::Enabled => " (login item registered)",
+        S::NotRegistered => " (not registered)",
+        S::RequiresApproval => " (waiting for user approval in System Settings → Login Items)",
+        S::NotFound => " (the system cannot resolve Vetter.app)",
+        S::Unsupported => " (autostart only available on macOS 13+ inside Vetter.app)",
+    };
+    println!(
+        "vet daemon autostart: {label}{extra}\n  preference: autostart = {desired}",
+        label = status.label(),
+    );
+}
+
 fn print_pending_list(items: &[PendingItem]) {
     if items.is_empty() {
         println!("vet daemon: no pending approvals");
@@ -295,7 +366,7 @@ fn print_pending_list(items: &[PendingItem]) {
 /// [`MgmtResponse`]. Returns `Err` with a human-readable message when
 /// the admin socket is unreachable (daemon not running, old daemon
 /// without admin socket, etc.).
-fn query_admin(req: MgmtRequest) -> Result<MgmtResponse, String> {
+pub(crate) fn query_admin(req: MgmtRequest) -> Result<MgmtResponse, String> {
     let admin_socket = default_admin_socket_path();
     let mut stream = UnixStream::connect(&admin_socket).map_err(|e| {
         format!(

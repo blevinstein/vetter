@@ -27,6 +27,7 @@
 //! the user's decision arrives, then writes the wire reply.
 
 pub mod audit;
+pub mod autostart;
 pub mod notifier;
 pub mod paths;
 pub mod pending;
@@ -213,6 +214,45 @@ pub fn run(
         }
         Err(e) => {
             eprintln!("vetterd: audit log tail (history warm-up) failed: {e}");
+        }
+    }
+
+    // Bring the OS-level Login Item state in line with the user's
+    // persisted preference. Best-effort: a failure here logs but
+    // doesn't block startup — the user can always rerun
+    // `vet daemon autostart enable` once the popover comes up.
+    //
+    // Read the file via `load`; if it errors (typo in YAML, IO
+    // failure) fall back to the daemon-default `autostart=false`
+    // and surface the parse error so the user notices on the next
+    // `vet doctor` run.
+    let settings = match vetter_core::settings::load() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("vetterd: ~/.vet/settings.yaml unreadable: {e}");
+            vetter_core::settings::Settings::default()
+        }
+    };
+    match autostart::reconcile_with_settings(settings.autostart) {
+        Ok(true) => {
+            eprintln!(
+                "vetterd: autostart reconciled to {} (per ~/.vet/settings.yaml)",
+                if settings.autostart {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+        }
+        Ok(false) => {
+            // Already in the desired state; stay quiet to avoid
+            // spamming the daemon log on every restart.
+        }
+        Err(e) => {
+            eprintln!(
+                "vetterd: autostart reconciliation skipped: {e}; \
+                 use `vet daemon autostart status` to inspect current state"
+            );
         }
     }
 
@@ -451,7 +491,62 @@ fn handle_admin_request(ctx: &Arc<Context>, req: MgmtRequest) -> MgmtResponse {
                 },
             }
         }
+        MgmtRequest::GetAutostart => {
+            // Read both: settings.yaml (the user's persisted
+            // preference) and SMAppService (the live OS state). The
+            // CLI displays both so the user can spot when System
+            // Settings flipped the OS state out from under us.
+            let desired = vetter_core::settings::load()
+                .map(|s| s.autostart)
+                .unwrap_or(false);
+            MgmtResponse::AutostartState {
+                desired,
+                status: autostart::current(),
+            }
+        }
+        MgmtRequest::SetAutostart { enabled } => match apply_autostart_change(enabled) {
+            Ok(status) => MgmtResponse::AutostartState {
+                desired: enabled,
+                status,
+            },
+            Err(e) => MgmtResponse::Error {
+                message: e.to_string(),
+            },
+        },
     }
+}
+
+/// Persist `enabled` to `~/.vet/settings.yaml`, then converge the
+/// OS-level Login Item state. Returns the live status *after* the
+/// apply so the caller can detect partial success (e.g. the user
+/// has not yet approved the registration in System Settings).
+///
+/// Errors from either step propagate. We persist the YAML *before*
+/// touching SMAppService so a Login-Items rejection doesn't lose
+/// the user's stated preference — the next daemon launch will
+/// retry the registration via [`autostart::reconcile_with_settings`].
+fn apply_autostart_change(
+    enabled: bool,
+) -> Result<vetter_core::settings::AutostartStatus, AutostartChangeError> {
+    let mut settings = vetter_core::settings::load().map_err(AutostartChangeError::Settings)?;
+    if settings.autostart != enabled {
+        settings.autostart = enabled;
+        vetter_core::settings::store(&settings).map_err(AutostartChangeError::Settings)?;
+    }
+    if enabled {
+        autostart::enable().map_err(AutostartChangeError::Autostart)?;
+    } else {
+        autostart::disable().map_err(AutostartChangeError::Autostart)?;
+    }
+    Ok(autostart::current())
+}
+
+#[derive(Debug, thiserror::Error)]
+enum AutostartChangeError {
+    #[error("settings: {0}")]
+    Settings(#[source] vetter_core::settings::SettingsError),
+    #[error("{0}")]
+    Autostart(#[source] autostart::AutostartError),
 }
 
 fn install_signal_handlers(shutdown: Arc<AtomicBool>) {

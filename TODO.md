@@ -196,6 +196,43 @@ ship-blockers.
       [vetter-core/src/wire/mod.rs](vetter-core/src/wire/mod.rs),
       [vetterd/tests/admin_ipc.rs](vetterd/tests/admin_ipc.rs))
 
+### Autostart on login
+
+Removes the open caveat that the user has to `open
+/Applications/Vetter.app` once after every reboot. Architectural
+notes + reconciliation contract live in
+[plans/MacOSApp.md § Autostart on login](plans/MacOSApp.md#autostart-on-login).
+
+- [x] `vetter-core::settings` user-pref store at
+      `~/.vet/settings.yaml`, atomic write at mode `0600`
+      ([vetter-core/src/settings.rs](vetter-core/src/settings.rs))
+- [x] `vetterd::autostart` driver: `SMAppService.mainApp` FFI,
+      `current` / `enable` / `disable` / `reconcile_with_settings`,
+      bundle-location guard mirroring `notifier::mac`
+      ([vetterd/src/autostart.rs](vetterd/src/autostart.rs))
+- [x] Wire + CLI: `MgmtRequest::{GetAutostart, SetAutostart}` over
+      the admin socket; `vet daemon autostart enable | disable |
+      status`
+      ([vetter-core/src/wire/mod.rs](vetter-core/src/wire/mod.rs),
+      [vet/src/daemon.rs](vet/src/daemon.rs))
+- [x] Popover footer **Start at login** checkbox alongside Quit;
+      tied to `toggleAutostart:` selector with UI rollback when
+      `SMAppService.{register,unregister}` errors; refreshed from
+      `[SMAppService.mainApp status]` on every `popoverWillShow:`
+      ([vetterd/src/runloop/popover.rs](vetterd/src/runloop/popover.rs),
+      [vetterd/src/runloop/mod.rs](vetterd/src/runloop/mod.rs))
+- [x] `vet doctor` autostart row mapping `AutostartStatus` to
+      OK / INFO / WARN / SKIP, falling back to a settings-only
+      read when the daemon is offline
+      ([vet/src/doctor.rs](vet/src/doctor.rs))
+- [x] `LSMinimumSystemVersion` bumped 11.0 -> 13.0 since
+      SMAppService is macOS 13+
+      ([vetterd/resources/Info.plist.template](vetterd/resources/Info.plist.template))
+- [x] Smoke step #12 in
+      [plans/MacOSApp.md](plans/MacOSApp.md): tick the checkbox,
+      log out + back in, confirm shield reappears without manually
+      opening anything
+
 ## Phase 5 — Pattern + Known-Host Suggestions  `[~] in progress`
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §5 ("Pattern
@@ -344,7 +381,16 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
       `Environment=VETTERD_NOTIFIER=linux`,
       `WantedBy=default.target`).
 - [ ] `vetterd/resources/vetter.desktop` (autostart entry under
-      `/etc/xdg/autostart/`).
+      `/etc/xdg/autostart/`). Note: this is the Linux mirror of
+      the macOS "Start at login" feature. The systemd
+      `WantedBy=default.target` user unit above is what actually
+      brings the daemon up at every login; the `.desktop` file is
+      only needed for users who run vetterd outside a systemd-
+      session manager. We do **not** plan to surface the
+      `Settings::autostart` toggle on Linux: opting in is the
+      install-time default (`postinst` enables the user unit),
+      and revocation goes through `systemctl --user disable
+      vetter.service`.
 - [ ] `vetterd/resources/postinst` →
       `systemctl --user --global enable vetter.service`.
 - [ ] `tools/release-deb.sh`: `cargo build --release` →

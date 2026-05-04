@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::known_hosts::KnownHostEntry;
 use crate::matcher::rule::Rule;
 use crate::matcher::Decision as MatchDecision;
+use crate::settings::AutostartStatus;
 use crate::suggest::{HostSuggestion, RuleSuggestion};
 
 /// The wire-format version this build speaks. Bumping this requires
@@ -344,6 +345,19 @@ pub enum MgmtRequest {
         scope: WireScope,
         entry: KnownHostEntry,
     },
+    /// Read-only query: report the current `[SMAppService.mainApp
+    /// status]` (or the equivalent stub state on non-macOS). Used
+    /// by `vet daemon autostart status` and by the popover when it
+    /// opens, so the checkbox reflects whatever the user may have
+    /// flipped via System Settings → Login Items in the meantime.
+    GetAutostart,
+    /// Persist the user's preference to `~/.vet/settings.yaml` and
+    /// converge the OS-level Login Item state. The daemon answers
+    /// with [`MgmtResponse::AutostartState`] reflecting the OS
+    /// status *after* the apply, so the caller can verify whether
+    /// the request actually landed (e.g. RequiresApproval) without
+    /// a second round-trip.
+    SetAutostart { enabled: bool },
 }
 
 /// Response returned by `vetterd` on the admin socket.
@@ -373,6 +387,15 @@ pub enum MgmtResponse {
     KnownHostAdded {
         pattern: String,
         scope: WireScope,
+    },
+    /// Result of [`MgmtRequest::GetAutostart`] and
+    /// [`MgmtRequest::SetAutostart`]. `status` is the live OS
+    /// state; `desired` is what the user's `~/.vet/settings.yaml`
+    /// records (so the CLI can spot mismatches between "user
+    /// wanted on, but System Settings denied approval").
+    AutostartState {
+        desired: bool,
+        status: AutostartStatus,
     },
     Error {
         message: String,

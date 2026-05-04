@@ -6,6 +6,7 @@
 //! - [`matcher`]     — rule matcher (Phase 2; placeholder until then).
 //! - [`signals`]     — generic risk-signal analyzer.
 //! - [`known_hosts`] — known-hosts list loader and host-familiarity check.
+//! - [`settings`]    — user preferences persisted at `~/.vet/settings.yaml`.
 //! - [`suggest`]     — generalisation engine (allowlist + known-host) for
 //!   the macOS approver picker.
 //! - [`wire`]        — JSON wire types (Phase 3; placeholder until then).
@@ -19,6 +20,7 @@ pub mod paths;
 pub mod peer_cred;
 pub mod pidfile;
 pub mod render;
+pub mod settings;
 pub mod signals;
 pub mod suggest;
 pub mod wire;
@@ -35,6 +37,9 @@ pub use paths::{
 };
 pub use render::{
     signal_kind_label, AnsiWriter, DefaultRenderer, PlainWriter, Renderer, Style, StyledWriter,
+};
+pub use settings::{
+    load as load_settings, settings_path, store as store_settings, Settings, SettingsError,
 };
 pub use signals::{analyze, check_known_hosts, RiskSignal, SignalKind};
 pub use suggest::{

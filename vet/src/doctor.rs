@@ -99,6 +99,7 @@ pub fn run(allowlist_override: Option<&Path>) -> ExitCode {
     checks.extend(check_allowlists(cwd.as_deref(), allowlist_override));
     checks.push(check_parsers());
     checks.extend(check_code_signing());
+    checks.push(check_autostart());
 
     print_report(&checks);
 
@@ -913,5 +914,89 @@ fn format_uptime(start: SystemTime) -> String {
         format!("{m}m{s}s")
     } else {
         format!("{s}s")
+    }
+}
+
+/// Build the `autostart` row.
+///
+/// Reports whether `Vetter.app` is registered as a macOS Login
+/// Item via `SMAppService.mainApp`. Talks to the daemon over the
+/// admin socket so the row reflects the *live* OS status (which
+/// the user can flip via System Settings -> Login Items between
+/// vet invocations).
+///
+/// Falls back to reading `~/.vet/settings.yaml` directly when the
+/// daemon is not reachable, so the user at least sees their
+/// persisted preference.
+fn check_autostart() -> Check {
+    if !cfg!(target_os = "macos") {
+        return Check::new("autostart", Status::Skip, "macOS only");
+    }
+    use vetter_core::settings::AutostartStatus;
+    use vetter_core::wire::{MgmtRequest, MgmtResponse};
+
+    match crate::daemon::query_admin(MgmtRequest::GetAutostart) {
+        Ok(MgmtResponse::AutostartState { desired, status }) => match status {
+            AutostartStatus::Enabled => {
+                Check::new("autostart", Status::Ok, "enabled (login item registered)")
+            }
+            AutostartStatus::NotRegistered => {
+                let detail = if desired {
+                    "preference says enabled but OS reports not registered; \
+                     try `vet daemon autostart enable`"
+                        .to_string()
+                } else {
+                    "disabled".to_string()
+                };
+                let status = if desired { Status::Warn } else { Status::Info };
+                Check::new("autostart", status, detail)
+            }
+            AutostartStatus::RequiresApproval => Check::new(
+                "autostart",
+                Status::Warn,
+                "requires approval; open System Settings -> General -> Login Items",
+            ),
+            AutostartStatus::NotFound => Check::new(
+                "autostart",
+                Status::Warn,
+                "bundle not registered (try `vet daemon autostart enable`)",
+            ),
+            AutostartStatus::Unsupported => Check::new(
+                "autostart",
+                Status::Skip,
+                "needs macOS 13+ inside Vetter.app",
+            ),
+        },
+        Ok(MgmtResponse::Error { message }) => Check::new(
+            "autostart",
+            Status::Warn,
+            format!("daemon rejected query: {message}"),
+        ),
+        Ok(other) => Check::new(
+            "autostart",
+            Status::Warn,
+            format!("unexpected daemon response: {other:?}"),
+        ),
+        Err(_) => {
+            // Daemon down — fall back to reading the persisted
+            // preference so the user still gets something useful.
+            match vetter_core::settings::load() {
+                Ok(s) if s.autostart => Check::new(
+                    "autostart",
+                    Status::Info,
+                    "preference: enabled (daemon offline; OS state unverified)",
+                ),
+                Ok(_) => Check::new(
+                    "autostart",
+                    Status::Info,
+                    "preference: disabled (daemon offline; OS state unverified)",
+                ),
+                Err(e) => Check::new(
+                    "autostart",
+                    Status::Warn,
+                    format!("could not read ~/.vet/settings.yaml: {e}"),
+                ),
+            }
+        }
     }
 }

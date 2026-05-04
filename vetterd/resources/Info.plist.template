@@ -22,8 +22,14 @@
     <string>__VERSION__</string>
     <key>CFBundleSignature</key>
     <string>????</string>
+    <!-- Bumped 11.0 -> 13.0 when we wired SMAppService.mainApp for
+         the "Start at login" toggle (popover footer + `vet daemon
+         autostart`). SMAppService is macOS 13+; older hosts would
+         hit a runtime class-not-found from `class!(SMAppService)`.
+         macOS 11/12 are out of Apple support so the floor bump
+         doesn't strand any in-warranty device. -->
     <key>LSMinimumSystemVersion</key>
-    <string>11.0</string>
+    <string>13.0</string>
     <!-- Menu-bar / accessory app: no dock icon, no app-switcher entry. -->
     <key>LSUIElement</key>
     <true/>

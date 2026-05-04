@@ -104,6 +104,15 @@ vet curl https://prompt-test.example/  # banner with Approve/Reject;
                                        # click the icon for the popover
 ```
 
+After the first launch, click the menu-bar shield and tick
+**Start at login** (or run `vet daemon autostart enable`) so
+`Vetter.app` comes back automatically after every reboot. The
+checkbox is mirrored under System Settings → General → Login
+Items, which is also how the user can revoke autostart later. See
+[plans/MacOSApp.md § Autostart on login](plans/MacOSApp.md#autostart-on-login)
+for the full lifecycle (admin socket flow, reconciliation on
+startup, and `vet doctor` integration).
+
 A signed + notarised bundle suitable for distribution is built by
 [`tools/release.sh`](tools/release.sh) — see
 [plans/Release.md](plans/Release.md) for the Apple-side prereqs.

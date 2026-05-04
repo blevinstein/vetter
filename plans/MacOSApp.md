@@ -119,6 +119,71 @@ driven by [`vetterd/tests/daemon_e2e_prompt.rs`].
     existing `matched rule …` lines.
 11. **Quit.** Click the popover's **Quit Vetter** button. The daemon
     shuts down cleanly (socket and pidfile removed).
+12. **Autostart on login.** Open the popover and tick **Start at
+    login**. `vet doctor` should now show
+    `OK   autostart  enabled (login item registered)` and System
+    Settings → General → Login Items should list **Vetter**. Log
+    out + log back in (or restart): the menu-bar shield should
+    reappear without you opening anything. Untick the checkbox
+    and reboot to confirm the unregistration also takes effect
+    (or run `vet daemon autostart disable` from the CLI).
+
+## Autostart on login
+
+The popover footer carries a **Start at login** checkbox alongside
+the **Quit Vetter** button. Ticking it does three things, in order:
+
+1. Persists the user preference to `~/.vet/settings.yaml`
+   (`autostart: true`). The file lives next to `allowlist.yaml` and
+   `known-hosts.yaml` and is mode `0600` from the moment it is
+   first written.
+2. Calls `[SMAppService.mainApp registerAndReturnError:]` so launchd
+   knows to relaunch `Vetter.app` at every login. The same call is
+   what populates the **Login Items** entry under System Settings
+   → General → Login Items.
+3. Re-reads `[SMAppService.mainApp status]` and snaps the checkbox
+   back if Apple returned an error (typically because the user has
+   not yet *approved* Vetter in System Settings → Login Items).
+   The visible state never claims a setting the OS rejected.
+
+Unticking inverts the same flow with `unregisterAndReturnError:`.
+
+The CLI mirror is `vet daemon autostart enable | disable | status`,
+which routes through the daemon's admin socket so headless setups
+(provisioning scripts, dotfiles installers) can opt in without
+opening the popover.
+
+On daemon startup `vetterd::run` calls
+[`autostart::reconcile_with_settings`](../vetterd/src/autostart.rs)
+to converge the OS-level state with the persisted preference. This
+is the recovery path for two cases:
+
+- The user disabled autostart from **System Settings → Login Items**
+  while the daemon was offline. The next launch obeys their
+  decision (we don't silently re-register on top of a user opt-out).
+- The user hand-edited `~/.vet/settings.yaml` to flip
+  `autostart: true`. The next launch applies the registration
+  without forcing them to open the popover.
+
+### Debugging
+
+- `launchctl print gui/$(id -u) | grep dev.vetter.daemon` shows the
+  current launchd registration for the user session. An empty
+  result means the bundle is not currently registered as a Login
+  Item.
+- `vet doctor` includes an `autostart` row that consults the live
+  `[SMAppService.mainApp status]` via the admin socket — useful
+  when reconciling user reports of "I ticked the box but nothing
+  happens at next login".
+- Apple keeps the user-approval state for `SMAppService` in System
+  Settings → General → Login Items. If a user previously denied
+  the registration there, our `register` call surfaces as
+  `RequiresApproval` and `vet doctor` flags it as a `WARN`.
+
+`SMAppService` is macOS 13+; `Info.plist.template` declares
+`LSMinimumSystemVersion = 13.0` so older macOS hosts don't even
+launch the bundle and hit the missing-class panic from
+`class!(SMAppService)` at runtime.
 
 ## Troubleshooting
 

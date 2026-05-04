@@ -117,6 +117,23 @@ enum DaemonAction {
     Status,
     /// List pending approval requests waiting for a human decision.
     List,
+    /// Register or unregister Vetter.app as a macOS Login Item so
+    /// the daemon comes back automatically after every reboot.
+    Autostart {
+        #[command(subcommand)]
+        action: AutostartAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AutostartAction {
+    /// Register Vetter.app as a Login Item.
+    Enable,
+    /// Unregister Vetter.app from Login Items.
+    Disable,
+    /// Print the current OS-level state (and the persisted
+    /// preference from `~/.vet/settings.yaml`).
+    Status,
 }
 
 fn main() -> ExitCode {
@@ -138,6 +155,11 @@ fn main() -> ExitCode {
             DaemonAction::Stop => daemon::stop(),
             DaemonAction::Status => daemon::status(),
             DaemonAction::List => daemon::list(),
+            DaemonAction::Autostart { action } => match action {
+                AutostartAction::Enable => daemon::autostart_enable(),
+                AutostartAction::Disable => daemon::autostart_disable(),
+                AutostartAction::Status => daemon::autostart_status(),
+            },
         },
         Command::Wrap(argv) => {
             if cli.explain {

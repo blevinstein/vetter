@@ -30,11 +30,11 @@ use objc2::DefinedClass;
 use objc2::MainThreadOnly;
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSBezelStyle, NSBox,
-    NSBoxType, NSButton, NSButtonType, NSColor, NSControlStateValueOff, NSFont,
-    NSFontWeightSemibold, NSImage, NSImageView, NSLayoutAttribute, NSLayoutConstraint, NSPopover,
-    NSPopoverBehavior, NSPopoverDelegate, NSScrollView, NSStackView, NSStackViewDistribution,
-    NSStatusBarButton, NSTextField, NSTextView, NSUserInterfaceLayoutOrientation, NSView,
-    NSViewController,
+    NSBoxType, NSButton, NSButtonType, NSColor, NSControlStateValueOff, NSControlStateValueOn,
+    NSFont, NSFontWeightSemibold, NSImage, NSImageView, NSLayoutAttribute, NSLayoutConstraint,
+    NSPopover, NSPopoverBehavior, NSPopoverDelegate, NSScrollView, NSStackView,
+    NSStackViewDistribution, NSStatusBarButton, NSTextField, NSTextView,
+    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSArray, NSEdgeInsets, NSObject, NSObjectProtocol, NSPoint,
@@ -218,6 +218,40 @@ impl Popover {
         ));
         container.addSubview(&quit);
 
+        // "Start at login" checkbox — anchored to the left edge of
+        // the same footer strip. Tapping it routes through
+        // `toggleAutostart:` on the AppDelegate, which persists the
+        // preference + calls `SMAppService.{register,unregister}`
+        // and rolls back the checkbox state on FFI failure (so the
+        // UI never claims a state the OS rejected).
+        //
+        // Initial state is set to Off here; the real state is
+        // refreshed on every `popoverWillShow:` via
+        // `refresh_autostart_checkbox`.
+        let autostart_checkbox = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                ns_string!("Start at login"),
+                Some(delegate_obj),
+                Some(sel!(toggleAutostart:)),
+                mtm,
+            )
+        };
+        autostart_checkbox.setState(NSControlStateValueOff);
+        // Tooltip echoes the System Settings escape hatch so users
+        // know they can also flip this from outside Vetter.
+        autostart_checkbox.setToolTip(Some(ns_string!(
+            "Register Vetter.app as a Login Item via SMAppService. \
+             You can also manage this in System Settings → General → Login Items."
+        )));
+        // Frame width 160pt covers the localized title plus the
+        // checkbox glyph; height matches the Quit button so both
+        // controls share the footer baseline.
+        autostart_checkbox.setFrame(NSRect::new(
+            NSPoint::new(12.0, 6.0),
+            NSSize::new(160.0, 28.0),
+        ));
+        container.addSubview(&autostart_checkbox);
+
         let vc = NSViewController::new(mtm);
         vc.setView(&container);
 
@@ -225,6 +259,11 @@ impl Popover {
         // we can install it as the popover's delegate (for the
         // popoverWillShow: refresh hook).
         let controller = PopoverController::new(mtm, ctx, queue, cards);
+        controller
+            .ivars()
+            .autostart_checkbox
+            .set(autostart_checkbox)
+            .ok();
 
         let popover = NSPopover::new(mtm);
         popover.setBehavior(NSPopoverBehavior::Transient);
@@ -268,6 +307,22 @@ impl Popover {
         focused_id: Option<&str>,
     ) {
         self.controller.refresh(entries, resolved, focused_id);
+    }
+
+    /// Re-sync the autostart checkbox with the live OS state.
+    /// Called from the AppDelegate's `toggleAutostart:` selector
+    /// after a failed FFI call, so the visible state never diverges
+    /// from what `[SMAppService.mainApp status]` returns.
+    pub fn refresh_autostart_checkbox(&self) {
+        self.controller.refresh_autostart_checkbox();
+    }
+
+    /// Force the checkbox into a specific boolean state. Used by
+    /// the toggle selector when the user's intent and the OS reply
+    /// disagree (e.g. user ticked On but `register` returned a
+    /// `RequiresApproval`-style error before the next OS poll).
+    pub fn set_autostart_checkbox_state(&self, enabled: bool) {
+        self.controller.set_autostart_checkbox_state(enabled);
     }
 
     pub fn is_shown(&self) -> bool {
@@ -339,6 +394,12 @@ pub struct PopoverControllerIvars {
     /// appear on both pending and Allow-resolved cards (so the
     /// per-section `card_ids` mapping isn't enough).
     picker_ids: Mutex<Vec<String>>,
+    /// "Start at login" checkbox in the popover footer. Refreshed
+    /// from `[SMAppService.mainApp status]` on every
+    /// `popoverWillShow:` so the UI reflects whatever the user may
+    /// have flipped via System Settings → Login Items since the
+    /// popover was last opened.
+    autostart_checkbox: std::sync::OnceLock<Retained<NSButton>>,
 }
 
 define_class!(
@@ -367,6 +428,12 @@ define_class!(
             // refresh-with-focus before triggering the show.
             let (entries, resolved) = self.ivars().queue().all_entries();
             self.refresh(&entries, &resolved, None);
+            // Re-sync the checkbox with the OS-level Login Item
+            // state. The user may have flipped this in System
+            // Settings → Login Items between popover opens; we
+            // never want the checkbox to advertise a state the OS
+            // contradicts.
+            self.refresh_autostart_checkbox();
         }
     }
 
@@ -452,6 +519,52 @@ impl PopoverController {
             .ctx
             .get()
             .expect("ctx is set in PopoverController::new")
+    }
+
+    /// Sync the "Start at login" checkbox with the current
+    /// `[SMAppService.mainApp status]`. Called from
+    /// `popoverWillShow:` so the UI never opens stale; also
+    /// callable from the toggle selector after a failed FFI call
+    /// so we roll the visible state back to whatever the OS
+    /// actually has.
+    pub(crate) fn refresh_autostart_checkbox(&self) {
+        let Some(checkbox) = self.ivars().autostart_checkbox.get() else {
+            return;
+        };
+        let status = crate::autostart::current();
+        let new_state = if status.is_enabled() {
+            NSControlStateValueOn
+        } else {
+            NSControlStateValueOff
+        };
+        checkbox.setState(new_state);
+        // Disable the checkbox entirely when the platform can't do
+        // anything sensible with a click (non-bundle dev runs,
+        // non-macOS ports). We surface the reason as the tooltip
+        // so the user isn't left wondering why the control is
+        // grey'd out.
+        let interactive = !matches!(status, crate::autostart::AutostartStatus::Unsupported,);
+        unsafe {
+            // `setEnabled:` is part of NSControl; objc2-app-kit
+            // exposes it on every `NSButton` subclass. Calling via
+            // msg_send! avoids a feature gate on a method that's
+            // present in every supported AppKit version.
+            let _: () = objc2::msg_send![&**checkbox, setEnabled: interactive];
+        }
+    }
+
+    /// Reflect a specific boolean back into the checkbox state.
+    /// Used by the toggle selector when the FFI call rejects, so
+    /// the UI reverts to whatever the OS still has.
+    pub(crate) fn set_autostart_checkbox_state(&self, enabled: bool) {
+        let Some(checkbox) = self.ivars().autostart_checkbox.get() else {
+            return;
+        };
+        checkbox.setState(if enabled {
+            NSControlStateValueOn
+        } else {
+            NSControlStateValueOff
+        });
     }
 
     fn id_for_tag(&self, sender: Option<&NSButton>) -> Option<String> {

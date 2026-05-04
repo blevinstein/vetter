@@ -265,10 +265,13 @@ already.
   `/Applications/`; the daemon's bundle-location check (the
   `VETTERD_NOTIFIER=mac` guard from `plans/MacOSApp.md`) accepts
   any `.app` under `/Applications/Vetter.app/Contents/MacOS/`, so
-  there's nothing cask-specific to fix here — but `vet daemon
-  start` won't auto-launch the bundle, the user has to `open
-  /Applications/Vetter.app` once. Document this in any user-facing
-  install doc; the script does not work around it.
+  there's nothing cask-specific to fix here. The user does need to
+  `open /Applications/Vetter.app` once on first install so macOS
+  can run the notification-permission dialog and (optionally) the
+  user can opt into autostart by ticking the popover's **Start at
+  login** checkbox; thereafter the bundle relaunches itself at
+  every login via `SMAppService.mainApp` — see
+  [plans/MacOSApp.md § Autostart on login](MacOSApp.md#autostart-on-login).
 
 ## What's not here yet (macOS)
 

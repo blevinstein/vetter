@@ -530,6 +530,37 @@ define_class!(
                 flag.store(true, Ordering::SeqCst);
             }
         }
+
+        /// Action wired to the popover's "Start at login" checkbox.
+        ///
+        /// Reads the new state from `[sender state]`, persists it
+        /// to `~/.vet/settings.yaml`, then calls
+        /// `SMAppService.{register,unregister}` to converge the OS.
+        /// On either failure we re-sync the checkbox with the
+        /// live OS state so the UI never claims a setting the OS
+        /// rejected (e.g. the user has not yet approved Vetter in
+        /// System Settings → Login Items).
+        ///
+        /// Runs entirely on the main thread — `objc2_app_kit`
+        /// guarantees the action is delivered there, and
+        /// SMAppService calls are documented as safe from any
+        /// queue. The settings write is a small synchronous YAML
+        /// rewrite; we don't hop to a background queue because
+        /// the user has explicit feedback (the checkbox visibly
+        /// snaps back on failure) and stalling the main thread
+        /// for a ~5ms `~/.vet/settings.yaml` write is preferable
+        /// to having the UI lie about the persisted state in the
+        /// race window.
+        #[unsafe(method(toggleAutostart:))]
+        fn toggle_autostart_action(&self, sender: Option<&objc2_app_kit::NSButton>) {
+            let Some(button) = sender else {
+                eprintln!("vetterd: toggleAutostart: invoked with nil sender");
+                return;
+            };
+            let want_on =
+                button.state() == objc2_app_kit::NSControlStateValueOn;
+            self.apply_autostart_change(want_on);
+        }
     }
 );
 
@@ -554,6 +585,55 @@ impl AppDelegate {
         }
         if let Some(popover) = self.ivars().popover.get() {
             popover.refresh(&pending, &resolved, None);
+        }
+    }
+
+    /// Persist `enabled` to `~/.vet/settings.yaml` and converge the
+    /// OS-level Login Item state via [`crate::autostart`]. On any
+    /// failure we re-sync the popover checkbox with the live OS
+    /// state so the UI never claims a setting the OS rejected.
+    ///
+    /// We don't surface a modal dialog on success — the click *is*
+    /// the feedback (checkbox state stays flipped). On failure we
+    /// log to stderr and rely on the rollback to make the failure
+    /// visible. A future iteration may want a "could not register
+    /// at login" `NSAlert`, but that's out of scope for the
+    /// initial cut.
+    fn apply_autostart_change(&self, enabled: bool) {
+        let mut settings = vetter_core::settings::load().unwrap_or_default();
+        if settings.autostart != enabled {
+            settings.autostart = enabled;
+            if let Err(e) = vetter_core::settings::store(&settings) {
+                eprintln!("vetterd: persist autostart preference failed: {e}");
+                if let Some(popover) = self.ivars().popover.get() {
+                    popover.refresh_autostart_checkbox();
+                }
+                return;
+            }
+        }
+        let result = if enabled {
+            crate::autostart::enable()
+        } else {
+            crate::autostart::disable()
+        };
+        if let Err(e) = result {
+            eprintln!("vetterd: SMAppService toggle failed: {e}");
+            // Resync the visible state with what the OS actually
+            // shows — the user should never see the checkbox claim
+            // a state the OS contradicts.
+            if let Some(popover) = self.ivars().popover.get() {
+                popover.refresh_autostart_checkbox();
+            }
+            return;
+        }
+        // Success path: the state we just wrote should match the
+        // OS. Refresh anyway so RequiresApproval (which is a
+        // documented post-`register` state on first install) is
+        // reflected — `is_enabled()` returns true for both
+        // `Enabled` and `RequiresApproval`, so the checkbox
+        // stays on without lying.
+        if let Some(popover) = self.ivars().popover.get() {
+            popover.set_autostart_checkbox_state(enabled);
         }
     }
 

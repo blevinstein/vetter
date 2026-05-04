@@ -79,7 +79,7 @@ pub(crate) fn verify_bundle_path(exe: &Path) -> Result<(), NotifierBuildError> {
 #[path = "../tests/notifier_mac.rs"]
 mod tests;
 
-fn is_app_bundle_executable(exe: &Path) -> bool {
+pub(crate) fn is_app_bundle_executable(exe: &Path) -> bool {
     // Walk the parents looking for `.../<Name>.app/Contents/MacOS/<exe>`.
     // Substring match on `.app/Contents/MacOS/` would technically work
     // but parent walking lets us assert each segment in isolation,

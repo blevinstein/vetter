@@ -31,10 +31,10 @@ use objc2::MainThreadOnly;
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSBezelStyle, NSBox,
     NSBoxType, NSButton, NSButtonType, NSColor, NSControlStateValueOff, NSControlStateValueOn,
-    NSFont, NSFontWeightSemibold, NSImage, NSImageView, NSLayoutAttribute, NSLayoutConstraint,
-    NSPopover, NSPopoverBehavior, NSPopoverDelegate, NSScrollView, NSStackView,
-    NSStackViewDistribution, NSStatusBarButton, NSTextField, NSTextView,
-    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
+    NSFont, NSFontWeightSemibold, NSImage, NSImageScaling, NSImageView, NSLayoutAttribute,
+    NSLayoutConstraint, NSPasteboard, NSPasteboardTypeString, NSPopover, NSPopoverBehavior,
+    NSPopoverDelegate, NSScrollView, NSStackView, NSStackViewDistribution, NSStatusBarButton,
+    NSTextField, NSTextView, NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSArray, NSEdgeInsets, NSObject, NSObjectProtocol, NSPoint,
@@ -394,6 +394,16 @@ pub struct PopoverControllerIvars {
     /// appear on both pending and Allow-resolved cards (so the
     /// per-section `card_ids` mapping isn't enough).
     picker_ids: Mutex<Vec<String>>,
+    /// Plain-text (no ANSI) version of each card's raw body,
+    /// indexed by `disclosure_idx`. Populated in lockstep with
+    /// `body_scrolls` during `build_card` so the per-card copy
+    /// button can write the exact same bytes to the pasteboard
+    /// that the user sees rendered in "Show raw". Kept separate
+    /// from the attributed string inside `body_scrolls` because
+    /// `NSTextView` selection + Cmd-C doesn't reliably escape the
+    /// popover's transient first-responder state, which was the
+    /// root cause of the "can't copy the raw contents" bug.
+    raw_texts: Mutex<Vec<String>>,
     /// "Start at login" checkbox in the popover footer. Refreshed
     /// from `[SMAppService.mainApp status]` on every
     /// `popoverWillShow:` so the UI reflects whatever the user may
@@ -461,6 +471,20 @@ define_class!(
         #[unsafe(method(toggleRawDisclosure:))]
         fn toggle_raw_disclosure(&self, sender: Option<&NSButton>) {
             self.toggle_disclosure_for_tag(sender);
+        }
+
+        /// Per-card "Copy raw" selector. Looks up the plain-text
+        /// raw body parked at `raw_texts[sender.tag]` and writes it
+        /// to the general pasteboard via
+        /// `NSPasteboardTypeString`. The button is a small SF Symbol
+        /// glyph next to the "Show raw" disclosure toggle; using a
+        /// dedicated button (rather than relying on the `NSTextView`
+        /// selection + Cmd-C path) sidesteps the popover's flaky
+        /// first-responder propagation, which made the documented
+        /// "select text → Cmd-C" flow feel broken.
+        #[unsafe(method(copyRawClicked:))]
+        fn copy_raw_clicked(&self, sender: Option<&NSButton>) {
+            self.copy_raw_for_tag(sender);
         }
 
         /// "Details" disclosure selector for resolved cards. Same
@@ -672,6 +696,43 @@ impl PopoverController {
         }
     }
 
+    /// Body of `copyRawClicked:`. Grabs the plain-text raw body
+    /// associated with the clicked card and writes it to the
+    /// general `NSPasteboard` as a single string entry, then swaps
+    /// the button's SF Symbol image to a checkmark so the user
+    /// sees a local confirmation that the copy landed. The
+    /// confirmation glyph sticks until the popover closes and
+    /// reopens (at which point `refresh` rebuilds every card from
+    /// scratch, resetting the image to the clipboard glyph) —
+    /// using a timer to restore it here would require shipping a
+    /// `Retained<NSButton>` across a `Send` closure boundary, which
+    /// objc2's main-thread-only retain types rightfully refuse.
+    /// Tag-out-of-range drops silently: the button should not have
+    /// been visible in the first place, but a stale popover
+    /// snapshot can race.
+    fn copy_raw_for_tag(&self, sender: Option<&NSButton>) {
+        let Some(button) = sender else { return };
+        let tag = button.tag();
+        let text = {
+            let g = self.ivars().raw_texts.lock().expect("raw_texts poisoned");
+            g.get(tag as usize).cloned()
+        };
+        let Some(text) = text else {
+            eprintln!("vetterd: copy-raw button tag {tag} out of range");
+            return;
+        };
+        let pb = NSPasteboard::generalPasteboard();
+        pb.clearContents();
+        let ok = pb.setString_forType(&NSString::from_str(&text), unsafe {
+            NSPasteboardTypeString
+        });
+        if !ok {
+            eprintln!("vetterd: NSPasteboard setString:forType: rejected copy-raw payload");
+            return;
+        }
+        set_copy_button_confirming(button);
+    }
+
     /// Resolved-card sibling of `toggle_disclosure_for_tag`. Toggles
     /// the structured-effects container parked at
     /// `details_views[sender.tag]`. Pending-card slots are `None`
@@ -763,6 +824,11 @@ impl PopoverController {
             .picker_ids
             .lock()
             .expect("picker_ids poisoned")
+            .clear();
+        self.ivars()
+            .raw_texts
+            .lock()
+            .expect("raw_texts poisoned")
             .clear();
 
         if entries.is_empty() && resolved.is_empty() {
@@ -1218,7 +1284,49 @@ impl PopoverController {
         raw_toggle.setButtonType(NSButtonType::PushOnPushOff);
         raw_toggle.setFont(Some(&NSFont::systemFontOfSize(11.0)));
         raw_toggle.setTag(disclosure_idx as isize);
-        card.addArrangedSubview(&raw_toggle);
+
+        // Per-card copy-to-clipboard button. Lives in a horizontal
+        // stack alongside the "Show raw" toggle so the visual
+        // cluster reads as "raw-body controls". The button is
+        // always present (even when the body is collapsed) because
+        // the common path is "glance at the URL row, copy the
+        // command to paste into a shell" — forcing the user to
+        // disclose the body first just adds a click.
+        //
+        // NSPopover's first-responder handling does not reliably
+        // propagate Cmd-C to the `NSTextView` inside `body_scroll`
+        // (the document view is selectable but the keyboard focus
+        // chain drops the key event), so the dedicated button is
+        // the supported copy path — not just a convenience.
+        let copy_btn = build_copy_button(mtm);
+        let target_ptr: *const AnyObject = (self as *const Self).cast::<AnyObject>();
+        unsafe {
+            copy_btn.setTarget(Some(&*target_ptr));
+            copy_btn.setAction(Some(sel!(copyRawClicked:)));
+        }
+        copy_btn.setTag(disclosure_idx as isize);
+
+        let raw_row = NSStackView::new(mtm);
+        raw_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+        raw_row.setSpacing(6.0);
+        raw_row.setDistribution(NSStackViewDistribution::Fill);
+        raw_row.addArrangedSubview(&raw_toggle);
+        raw_row.addArrangedSubview(&copy_btn);
+        // Flexible spacer so both controls cluster left; without it
+        // the copy button drifts towards the middle of the card on
+        // the wider popover layouts.
+        let raw_row_spacer = NSView::new(mtm);
+        raw_row.addArrangedSubview(&raw_row_spacer);
+        card.addArrangedSubview(&raw_row);
+
+        // Register the plain (no-ANSI) raw text under the same
+        // global `disclosure_idx` slot the copy button's `tag`
+        // encodes, so `copy_raw_for_tag` can find it.
+        self.ivars()
+            .raw_texts
+            .lock()
+            .expect("raw_texts poisoned")
+            .push(popover_attr::strip_ansi(rendered));
 
         // Hide the body by default. Register it in the
         // controller's per-card registry so the toggle action
@@ -1509,6 +1617,79 @@ fn build_outcome_icon(
     // NSImageView → NSControl → NSView. Two `into_super` hops to
     // land on the storage type used by the rest of the header row.
     Some(view.into_super().into_super())
+}
+
+/// Build the per-card "Copy raw" button — a borderless SF Symbol
+/// glyph next to the "Show raw" disclosure toggle. Tapping it
+/// copies the plain-text raw body to the general pasteboard
+/// (see [`PopoverController::copy_raw_for_tag`]). Wiring the
+/// target/selector is the caller's job because the selector is
+/// defined on `PopoverController` and we don't want to plumb a
+/// `Retained<PopoverController>` through every card builder.
+///
+/// Falls back to a text-glyph title (`"⧉"`) when the SF Symbol
+/// lookup fails — on macOS 11 `doc.on.clipboard` is present, but a
+/// future system or a stripped SF Symbols install could still
+/// return `None`; the accessibility path should keep working.
+fn build_copy_button(mtm: MainThreadMarker) -> Retained<NSButton> {
+    let btn = NSButton::new(mtm);
+    btn.setBordered(false);
+    btn.setBezelStyle(BEZEL_ROUNDED);
+    btn.setButtonType(NSButtonType::MomentaryChange);
+    btn.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
+    btn.setToolTip(Some(ns_string!("Copy raw command to clipboard")));
+    set_copy_button_idle(&btn);
+    // Constrain the button to a compact square so it sits flush
+    // with the 11pt "Show raw" text and doesn't hijack the
+    // horizontal stack's intrinsic-content allocation.
+    let side = 18.0;
+    btn.setFrameSize(NSSize::new(side, side));
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        btn.widthAnchor().constraintEqualToConstant(side),
+        btn.heightAnchor().constraintEqualToConstant(side),
+    ]));
+    btn
+}
+
+/// Stamp the idle (ready-to-copy) SF Symbol onto `btn`. Called from
+/// `build_copy_button` at card build time; `refresh` rebuilds every
+/// card on popover open so this naturally doubles as the reset
+/// after a prior "Copied" confirmation.
+fn set_copy_button_idle(btn: &NSButton) {
+    if let Some(img) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        ns_string!("doc.on.clipboard"),
+        Some(ns_string!("Copy raw command to clipboard")),
+    ) {
+        btn.setImage(Some(&img));
+        btn.setImageScaling(NSImageScaling::ScaleProportionallyDown);
+        btn.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
+        btn.setTitle(ns_string!(""));
+    } else {
+        // SF Symbol missing — fall back to a bracketed-copy glyph.
+        // The layout width constraint keeps the button the same
+        // size regardless of which render path we hit.
+        btn.setTitle(ns_string!("⧉"));
+    }
+}
+
+/// Flip `btn` to a "just copied" confirmation: green checkmark
+/// glyph + matching tint. No automatic reversion — the next
+/// `refresh` (triggered by popoverWillShow or any queue change)
+/// rebuilds the card and hence the button, so the idle glyph
+/// comes back naturally. See [`PopoverController::copy_raw_for_tag`]
+/// for why we don't dispatch a restore timer.
+fn set_copy_button_confirming(btn: &NSButton) {
+    if let Some(img) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        ns_string!("checkmark"),
+        Some(ns_string!("Copied")),
+    ) {
+        btn.setImage(Some(&img));
+        btn.setContentTintColor(Some(&NSColor::systemGreenColor()));
+        btn.setTitle(ns_string!(""));
+    } else {
+        btn.setTitle(ns_string!("✓"));
+    }
+    btn.setToolTip(Some(ns_string!("Copied to clipboard")));
 }
 
 /// Find the first `HttpRequest` effect in `summary.parsed`, paired

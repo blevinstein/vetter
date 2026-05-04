@@ -180,6 +180,21 @@ pub fn parse_ansi_to_attributed(text: &str) -> Retained<NSMutableAttributedStrin
     spans_to_attributed(&parse_ansi_spans(text))
 }
 
+/// Strip SGR escapes from `text`, returning just the printable
+/// characters. Shares the scanner with [`parse_ansi_spans`] so any
+/// bytes that survive there (malformed / unterminated sequences)
+/// survive here too — "what the user sees in the popover" should
+/// round-trip cleanly to what lands on the clipboard when they hit
+/// the copy button. Used by the copy-to-clipboard affordance next
+/// to the "Show raw" disclosure.
+pub fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for span in parse_ansi_spans(text) {
+        out.push_str(&span.text);
+    }
+    out
+}
+
 fn apply_attributes(acc: &NSMutableAttributedString, range: NSRange, style: SpanStyle) {
     // Always stamp a foreground colour, even on un-styled spans —
     // see `ns_color_for` for the rationale (TL;DR:

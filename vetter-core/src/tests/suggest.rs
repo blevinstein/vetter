@@ -14,13 +14,38 @@ use crate::known_hosts::{KnownHostEntry, KnownHostsStore};
 use crate::matcher::decide::{decide, Decision};
 use crate::matcher::loader::AllowlistStore;
 use crate::matcher::rule::Rule;
-use crate::{Body, DisplayHints, Effect, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy};
+use crate::{
+    Body, DisplayHints, Effect, Header, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy,
+};
 
 fn http_request(method: HttpMethod, url: &str) -> HttpRequest {
     HttpRequest {
         method,
         url: Url::parse(url).expect("test URL parses"),
         headers: vec![],
+        body: Body::None,
+        auth: None,
+        tls: TlsPolicy::Strict,
+        follow_redirects: false,
+        proxy: None,
+    }
+}
+
+fn http_request_with_headers(
+    method: HttpMethod,
+    url: &str,
+    headers: Vec<(&str, &str)>,
+) -> HttpRequest {
+    HttpRequest {
+        method,
+        url: Url::parse(url).expect("test URL parses"),
+        headers: headers
+            .into_iter()
+            .map(|(name, value)| Header {
+                name: name.to_string(),
+                value: value.to_string(),
+            })
+            .collect(),
         body: Body::None,
         auth: None,
         tls: TlsPolicy::Strict,
@@ -183,6 +208,70 @@ fn allowlist_id_is_stable_for_same_input() {
     // `matcher::derive_auto_id`.
     for s in &a {
         assert!(s.rule.id.starts_with("auto-"), "{}", s.rule.id);
+    }
+}
+
+#[test]
+fn allowlist_captures_request_header_names() {
+    // Rule must carry the observed header names (dedup case-
+    // insensitive) so default-deny header semantics don't prevent
+    // the rule from matching the next identical request. This is
+    // the regression test for the "Allowlist… picker doesn't
+    // auto-approve subsequent identical curls" bug.
+    let parsed = parsed_with_http(http_request_with_headers(
+        HttpMethod::Post,
+        "https://api.datadoghq.com/api/v2/logs/events/search",
+        vec![
+            ("DD-API-KEY", "redacted"),
+            ("DD-APPLICATION-KEY", "redacted"),
+            ("Content-Type", "application/json"),
+            // Duplicate with different case should fold out.
+            ("content-type", "application/json"),
+        ],
+    ));
+    let suggestions = allowlist_suggestions(&parsed);
+    for s in &suggestions {
+        let allow = s
+            .rule
+            .when
+            .http
+            .as_ref()
+            .unwrap()
+            .headers_allow
+            .clone()
+            .unwrap_or_default();
+        assert_eq!(
+            allow,
+            vec![
+                "DD-API-KEY".to_string(),
+                "DD-APPLICATION-KEY".to_string(),
+                "Content-Type".to_string(),
+            ],
+            "tier {:?} should capture the observed header names once each",
+            s.tier
+        );
+    }
+
+    // The rule generated from the request must actually cover the
+    // request — belt-and-braces against a future refactor that
+    // forgets to include the captured names.
+    for s in &suggestions {
+        assert_rule_covers(&s.rule, &parsed);
+    }
+}
+
+#[test]
+fn allowlist_leaves_headers_allow_unset_when_request_has_none() {
+    let parsed = parsed_with_http(http_request(
+        HttpMethod::Get,
+        "https://api.github.com/repos/foo/bar",
+    ));
+    for s in allowlist_suggestions(&parsed) {
+        assert!(
+            s.rule.when.http.as_ref().unwrap().headers_allow.is_none(),
+            "tier {:?} should leave headers_allow unset for a bare request",
+            s.tier
+        );
     }
 }
 

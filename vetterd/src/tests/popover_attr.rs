@@ -168,6 +168,30 @@ fn parses_insecure_curl_snapshot_excerpt() {
     assert_eq!(cyan_url, 1, "{spans:#?}");
 }
 
+#[test]
+fn strip_ansi_removes_sgr_sequences() {
+    // Mirror of `render_detail`: bold command name, plain argv.
+    let input = "\x1b[1mcurl\x1b[0m https://example.com/foo";
+    assert_eq!(strip_ansi(input), "curl https://example.com/foo");
+}
+
+#[test]
+fn strip_ansi_preserves_unterminated_escape() {
+    // An unterminated CSI sequence is dropped by the scanner (see
+    // `parse_ansi_spans`). The preceding text survives; anything
+    // after the orphan escape is consumed as sequence bytes.
+    let input = "before\x1b[";
+    assert_eq!(strip_ansi(input), "before");
+}
+
+#[test]
+fn strip_ansi_passes_through_plain_text() {
+    assert_eq!(
+        strip_ansi("curl -X POST https://x"),
+        "curl -X POST https://x"
+    );
+}
+
 // -- Foundation smoke tests --------------------------------------
 
 /// `spans_to_attributed` should produce an `NSAttributedString`

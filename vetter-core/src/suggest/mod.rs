@@ -141,6 +141,19 @@ pub fn allowlist_suggestions(parsed: &ParsedCommand) -> Vec<RuleSuggestion> {
     };
     let path = normalised.path().to_string();
     let method = req.method.clone();
+    // Capture the header names observed on the request so the
+    // emitted rule actually matches it. The matcher's default-deny
+    // header semantics (see `matches_headers` in `matcher::decide`)
+    // reject any request with a non-empty header list when a rule
+    // omits `headers_allow`, so without this step an auto-rule
+    // generated from a request carrying e.g. `Authorization` +
+    // `Content-Type` would never fire on the next identical
+    // invocation — the bug that showed up as "Allowlist… picker did
+    // nothing" for Datadog-style requests. We record only the names
+    // (values are sensitive and case-insensitive matching on the
+    // name is enough to keep the rule shape intact across key
+    // rotation).
+    let headers_allow = observed_header_names(&req.headers);
 
     let mut out = Vec::with_capacity(3);
 
@@ -151,6 +164,7 @@ pub fn allowlist_suggestions(parsed: &ParsedCommand) -> Vec<RuleSuggestion> {
         &scheme,
         &host,
         Some(path.clone()),
+        headers_allow.clone(),
     ));
 
     // Tier 2: path-glob with last segment replaced by `*`.
@@ -175,6 +189,7 @@ pub fn allowlist_suggestions(parsed: &ParsedCommand) -> Vec<RuleSuggestion> {
                 &scheme,
                 &host,
                 Some(glob_path),
+                headers_allow.clone(),
             ));
         }
     }
@@ -186,9 +201,32 @@ pub fn allowlist_suggestions(parsed: &ParsedCommand) -> Vec<RuleSuggestion> {
         &scheme,
         &host,
         Some("/**".to_string()),
+        headers_allow,
     ));
 
     out
+}
+
+/// De-duplicate the request's header names (case-insensitive) for
+/// inclusion in a suggested rule's `headers_allow`. Preserves first-
+/// seen order so the YAML preview reads in the same order the agent
+/// emitted them.
+///
+/// Returns `None` for an empty header list — the generated rule
+/// will still match (the matcher's `None` arm requires an empty
+/// header list, and an empty request has one), and `None` is less
+/// noisy in the YAML preview than `headers_allow: []`.
+fn observed_header_names(headers: &[crate::Header]) -> Option<Vec<String>> {
+    if headers.is_empty() {
+        return None;
+    }
+    let mut names: Vec<String> = Vec::with_capacity(headers.len());
+    for h in headers {
+        if !names.iter().any(|n| n.eq_ignore_ascii_case(&h.name)) {
+            names.push(h.name.clone());
+        }
+    }
+    Some(names)
 }
 
 /// Build known-host suggestions for `parsed`.
@@ -311,6 +349,7 @@ fn make_rule_suggestion(
     scheme: &str,
     host: &str,
     path: Option<String>,
+    headers_allow: Option<Vec<String>>,
 ) -> RuleSuggestion {
     let url_clause = UrlClause {
         scheme: Some(scheme.to_string()),
@@ -321,7 +360,7 @@ fn make_rule_suggestion(
     let http = HttpClause {
         method: Some(vec![method.clone()]),
         url: Some(url_clause.clone()),
-        headers_allow: None,
+        headers_allow,
         no_body: None,
         query: None,
     };

@@ -288,9 +288,11 @@ suggestions"), §11. Picker-sheet UI design lives in
       `Effect::FileRead` — **deferred to Backlog**. Engine returns
       empty for now; popover hides the button.
 
-## Phase 5.1 - Visual improvements
+## Phase 5.1 - Other improvements
 
 - [ ] add logo to the project, and use it for the menu bar icon
+- [ ] when URLs are long, they are overflowing the row width and causing problems in the popover. we need to fix so that they wrap or something
+- [ ] we need to make sure that when the "body" of a request is provided from a file, we handle correctly. and presumably the same if curl is writing directly to a file? not sure if that is possible without using a pipe to send it to a file?
 
 ## Phase 6 — Ubuntu support  `[ ] not started`  (v0.2 milestone)
 

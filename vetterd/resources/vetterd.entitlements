@@ -1,18 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Intentionally empty: hardened runtime with no exceptions.
+     Vetter.app runs unsandboxed; UNUserNotificationCenter,
+     NSStatusBar / NSPopover, AF_UNIX socket bind/connect, and
+     posix_spawn(curl) all work under the default hardened-runtime
+     restrictions, so we don't need to opt back into JIT, the
+     debugger, library-validation disable, dyld-environment access,
+     or any of the network-sandbox exceptions. -->
 <plist version="1.0">
 <dict>
-    <!-- Intentionally empty: hardened runtime with no exceptions.
-
-         Vetter.app runs unsandboxed; UNUserNotificationCenter,
-         NSStatusBar / NSPopover, AF_UNIX socket bind/connect, and
-         posix_spawn(curl) all work under the default hardened-runtime
-         restrictions, so we don't need to opt back into JIT, the
-         debugger, library-validation disable, dyld-environment access,
-         or any of the network-sandbox exceptions.
-
-         Keeping this file present (rather than omitting --entitlements
-         on the codesign call) makes the "hardened runtime, no
-         exceptions" intent explicit and easy to grep for. -->
 </dict>
 </plist>

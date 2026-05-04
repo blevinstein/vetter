@@ -617,9 +617,9 @@ A security tool published on Homebrew needs a license, a
 vulnerability-reporting policy, and a discoverable changelog. Without
 these we can't reasonably ask anyone to trust the binary.
 
-- [ ] Add `LICENSE-MIT` file in repo root.
+- [x] Add `LICENSE` file in repo root.
       `Cargo.toml` already declares `license = "MIT"`
-      but the canonical license text is missing from the repo.
+      and the canonical license text is now in `LICENSE`.
 - [ ] Add `SECURITY.md` with vulnerability reporting contact +
       disclosure policy (90-day default, GitHub Security Advisory
       preferred + email fallback). Link from README.

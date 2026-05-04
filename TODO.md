@@ -288,6 +288,10 @@ suggestions"), §11. Picker-sheet UI design lives in
       `Effect::FileRead` — **deferred to Backlog**. Engine returns
       empty for now; popover hides the button.
 
+## Phase 5.1 - Visual improvements
+
+- [ ] add logo to the project, and use it for the menu bar icon
+
 ## Phase 6 — Ubuntu support  `[ ] not started`  (v0.2 milestone)
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §7 ("Linux"), §11.

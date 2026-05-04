@@ -38,20 +38,62 @@ const URL_FONT_SIZE: f64 = 13.0;
 /// stacks and a non-default warning would be noisy.
 const QUIET_PORTS: &[u16] = &[80, 443, 8080, 8443];
 
+/// Upper bound on the width of the path/query wrapping label. The
+/// label sits inside a card that is ultimately width-pinned to
+/// `POPOVER_WIDTH - CARDS_HORIZONTAL_MARGIN*2 - CARD_INSET*2` in
+/// `popover.rs`, minus the bold `curl` command-label token the
+/// header row leads with. Rather than thread those constants across
+/// modules we budget a conservative slack here: the label
+/// `preferredMaxLayoutWidth` is used only to tell AppKit *when* to
+/// start wrapping (if the real available width is narrower the
+/// label still wraps to fit, via the card's own width pin). Tuning
+/// target: a realistic Datadog-style query (3+ `filter[*]`
+/// segments) that blew past the row before this refactor now wraps
+/// to two lines and keeps the card inside the popover width.
+const URL_PATH_MAX_WIDTH: f64 = 420.0;
+
 /// Build the URL row for a `HttpRequest`.
 ///
 /// `host_known` answers "did the daemon's `KnownHostsStore` (or the
 /// loopback rule) recognise `req.url.host_str()`?" — used to pick
 /// between green and orange pill tints.
+///
+/// Returns a **vertical** stack of 1–2 rows:
+///
+/// - **Top row** (always): method badge + scheme + host pill +
+///   optional non-standard port. These tokens are always short, so
+///   they keep a consistent single-line layout regardless of URL
+///   complexity.
+/// - **Bottom row** (only when the URL has a non-root path or a
+///   query string): a wrapping monospaced label carrying the path +
+///   `?query` string. `wrappingLabelWithString` combined with a
+///   `preferredMaxLayoutWidth` constraint lets long URLs wrap to
+///   two or three lines instead of blowing out the card width —
+///   which previously caused the dreaded "the URL ran off the
+///   right edge of the popover" bug on Datadog-style
+///   `--data-urlencode` curls.
 pub fn build_url_row(
     req: &HttpRequest,
     host_known: bool,
     mtm: MainThreadMarker,
 ) -> Retained<NSView> {
-    let row = NSStackView::new(mtm);
-    row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    row.setSpacing(6.0);
-    row.setDistribution(NSStackViewDistribution::Fill);
+    // Outer container: vertical so the optional path/query line
+    // drops below the method/scheme/host row rather than competing
+    // with it for horizontal real estate. The perpendicular
+    // alignment is `Leading` so the path line sits flush under the
+    // method token above — scanning the left edge traces the URL
+    // top-to-bottom.
+    let outer = NSStackView::new(mtm);
+    outer.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+    outer.setSpacing(2.0);
+    outer.setAlignment(objc2_app_kit::NSLayoutAttribute::Leading);
+    outer.setDistribution(NSStackViewDistribution::Fill);
+
+    // Top row — short, single-line tokens.
+    let top = NSStackView::new(mtm);
+    top.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    top.setSpacing(6.0);
+    top.setDistribution(NSStackViewDistribution::Fill);
 
     // 1. Method badge — bold, colored per `HttpMethodColour`.
     let method_str = req.method.as_str();
@@ -63,7 +105,7 @@ pub fn build_url_row(
         semibold,
     )));
     method_label.setTextColor(Some(&method_color(&req.method)));
-    row.addArrangedSubview(&method_label);
+    top.addArrangedSubview(&method_label);
 
     // 2. Scheme — `https://` etc. Dim so the eye lands on the host.
     let scheme = format!("{}://", req.url.scheme());
@@ -73,7 +115,7 @@ pub fn build_url_row(
         0.0,
     )));
     scheme_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
-    row.addArrangedSubview(&scheme_label);
+    top.addArrangedSubview(&scheme_label);
 
     // 3. Host pill — trust-coloured. Loopback gets a third class
     //    ("trusted local"); known/unknown otherwise. We carry the
@@ -81,7 +123,7 @@ pub fn build_url_row(
     let host = req.url.host_str().unwrap_or("");
     let trust = host_trust(host, host_known);
     let host_pill = popover_pills::build_pill(host, &trust.fg(), &trust.bg(), trust.tooltip(), mtm);
-    row.addArrangedSubview(&host_pill);
+    top.addArrangedSubview(&host_pill);
 
     // 4. `:port` if present and non-quiet.
     if let Some(port) = req.url.port() {
@@ -95,58 +137,80 @@ pub fn build_url_row(
             // Non-standard ports are a soft "look here" cue; orange
             // mirrors the `non-standard-port` Warn pill.
             port_label.setTextColor(Some(&NSColor::systemOrangeColor()));
-            row.addArrangedSubview(&port_label);
+            top.addArrangedSubview(&port_label);
         }
     }
 
-    // 5. Path. Default colour, monospaced regular. Empty paths
-    //    (`https://example.test`) skip this slot.
+    // Trailing flexible spacer so top-row tokens bunch left rather
+    // than stretching to fill the popover width.
+    let top_spacer = NSView::new(mtm);
+    top.addArrangedSubview(&top_spacer);
+    outer.addArrangedSubview(&top);
+
+    // 5 + 6. Path + query on a second wrapping row. We fold both
+    //        into a single `wrappingLabelWithString` so the wrap
+    //        boundary can fall inside a long path *or* inside a
+    //        long query without needing two separate sizing passes.
+    //        The row is omitted entirely when the URL has no
+    //        meaningful path/query (`https://host` or
+    //        `https://host/` with no `?…`) — leaving just the
+    //        top-row tokens, which is what the single-line
+    //        variant showed before this refactor.
     let path = req.url.path();
-    if !path.is_empty() && path != "/" {
-        let path_label = NSTextField::labelWithString(&NSString::from_str(path), mtm);
-        path_label.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
-            URL_FONT_SIZE,
-            0.0,
-        )));
-        row.addArrangedSubview(&path_label);
+    let query = req.url.query();
+    let has_path = !path.is_empty() && path != "/";
+    let has_query = query.is_some();
+
+    // Build the path+query string. The root case (`path == "/"`)
+    // is kept visible as a dim `/` only when it's the full URL
+    // target (no query) — otherwise the query label leads with
+    // `?` and the `/` would be redundant.
+    let path_query = if has_path && has_query {
+        format!("{path}?{}", query.unwrap())
+    } else if has_path {
+        path.to_string()
+    } else if has_query {
+        format!("/?{}", query.unwrap())
     } else if path == "/" {
-        // Show the bare `/` so the row reads as a complete URL
-        // rather than appearing truncated mid-token.
-        let slash = NSTextField::labelWithString(&NSString::from_str("/"), mtm);
-        slash.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
+        "/".to_string()
+    } else {
+        String::new()
+    };
+
+    if !path_query.is_empty() {
+        let tail = NSTextField::wrappingLabelWithString(&NSString::from_str(&path_query), mtm);
+        tail.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
             URL_FONT_SIZE,
             0.0,
         )));
-        slash.setTextColor(Some(&NSColor::secondaryLabelColor()));
-        row.addArrangedSubview(&slash);
+        // Query-only / bare-slash cases render dim so the token
+        // visually tracks its meaning (`/?q=1` is a search, not a
+        // navigational path). A concrete path renders in the
+        // default foreground.
+        if !has_path {
+            tail.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        }
+        // Cap the preferred width so AppKit's layout engine knows
+        // where to wrap. The card itself is further constrained
+        // downstream (`add_full_width_arranged` in popover.rs), so
+        // this bound is just a "start wrapping no later than
+        // here" hint — real overflow beyond the card width is
+        // prevented by the card pin.
+        tail.setPreferredMaxLayoutWidth(URL_PATH_MAX_WIDTH);
+        outer.addArrangedSubview(&tail);
     }
 
-    // 6. Query summary. Per-param highlighting is future work; for
-    //    now we render the raw `?key=value` string in dim
-    //    monospaced. The `build_query_summary` helper is the
-    //    extension point.
-    if let Some(query) = req.url.query() {
-        let q = build_query_summary(query);
-        let q_label = NSTextField::labelWithString(&NSString::from_str(&q), mtm);
-        q_label.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
-            URL_FONT_SIZE,
-            0.0,
-        )));
-        q_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
-        row.addArrangedSubview(&q_label);
-    }
-
-    // Trailing flexible spacer so tokens bunch left rather than
-    // stretching to fill the popover width.
-    let spacer = NSView::new(mtm);
-    row.addArrangedSubview(&spacer);
-
-    row.into_super()
+    outer.into_super()
 }
 
 /// Build a fallback URL row for non-HttpRequest cards (or for
 /// callers that didn't ship a `parsed` body). Keeps the same slot
 /// in the card layout populated so the visual cadence is constant.
+///
+/// Uses `wrappingLabelWithString` + `preferredMaxLayoutWidth` so a
+/// long target (e.g. a `ssh user@really-long-hostname:path`) wraps
+/// instead of blowing out the card width — symmetric with the
+/// wrapping path/query tail in `build_url_row`.
 pub fn build_fallback_row(
     command: &str,
     primary_verb: &str,
@@ -158,22 +222,14 @@ pub fn build_fallback_row(
     } else {
         format!("{command}  {primary_verb} {primary_target}")
     };
-    let label = NSTextField::labelWithString(&NSString::from_str(&text), mtm);
+    let label = NSTextField::wrappingLabelWithString(&NSString::from_str(&text), mtm);
     let semibold = unsafe { NSFontWeightSemibold };
     label.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
         URL_FONT_SIZE,
         semibold,
     )));
+    label.setPreferredMaxLayoutWidth(URL_PATH_MAX_WIDTH);
     label.into_super().into_super()
-}
-
-/// Render the query-string portion of a URL ready for display.
-///
-/// v1 just prefixes a `?`. The function is kept as its own public
-/// hook so future per-param coloring (`api_key=...` red, ordinary
-/// keys dim) can slot in without restructuring the URL row.
-pub fn build_query_summary(query: &str) -> String {
-    format!("?{query}")
 }
 
 /// Pick a `HttpMethodColour` analogue for the AppKit row. The CLI

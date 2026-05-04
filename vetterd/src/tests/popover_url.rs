@@ -15,12 +15,6 @@
 use super::*;
 
 #[test]
-fn build_query_summary_prefixes_question_mark() {
-    assert_eq!(build_query_summary("a=1&b=2"), "?a=1&b=2");
-    assert_eq!(build_query_summary(""), "?");
-}
-
-#[test]
 fn host_trust_loopback_wins_over_known_flag() {
     // The loopback rule must fire even if the daemon's
     // `host_known` hint says "false" — a stale store should never
@@ -76,5 +70,51 @@ fn build_fallback_row_smoke_runs_without_panicking() {
         return;
     };
     let view = build_fallback_row("ssh", "ssh", "user@host", mtm);
+    let _ = &*view;
+}
+
+#[test]
+fn build_url_row_smoke_handles_long_urls() {
+    // Long path + query (Datadog-style `--data-urlencode` curl) must
+    // build without panicking; the wrapping-label path exists to
+    // keep this case from overflowing the card width.
+    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
+        return;
+    };
+    let long_url = "https://api.datadoghq.com/api/v2/spans/events\
+        ?filter[query]=service:corelab-case-mgmt-portal env:prod\
+        &filter[from]=now-1h&filter[to]=now&page[limit]=5";
+    let req = vetter_core::HttpRequest {
+        method: vetter_core::HttpMethod::Get,
+        url: url::Url::parse(long_url).unwrap(),
+        headers: vec![],
+        body: vetter_core::Body::None,
+        auth: None,
+        tls: vetter_core::TlsPolicy::Strict,
+        follow_redirects: false,
+        proxy: None,
+    };
+    let view = build_url_row(&req, false, mtm);
+    let _ = &*view;
+}
+
+#[test]
+fn build_url_row_smoke_handles_bare_host() {
+    // `https://example.test` (empty path, no query) should hit the
+    // single-row branch — the second (wrapping) row is skipped.
+    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
+        return;
+    };
+    let req = vetter_core::HttpRequest {
+        method: vetter_core::HttpMethod::Get,
+        url: url::Url::parse("https://example.test").unwrap(),
+        headers: vec![],
+        body: vetter_core::Body::None,
+        auth: None,
+        tls: vetter_core::TlsPolicy::Strict,
+        follow_redirects: false,
+        proxy: None,
+    };
+    let view = build_url_row(&req, false, mtm);
     let _ = &*view;
 }

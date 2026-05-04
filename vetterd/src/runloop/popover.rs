@@ -984,6 +984,13 @@ impl PopoverController {
         header_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
         header_row.setSpacing(8.0);
         header_row.setDistribution(NSStackViewDistribution::Fill);
+        // Align children to the top of the header row so the
+        // command label stays flush with the *first* line of the
+        // URL view, even when the URL's path/query wraps onto a
+        // second row inside `popover_url::build_url_row`. The
+        // default `CenterY` alignment used to float "curl" halfway
+        // down a tall url_view, which read as a layout bug.
+        header_row.setAlignment(NSLayoutAttribute::Top);
         // Resolved cards lead with a coloured status glyph (green
         // check / red X) so the user can scan the left edge of the
         // Recent stack and clock every past outcome at a glance —

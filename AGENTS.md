@@ -50,6 +50,11 @@ model, and design rationale — read it before making non-trivial changes.
 | Understand the parser plugin contract | [plans/Overview.md §8](plans/Overview.md) |
 | Understand risk-signal heuristics | [plans/Overview.md §9](plans/Overview.md) |
 | Understand allowlist YAML schema, matcher, signals | [plans/RepoMap.md §2–5](plans/RepoMap.md) |
+| Threat model + hardening backlog | [plans/ThreatModel.md](plans/ThreatModel.md) |
+| Build / run / smoke-test the macOS app | [plans/MacOSApp.md](plans/MacOSApp.md) |
+| Sign, notarise, publish to the Homebrew tap | [plans/Release.md](plans/Release.md) |
+| Ubuntu desktop app design and operational target | [plans/UbuntuApp.md](plans/UbuntuApp.md) |
+| Notification UI card catalogue | [plans/ApprovalUI.md](plans/ApprovalUI.md) |
 
 If you're picking up a fresh task: open [TODO.md](TODO.md) first, find
 the in-progress (`[~]`) phase or the next not-started (`[ ]`) phase,
@@ -82,6 +87,69 @@ cargo test  --workspace --all-features
 The `--all-features` runs enable the test-only `noop` parser used by
 integration tests in `vetter-core/tests/`. CI runs both feature
 configurations.
+
+## Running the app locally
+
+### macOS
+
+The daemon **must** run inside the `Vetter.app` bundle: that's where Launch
+Services applies `LSEnvironment`, `UNUserNotificationCenter` recognises the
+code-signed identity, and the menu-bar status item registers correctly.
+Starting the daemon any other way (`cargo run --bin vetterd`, exec'ing
+`target/release/vetterd` directly, or `vet daemon start` without a built
+`Vetter.app`) yields a half-running daemon that hangs every prompt-class
+request — the default `VETTERD_NOTIFIER=mac` notifier refuses to install
+if the executable is not under `Vetter.app/Contents/MacOS/` and exits with
+code 78.
+
+Build and launch:
+
+```sh
+tools/build-app.sh --release
+open target/Vetter.app
+export PATH="$PWD/target/Vetter.app/Contents/MacOS:$PATH"
+vet curl https://prompt-test.example/    # triggers banner + popover
+```
+
+The full walkthrough (first-run permission prompts, autostart, audit log) is
+in [plans/MacOSApp.md](plans/MacOSApp.md). A signed + notarised bundle for
+distribution is built by [`tools/release.sh`](tools/release.sh) — see
+[plans/Release.md](plans/Release.md) for the Apple-side prereqs.
+
+### Ubuntu (Phase 6, planned for v0.2)
+
+Source-build path for Ubuntu development:
+
+```sh
+sudo apt-get install -y libgtk-4-dev libdbus-1-dev pkg-config build-essential
+cargo build --release -p vetterd -p vet
+cargo install cargo-deb && cargo deb -p vetterd
+sudo dpkg -i target/debian/vetter_*.deb
+# log out and back in so systemd --user picks up vetter.service
+vet curl https://prompt-test.example/    # D-Bus banner with Approve/Reject
+```
+
+The daemon **expects** a graphical session: the default `VETTERD_NOTIFIER=linux`
+refuses to install if `$DBUS_SESSION_BUS_ADDRESS` is unset, and exits with
+code 78. For SSH / CI / container use, set `VETTERD_NOTIFIER=noop` (see below).
+
+See [plans/UbuntuApp.md](plans/UbuntuApp.md) for the full operational guide
+and [plans/Release.md](plans/Release.md) §"Linux / Launchpad PPA" for the
+maintainer-side flow.
+
+### Headless / CI / dev workflows
+
+Set `VETTERD_NOTIFIER=noop` to skip the UI entirely. Every prompt-class
+request will then block until it is resolved via the admin socket:
+
+```sh
+vet daemon list              # show pending requests
+vet daemon approve <id>
+vet daemon reject <id>
+```
+
+This is the intended path for headless CI, SSH sessions, and lifecycle
+smoke checks.
 
 ## Conventions
 

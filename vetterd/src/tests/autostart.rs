@@ -118,8 +118,8 @@ mod stub_impl {
         // Even with desired=true, no error and no change should
         // surface (we don't want a Linux daemon to refuse to start
         // because `~/.vet/settings.yaml` says `autostart: true`).
-        assert_eq!(reconcile_with_settings(true).unwrap(), false);
-        assert_eq!(reconcile_with_settings(false).unwrap(), false);
+        assert!(!reconcile_with_settings(true).unwrap());
+        assert!(!reconcile_with_settings(false).unwrap());
     }
 }
 

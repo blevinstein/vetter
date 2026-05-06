@@ -55,6 +55,53 @@ fn open_creates_parent_dirs() {
     assert!(path.exists());
 }
 
+// Hardening §H1 / ThreatModel §T8: a freshly created audit log must
+// land at mode 0600 (because `argv` is logged verbatim, this is the
+// tightest case in the project) and the leaf parent dir we create
+// must land at 0700.
+
+#[test]
+fn open_creates_file_at_mode_0600() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tmpdir("vetterd-audit-mode-");
+    let path = dir.path().join("audit.log");
+    let _log = AuditLog::open(&path).unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "audit log must land 0600, got 0{mode:o}");
+}
+
+#[test]
+fn open_creates_parent_dir_at_mode_0700() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tmpdir("vetterd-audit-parent-");
+    let parent = dir.path().join("vetter-logs");
+    let path = parent.join("audit.log");
+    let _log = AuditLog::open(&path).unwrap();
+    let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o700,
+        "newly created parent dir must land 0700, got 0{mode:o}"
+    );
+}
+
+#[test]
+fn open_does_not_silently_chmod_existing_file() {
+    // Repair of a pre-existing wide-mode file is the user's job; the
+    // doctor surfaces a WARN instead. AuditLog::open must not surprise
+    // the user by tightening files it didn't create on this run.
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tmpdir("vetterd-audit-noclobber-");
+    let path = dir.path().join("audit.log");
+    std::fs::write(&path, "").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let _log = AuditLog::open(&path).unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o644,
+        "open must leave the existing file's mode alone, got 0{mode:o}"
+    );
+}
+
 /// Build a prompt-class `AuditEntry` with the richer fields populated
 /// so tail / warm-up tests exercise the real prompt path.
 fn prompt_entry(id: &str, target: &str, dec: WireDecision) -> AuditEntry {

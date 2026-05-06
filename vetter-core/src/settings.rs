@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::fs_secure::{create_dir_secure, persist_at_mode};
+
 /// User preferences persisted to `~/.vet/settings.yaml`.
 ///
 /// `Default` matches the "no settings file present" state — every
@@ -175,18 +177,20 @@ pub fn store(settings: &Settings) -> Result<(), SettingsError> {
 
 /// Atomically write `settings` to `path`, creating parent dirs as
 /// needed. Mode is set to `0600` on the final file so other UIDs on
-/// the host can't read or rewrite the user's preferences.
+/// the host can't read or rewrite the user's preferences. Parent
+/// dirs we create land at mode `0700`.
 ///
 /// Atomicity is via `tempfile::NamedTempFile::persist`: the YAML is
 /// written to a sibling tempfile in the same directory and then
 /// renamed over `path`. If the process is killed before the rename,
-/// the prior file (if any) is intact.
+/// the prior file (if any) is intact. The mode is applied to the
+/// tempfile *before* the rename via
+/// [`crate::fs_secure::persist_at_mode`] so the destination never
+/// momentarily exists at the umask default (typically `0644`).
 pub fn write_to(path: &Path, settings: &Settings) -> Result<(), SettingsError> {
-    use std::os::unix::fs::PermissionsExt as _;
-
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|source| SettingsError::Io {
+            create_dir_secure(parent, 0o700).map_err(|source| SettingsError::Io {
                 path: parent.to_path_buf(),
                 source,
             })?;
@@ -219,19 +223,9 @@ pub fn write_to(path: &Path, settings: &Settings) -> Result<(), SettingsError> {
             source,
         })?;
     }
-    // Set the tempfile's mode *before* persisting so the rename
-    // produces an already-0600 file rather than briefly exposing it
-    // at the umask default (typically 0644). H1 ship-blocker: no
-    // sensitive vetter file should land mode 0644 on disk.
-    std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600)).map_err(
-        |source| SettingsError::Io {
-            path: path.to_path_buf(),
-            source,
-        },
-    )?;
-    tmp.persist(path).map_err(|e| SettingsError::Io {
+    persist_at_mode(tmp, path, 0o600).map_err(|source| SettingsError::Io {
         path: path.to_path_buf(),
-        source: e.error,
+        source,
     })?;
     Ok(())
 }

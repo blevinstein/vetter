@@ -18,7 +18,7 @@
 
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
@@ -26,6 +26,7 @@ use std::process::Command;
 use std::process::ExitCode;
 use std::time::SystemTime;
 
+use vetter_core::known_hosts::{self, user_known_hosts_path, KnownHostsError, KnownHostsFile};
 use vetter_core::matcher::{
     self, discover_project_root, user_allowlist_path, AllowlistFile, LoadError,
 };
@@ -95,8 +96,10 @@ pub fn run(allowlist_override: Option<&Path>) -> ExitCode {
         check_socket_parent_dir(&socket_path),
         check_pidfile(&pidfile_path),
         check_audit_log(audit_path_result.as_ref()),
+        check_vetter_dir(),
     ];
     checks.extend(check_allowlists(cwd.as_deref(), allowlist_override));
+    checks.extend(check_known_hosts(cwd.as_deref()));
     checks.push(check_parsers());
     checks.extend(check_code_signing());
     checks.push(check_autostart());
@@ -437,6 +440,14 @@ fn check_pidfile(pidfile_path: &Path) -> Check {
 /// startup, and it's a useful signal if the parent is missing
 /// (`audit log: ERROR No such file or directory`) rather than
 /// silently materialising a fresh tree on `vet doctor`.
+///
+/// Hardening §H1 / `plans/ThreatModel.md` §T8: after the writability
+/// probe we also overlay file-mode and parent-dir-mode warnings.
+/// `AuditLog::open` creates fresh files at `0600` and the parent dir
+/// at `0700`; this row downgrades to `WARN` when either landed wider
+/// (e.g. a pre-existing log from a previous version, or a user
+/// running `vim` on the file with a permissive umask). The repair
+/// hint goes in the detail string.
 fn check_audit_log(audit_path: Result<&PathBuf, &vetter_core::paths::PathError>) -> Check {
     let path = match audit_path {
         Ok(p) => p,
@@ -444,17 +455,47 @@ fn check_audit_log(audit_path: Result<&PathBuf, &vetter_core::paths::PathError>)
             return Check::new("audit log", Status::Error, format!("{e}"));
         }
     };
-    match OpenOptions::new().create(true).append(true).open(path) {
-        Ok(_) => Check::new(
-            "audit log",
-            Status::Ok,
-            format!("{} (writable)", path.display()),
-        ),
-        Err(e) => Check::new(
+    // Mirror `AuditLog::open`'s `mode(0o600)` so that `vet doctor`
+    // doesn't itself create a wide-mode file on a fresh install (the
+    // probe would otherwise inherit the umask default and a follow-up
+    // doctor run would WARN on the file we just created).
+    if let Err(e) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+    {
+        return Check::new(
             "audit log",
             Status::Error,
             format!("{}: {e}", path.display()),
-        ),
+        );
+    }
+
+    // Writability passed. Overlay perm warnings: file should be
+    // 0600 and parent dir should be 0700 (per `vetterd::audit::
+    // AuditLog::open`'s `OpenOptions::mode` + `create_dir_secure`).
+    let mut warnings: Vec<String> = Vec::new();
+    if let Some(msg) = wide_file_warning(path, 0o600) {
+        warnings.push(msg);
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Some(msg) = wide_dir_warning(parent, 0o700) {
+            warnings.push(msg);
+        }
+    }
+    if warnings.is_empty() {
+        Check::new(
+            "audit log",
+            Status::Ok,
+            format!("{} (writable, mode 0600)", path.display()),
+        )
+    } else {
+        Check::new(
+            "audit log",
+            Status::Warn,
+            format!("{} (writable; {})", path.display(), warnings.join("; ")),
+        )
     }
 }
 
@@ -525,7 +566,17 @@ fn check_override_allowlist(path: &Path) -> Check {
 
 fn summarise_allowlist_file(name: &'static str, path: &Path) -> Check {
     match matcher::load_file(path) {
-        Ok(file) => Check::new(name, Status::Ok, summarise_file(path, &file)),
+        Ok(file) => {
+            let summary = summarise_file(path, &file);
+            // Hardening §H1 / ThreatModel §T8: fresh writes land at
+            // 0600 (see `vetter_core::matcher::loader::write_file`).
+            // Pre-existing files at 0644 leak the user's trust
+            // surface; downgrade to WARN with a chmod hint.
+            match wide_file_warning(path, 0o600) {
+                Some(msg) => Check::new(name, Status::Warn, format!("{summary} ({msg})")),
+                None => Check::new(name, Status::Ok, summary),
+            }
+        }
         Err(e) => Check::new(name, Status::Error, render_load_error(&e)),
     }
 }
@@ -552,6 +603,223 @@ fn render_load_error(e: &LoadError) -> String {
             format!("no rule with id `{id}` in {}", path.display())
         }
     }
+}
+
+/// Mirror of [`check_allowlists`] for the known-hosts files. Always
+/// emit the user + project rows so a user with a project file but no
+/// user file (or vice versa) still gets coverage on whichever side
+/// they own.
+fn check_known_hosts(cwd: Option<&Path>) -> Vec<Check> {
+    vec![check_user_known_hosts(), check_project_known_hosts(cwd)]
+}
+
+fn check_user_known_hosts() -> Check {
+    let path = match user_known_hosts_path() {
+        Some(p) => p,
+        None => {
+            return Check::new(
+                "known-hosts (user)",
+                Status::Warn,
+                "$HOME is not set; cannot resolve user known-hosts path",
+            );
+        }
+    };
+    if !path.exists() {
+        return Check::new(
+            "known-hosts (user)",
+            Status::Skip,
+            format!("absent ({})", path.display()),
+        );
+    }
+    summarise_known_hosts_file("known-hosts (user)", &path)
+}
+
+fn check_project_known_hosts(cwd: Option<&Path>) -> Check {
+    let cwd = match cwd {
+        Some(c) => c,
+        None => {
+            return Check::new(
+                "known-hosts (project)",
+                Status::Warn,
+                "cannot read current directory",
+            );
+        }
+    };
+    let root = match discover_project_root(cwd) {
+        Some(r) => r,
+        None => {
+            return Check::new(
+                "known-hosts (project)",
+                Status::Skip,
+                "no .vet/known-hosts.yaml found walking up from cwd",
+            );
+        }
+    };
+    let path = root.join(".vet").join("known-hosts.yaml");
+    if !path.exists() {
+        return Check::new(
+            "known-hosts (project)",
+            Status::Skip,
+            format!("absent ({})", path.display()),
+        );
+    }
+    summarise_known_hosts_file("known-hosts (project)", &path)
+}
+
+fn summarise_known_hosts_file(name: &'static str, path: &Path) -> Check {
+    match known_hosts::load_file(path) {
+        Ok(file) => {
+            let summary = summarise_known_hosts(path, &file);
+            // Same H1 / T8 reasoning as the allowlist row: WARN when
+            // an existing file is wider than 0600.
+            match wide_file_warning(path, 0o600) {
+                Some(msg) => Check::new(name, Status::Warn, format!("{summary} ({msg})")),
+                None => Check::new(name, Status::Ok, summary),
+            }
+        }
+        Err(e) => Check::new(name, Status::Error, render_known_hosts_error(&e)),
+    }
+}
+
+fn summarise_known_hosts(path: &Path, file: &KnownHostsFile) -> String {
+    format!(
+        "{} ({} host{})",
+        path.display(),
+        file.hosts.len(),
+        plural(file.hosts.len()),
+    )
+}
+
+fn render_known_hosts_error(e: &KnownHostsError) -> String {
+    match e {
+        KnownHostsError::Io { path, source } => format!("read {}: {source}", path.display()),
+        KnownHostsError::Yaml { path, source } => format!("parse {}: {source}", path.display()),
+        KnownHostsError::Serialize { path, source } => {
+            format!("serialise {}: {source}", path.display())
+        }
+        KnownHostsError::DuplicatePattern { pattern, path } => {
+            format!(
+                "duplicate known-host pattern `{pattern}` in {}",
+                path.display()
+            )
+        }
+    }
+}
+
+/// Validate `~/.vet/`: the shared parent of `allowlist.yaml`,
+/// `known-hosts.yaml`, and `settings.yaml`. Mode `0700` is what
+/// every vetter writer establishes via
+/// [`vetter_core::fs_secure::create_dir_secure`]. ERROR on a
+/// foreign-owned dir; WARN when a same-uid dir is wider than `0700`;
+/// INFO when it doesn't exist yet (a fresh install before any
+/// `vet allow add` / popover write).
+fn check_vetter_dir() -> Check {
+    let label = "vetter dir";
+    let home = match std::env::var_os("HOME") {
+        Some(h) => h,
+        None => {
+            return Check::new(label, Status::Warn, "$HOME is not set");
+        }
+    };
+    let path = PathBuf::from(home).join(".vet");
+    let meta = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Check::new(
+                label,
+                Status::Info,
+                format!(
+                    "absent ({}); will be created with mode 0700 on next write",
+                    path.display()
+                ),
+            );
+        }
+        Err(e) => {
+            return Check::new(
+                label,
+                Status::Error,
+                format!("stat {}: {e}", path.display()),
+            );
+        }
+    };
+    let mode = meta.permissions().mode() & 0o777;
+    let owner = meta.uid();
+    let self_uid = current_euid();
+    let owner_label = if owner == self_uid {
+        "self".to_string()
+    } else {
+        format!("uid={owner}")
+    };
+    let detail = format!("{} (mode 0{mode:o}, owner {owner_label})", path.display());
+    if owner != self_uid {
+        return Check::new(
+            label,
+            Status::Error,
+            format!("{detail} (expected owner self)"),
+        );
+    }
+    if mode > 0o700 {
+        return Check::new(
+            label,
+            Status::Warn,
+            format!(
+                "{detail} (expected mode 0700; chmod 0700 {})",
+                path.display()
+            ),
+        );
+    }
+    Check::new(label, Status::Ok, detail)
+}
+
+/// If `path` exists and its on-disk mode is wider than `expected`,
+/// or it is owned by another uid, return a single-line warning
+/// suitable for overlaying onto an existing row's detail. Returns
+/// `None` when the file is absent (caller already handled that) or
+/// the permissions are tight enough.
+///
+/// We compare with `>` rather than `!=` so a *tighter* mode (e.g.
+/// `0400` on the audit log) is treated as fine, not a regression.
+fn wide_file_warning(path: &Path, expected: u32) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mode = meta.permissions().mode() & 0o777;
+    let owner = meta.uid();
+    let self_uid = current_euid();
+    if owner != self_uid {
+        return Some(format!("owner uid={owner}, expected self ({self_uid})"));
+    }
+    if mode > expected {
+        return Some(format!(
+            "mode 0{mode:o}, expected 0{expected:o}; chmod 0{expected:o} {}",
+            path.display()
+        ));
+    }
+    None
+}
+
+/// Same shape as [`wide_file_warning`] but for a directory's mode.
+/// Used by the audit log row to flag a wide parent dir; the standalone
+/// `vetter dir` and `socket parent dir` rows use bespoke logic so they
+/// can carry their own status (ERROR on foreign owner) rather than
+/// just an overlay string.
+fn wide_dir_warning(path: &Path, expected: u32) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mode = meta.permissions().mode() & 0o777;
+    let owner = meta.uid();
+    let self_uid = current_euid();
+    if owner != self_uid {
+        return Some(format!(
+            "parent {} owned by uid={owner}, expected self ({self_uid})",
+            path.display()
+        ));
+    }
+    if mode > expected {
+        return Some(format!(
+            "parent {} mode 0{mode:o}, expected 0{expected:o}; chmod 0{expected:o} {}",
+            path.display(),
+            path.display()
+        ));
+    }
+    None
 }
 
 fn check_parsers() -> Check {

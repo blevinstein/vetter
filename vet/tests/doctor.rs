@@ -341,3 +341,129 @@ fn code_signing_skipped_off_macos() {
         .stdout(contains("SKIP"))
         .stdout(contains("macOS only"));
 }
+
+// --------------------------------------------------------------------
+// Hardening §H1 / ThreatModel §T8: file-mode WARN coverage
+// --------------------------------------------------------------------
+
+/// `vet doctor` must downgrade the `audit log` row from OK to WARN
+/// when the on-disk file is wider than `0600`. Exit code stays 0
+/// because the verdict is WARN, not ERROR — a wide-mode pre-existing
+/// audit log is annoying but not exploitable on the typical
+/// single-user workstation install.
+#[test]
+fn loose_audit_log_perms_warn() {
+    let s = Scratch::new();
+    // Pre-create the audit file at a wide mode. AuditLog::open is
+    // load-bearing for fresh creates only; doctor's job is to notice
+    // when an existing file landed wider.
+    std::fs::write(&s.audit, "").expect("create audit");
+    std::fs::set_permissions(&s.audit, std::fs::Permissions::from_mode(0o644))
+        .expect("loosen audit");
+
+    s.doctor()
+        .assert()
+        .success()
+        .stdout(contains("audit log"))
+        .stdout(contains("WARN"))
+        .stdout(contains("mode 0644"))
+        .stdout(contains("chmod 0600"))
+        .stdout(contains("summary: 0 errors,"));
+}
+
+/// Same shape for the user allowlist row.
+#[test]
+fn loose_user_allowlist_perms_warn() {
+    let s = Scratch::new();
+    let user_dir = s.dir.path().join(".vet");
+    std::fs::create_dir_all(&user_dir).expect("create ~/.vet");
+    let user_allowlist = user_dir.join("allowlist.yaml");
+    std::fs::write(&user_allowlist, ALLOWLIST_OK).expect("write user allowlist");
+    std::fs::set_permissions(&user_allowlist, std::fs::Permissions::from_mode(0o644))
+        .expect("loosen user allowlist");
+
+    s.doctor()
+        .assert()
+        .success()
+        .stdout(contains("allowlist (user)"))
+        .stdout(contains("WARN"))
+        .stdout(contains("mode 0644"));
+}
+
+/// `known-hosts (user)` shares the perm-check with the allowlist row.
+#[test]
+fn loose_user_known_hosts_perms_warn() {
+    let s = Scratch::new();
+    let user_dir = s.dir.path().join(".vet");
+    std::fs::create_dir_all(&user_dir).expect("create ~/.vet");
+    let known = user_dir.join("known-hosts.yaml");
+    std::fs::write(&known, "hosts: []\n").expect("write known-hosts");
+    std::fs::set_permissions(&known, std::fs::Permissions::from_mode(0o644))
+        .expect("loosen known-hosts");
+
+    s.doctor()
+        .assert()
+        .success()
+        .stdout(contains("known-hosts (user)"))
+        .stdout(contains("WARN"))
+        .stdout(contains("mode 0644"));
+}
+
+/// The shared `~/.vet/` parent dir gets its own row that flips OK to
+/// WARN on a too-wide mode.
+#[test]
+fn loose_vetter_dir_perms_warn() {
+    let s = Scratch::new();
+    let user_dir = s.dir.path().join(".vet");
+    std::fs::create_dir(&user_dir).expect("create ~/.vet");
+    std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o755))
+        .expect("loosen ~/.vet");
+
+    s.doctor()
+        .assert()
+        .success()
+        .stdout(contains("vetter dir"))
+        .stdout(contains("WARN"))
+        .stdout(contains("mode 0755"));
+}
+
+/// And when nothing is loose the rows report OK / Skip without WARN.
+#[test]
+fn tight_perms_report_no_warnings_for_perm_rows() {
+    let s = Scratch::new();
+    // Build a 0700 ~/.vet/ with 0600 allowlist + known-hosts.
+    let user_dir = s.dir.path().join(".vet");
+    std::fs::create_dir(&user_dir).expect("create ~/.vet");
+    std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("0700 ~/.vet");
+    let user_allowlist = user_dir.join("allowlist.yaml");
+    std::fs::write(&user_allowlist, ALLOWLIST_OK).expect("write user allowlist");
+    std::fs::set_permissions(&user_allowlist, std::fs::Permissions::from_mode(0o600))
+        .expect("0600 allowlist");
+    let known = user_dir.join("known-hosts.yaml");
+    std::fs::write(&known, "hosts: []\n").expect("write known-hosts");
+    std::fs::set_permissions(&known, std::fs::Permissions::from_mode(0o600))
+        .expect("0600 known-hosts");
+
+    let assert = s.doctor().assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+
+    // Each of the four perm-sensitive rows present and not WARN-flagged
+    // for mode reasons. (Code-signing rows may still WARN on cargo
+    // builds — those are unrelated to H1.)
+    for needle in [
+        "audit log",
+        "allowlist (user)",
+        "known-hosts (user)",
+        "vetter dir",
+    ] {
+        let line = stdout
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("missing row `{needle}` in:\n{stdout}"));
+        assert!(
+            !line.contains("WARN"),
+            "row `{needle}` unexpectedly WARN: `{line}`"
+        );
+    }
+}

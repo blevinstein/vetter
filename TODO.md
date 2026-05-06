@@ -642,22 +642,28 @@ these in smallest-blast-radius-first order; same order here.
       main `accept_loop` (currently absent — a same-UID caller can
       submit fake `VetRequest`s for audit-log poisoning / phishing
       prompts) for parity.
-- [ ] Explicit `0600` mode on audit-log, allowlist, and known-hosts
-      writes — ThreatModel T8. `vetterd/src/audit.rs::AuditLog::open`
-      opens with `OpenOptions::new().create(true).append(true)` (no
-      `.mode(0o600)`), and `vetter_core/src/matcher/loader.rs::
-      write_file` persists via `tempfile::NamedTempFile` without a
-      `permissions()` override. Under the default macOS/Linux umask
-      (`022`) both land as `0644` — other local UIDs can read the
-      audit log (which carries verbatim argv, i.e. routinely carries
-      secrets) and the user's allowlist / known-hosts YAML (trust-
-      surface reconnaissance). Fix: `OpenOptions::mode(0o600)` on
-      `AuditLog::open`, `tempfile::Builder::new().permissions(
-      Permissions::from_mode(0o600))` on the matcher / known-hosts
-      write path, and chmod `~/.vet/` and `~/Library/Logs/vetter/`
-      to `0700` at create time. Extend `vet doctor` to flag any of
-      these files whose on-disk mode is wider than `0600` (or whose
-      parent dir is wider than `0700`).
+- [x] Explicit `0600` mode on audit-log, allowlist, and known-hosts
+      writes — ThreatModel T8. New `vetter_core::fs_secure` helper
+      (`create_dir_secure` / `persist_at_mode`) consumed by
+      `vetterd::audit::AuditLog::open`,
+      `vetter_core::matcher::loader::write_file`,
+      `vetter_core::known_hosts::write_file`, and
+      `vetter_core::settings::write_to` (refactored onto the same
+      helper) so every vetter-owned writer lands its destination at
+      mode `0600` and any parent dir it creates at mode `0700`.
+      `vet doctor` adds `vetter dir`, `known-hosts (user)`, and
+      `known-hosts (project)` rows and overlays a `WARN` (with a
+      `chmod 0600 …` repair hint) on the existing `audit log` /
+      `allowlist (*)` rows whenever the on-disk file is wider than
+      `0600` or its parent dir is wider than `0700`. Existing files
+      we did not create on this run are deliberately *not* silently
+      chmodded.
+      ([vetter-core/src/fs_secure.rs](vetter-core/src/fs_secure.rs),
+      [vetterd/src/audit.rs](vetterd/src/audit.rs),
+      [vetter-core/src/matcher/loader.rs](vetter-core/src/matcher/loader.rs),
+      [vetter-core/src/known_hosts.rs](vetter-core/src/known_hosts.rs),
+      [vetter-core/src/settings.rs](vetter-core/src/settings.rs),
+      [vet/src/doctor.rs](vet/src/doctor.rs))
 - [ ] Env-override hardening — ThreatModel T6. `$VETTERD_SOCKET` /
       `$VETTERD_PIDFILE` / `$VETTER_AUDIT_LOG` /
       `$VETTER_PARSER_TRUSTED_DIRS` are all agent-inheritable env

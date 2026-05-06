@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::fs_secure::{create_dir_secure, persist_at_mode};
 use crate::matcher::rule::Rule;
 
 /// Aggregated rules indexed by [`crate::matcher::Scope`].
@@ -189,10 +190,16 @@ fn enforce_unique_ids(file: &AllowlistFile, path: &Path) -> Result<(), LoadError
 /// written to a sibling tempfile in the same directory and then
 /// renamed over `path`. If the process is killed before the rename,
 /// the prior file (if any) is intact.
+///
+/// Hardening §H1 / `plans/ThreatModel.md` §T8: the destination file
+/// lands at mode `0600` and any parent dir we create lands at mode
+/// `0700`. The tempfile's mode is set *before* the rename so the
+/// destination never momentarily exists at the umask default
+/// (typically `0644`).
 pub fn write_file(path: &Path, file: &AllowlistFile) -> Result<(), LoadError> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|source| LoadError::Io {
+            create_dir_secure(parent, 0o700).map_err(|source| LoadError::Io {
                 path: parent.to_path_buf(),
                 source,
             })?;
@@ -225,9 +232,9 @@ pub fn write_file(path: &Path, file: &AllowlistFile) -> Result<(), LoadError> {
             source,
         })?;
     }
-    tmp.persist(path).map_err(|e| LoadError::Io {
+    persist_at_mode(tmp, path, 0o600).map_err(|source| LoadError::Io {
         path: path.to_path_buf(),
-        source: e.error,
+        source,
     })?;
     Ok(())
 }

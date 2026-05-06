@@ -12,7 +12,10 @@
 //! - [`wire`]        — JSON wire types (Phase 3; placeholder until then).
 //! - [`paths`]       — shared socket / pidfile resolution used by both
 //!   `vet` and `vetterd`.
+//! - [`fs_secure`]   — restrictive-mode filesystem helpers used by
+//!   every vetter-owned writer (Hardening §H1 / ThreatModel §T8).
 
+pub mod fs_secure;
 pub mod known_hosts;
 pub mod matcher;
 pub mod parsers;

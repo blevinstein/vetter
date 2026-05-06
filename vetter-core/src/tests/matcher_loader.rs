@@ -1,6 +1,8 @@
 //! Tests for [`crate::matcher::loader`]. Layout convention is
 //! described in `AGENTS.md`.
 
+use std::os::unix::fs::PermissionsExt as _;
+
 use super::*;
 use crate::matcher::rule::{HttpClause, RuleWhen};
 use crate::HttpMethod;
@@ -139,6 +141,76 @@ fn remove_rule_from_deny_list() {
     let back = load_file(&path).unwrap();
     assert!(back.deny.is_empty());
     assert_eq!(back.rules.len(), 1);
+}
+
+// Hardening §H1 / ThreatModel §T8: every vetter-owned writer must
+// land its destination at mode 0600 and any directory it creates at
+// mode 0700.
+
+#[test]
+fn write_file_lands_mode_0600() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("allowlist.yaml");
+    write_file(
+        &path,
+        &AllowlistFile {
+            rules: vec![rule("only", vec![HttpMethod::Get])],
+            deny: vec![],
+        },
+    )
+    .unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "allowlist file must land 0600, got 0{mode:o}");
+}
+
+#[test]
+fn write_file_creates_parent_dir_at_mode_0700() {
+    let dir = TempDir::new().unwrap();
+    let nested = dir.path().join("nested-vet-dir");
+    let path = nested.join("allowlist.yaml");
+    write_file(
+        &path,
+        &AllowlistFile {
+            rules: vec![rule("only", vec![HttpMethod::Get])],
+            deny: vec![],
+        },
+    )
+    .unwrap();
+    let dir_mode = std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        dir_mode, 0o700,
+        "newly created parent dir must land 0700, got 0{dir_mode:o}"
+    );
+}
+
+#[test]
+fn write_file_overwrites_existing_at_0600_even_if_old_was_wider() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("allowlist.yaml");
+    write_file(
+        &path,
+        &AllowlistFile {
+            rules: vec![rule("a", vec![HttpMethod::Get])],
+            deny: vec![],
+        },
+    )
+    .unwrap();
+    // Loosen on disk (simulating a user `chmod 644 allowlist.yaml`).
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    write_file(
+        &path,
+        &AllowlistFile {
+            rules: vec![rule("b", vec![HttpMethod::Get])],
+            deny: vec![],
+        },
+    )
+    .unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "rewrite must restore 0600, got 0{mode:o} \
+         (persist_at_mode chmods the tempfile before rename)"
+    );
 }
 
 #[test]

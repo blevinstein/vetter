@@ -331,6 +331,85 @@ fn add_host_rejects_duplicate_case_insensitive() {
     assert_eq!(file.hosts.len(), 1);
 }
 
+// Hardening §H1 / ThreatModel §T8: known-hosts files land at 0600,
+// any parent dir we create lands at 0700, and a rewrite restores
+// 0600 even when the on-disk file had been loosened.
+
+#[test]
+fn write_file_lands_mode_0600() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known-hosts.yaml");
+    write_file(
+        &path,
+        &KnownHostsFile {
+            hosts: vec![KnownHostEntry {
+                pattern: "api.example.com".into(),
+                note: None,
+            }],
+        },
+    )
+    .unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "known-hosts file must land 0600, got 0{mode:o}"
+    );
+}
+
+#[test]
+fn write_file_creates_parent_dir_at_mode_0700() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("nested-vet-dir");
+    let path = nested.join("known-hosts.yaml");
+    write_file(
+        &path,
+        &KnownHostsFile {
+            hosts: vec![KnownHostEntry {
+                pattern: "api.example.com".into(),
+                note: None,
+            }],
+        },
+    )
+    .unwrap();
+    let mode = std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o700,
+        "newly created parent dir must land 0700, got 0{mode:o}"
+    );
+}
+
+#[test]
+fn write_file_overwrites_existing_at_0600_even_if_old_was_wider() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known-hosts.yaml");
+    write_file(
+        &path,
+        &KnownHostsFile {
+            hosts: vec![KnownHostEntry {
+                pattern: "first.example.com".into(),
+                note: None,
+            }],
+        },
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    write_file(
+        &path,
+        &KnownHostsFile {
+            hosts: vec![KnownHostEntry {
+                pattern: "second.example.com".into(),
+                note: None,
+            }],
+        },
+    )
+    .unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "rewrite must restore 0600, got 0{mode:o}");
+}
+
 #[test]
 fn write_file_replaces_atomically() {
     let dir = tempfile::tempdir().unwrap();

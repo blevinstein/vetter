@@ -17,10 +17,12 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use vetter_core::fs_secure::create_dir_secure;
 use vetter_core::wire::WireDecision;
 use vetter_core::{ParsedCommand, RiskSignal};
 
@@ -100,13 +102,24 @@ impl AuditLog {
     /// Open (creating if missing) the log at `path`. Parent dirs are
     /// created — `~/Library/Logs/vetter/` may not yet exist on a
     /// fresh install.
+    ///
+    /// Hardening §H1 / `plans/ThreatModel.md` §T8: a freshly created
+    /// log lands at mode `0600` (via `OpenOptions::mode`) and the
+    /// parent directory we create lands at mode `0700` (via
+    /// [`vetter_core::fs_secure::create_dir_secure`]). Existing
+    /// files / directories are not silently chmodded — `vet doctor`
+    /// surfaces a `WARN` with a `chmod` repair hint instead.
     pub fn open(path: &Path) -> std::io::Result<Self> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
+                create_dir_secure(parent, 0o700)?;
             }
         }
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)?;
         Ok(Self {
             file: Mutex::new(file),
             path: path.to_path_buf(),

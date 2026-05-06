@@ -280,13 +280,6 @@ suggestions"), §11. Picker-sheet UI design lives in
       audits the auto-approve reason; non-covering AddRule leaves
       pending untouched; AddKnownHost does NOT auto-approve but
       flips `UnknownHost` signals away
-- [ ] `vet allow suggest <id>` CLI prints the suggestions payload
-      as YAML — **deferred to Backlog**. The engine is reachable
-      through the admin socket already; this is a developer-
-      ergonomics shim.
-- [ ] Allowlist suggestions over `Effect::FileWrite` /
-      `Effect::FileRead` — **deferred to Backlog**. Engine returns
-      empty for now; popover hides the button.
 
 ## Phase 5.1 - Other improvements
 
@@ -360,6 +353,65 @@ unit test in
       slots): either keep the current `ParseError::Other` rejection
       and document, or emit one `HttpRequest` per URL with `-o` slots
       paired in argv order
+
+## Phase 5.3 — File path allowlist  `[ ] not started`
+
+Design: [plans/FilePaths.md](plans/FilePaths.md).
+
+Adds a built-in baseline of safe directories (so common scratch
+and cache writes auto-allow) and a built-in denylist of sensitive
+credential paths (so writes to `~/.ssh`, `~/.aws`, etc. are
+denied at every layer). Replaces the coarse `FileOutsideCwd` /
+`FileReadOutsideCwd` signals with `UnknownWritePath` /
+`UnknownReadPath` (analogous to `UnknownHost`) and adds a
+`DeniedPath` signal for built-in denylist hits. Also closes the
+existing backlog item "Allowlist suggestions over `Effect::FileWrite`
+/ `Effect::FileRead`" by wiring the new suggestion engine into the
+popover's `Allowlist path…` picker.
+
+### PR A — Baseline + signal rename
+
+- [ ] `BUILTIN_FILE_RULES` (allow) and `BUILTIN_DENY_FILE_RULES`
+      (deny) constants in
+      [vetter-core/src/matcher/loader.rs](vetter-core/src/matcher/loader.rs);
+      populated into `AllowlistStore::builtin` and denylist after
+      env-var / tilde expansion at load time
+- [ ] Tilde (`~/`) expansion for user-authored rule paths
+- [ ] `SignalKind::UnknownWritePath`, `UnknownReadPath`, `DeniedPath`
+      replacing `FileOutsideCwd` / `FileReadOutsideCwd`
+      ([vetter-core/src/signals/mod.rs](vetter-core/src/signals/mod.rs))
+- [ ] `check_file_paths(p, store)` in `vetter-core::signals`
+      (mirrors `check_known_hosts`); wired from
+      [vet/src/explain.rs](vet/src/explain.rs) and
+      [vetterd/src/policy.rs](vetterd/src/policy.rs)
+- [ ] Retain `FileOutsideCwd` / `FileReadOutsideCwd` as
+      `#[deprecated]` (not emitted, kept for deserialisation compat)
+- [ ] Snapshot updates for renderer + popover pills
+- [ ] `vet doctor` row: built-in file rules loaded N, dropped M
+      (env vars unset)
+
+### PR B — File suggestion engine + popover picker
+
+- [ ] `file_write_suggestions` / `file_read_suggestions` in
+      `vetter_core::suggest`
+      ([vetter-core/src/suggest/mod.rs](vetter-core/src/suggest/mod.rs))
+- [ ] Wired into `vetterd::suggestions::suggestions_for`
+      ([vetterd/src/suggestions.rs](vetterd/src/suggestions.rs))
+- [ ] `Allowlist path…` button on `FileRead` / `FileWrite` rows in
+      the macOS popover
+      ([vetterd/src/runloop/popover_effects.rs](vetterd/src/runloop/popover_effects.rs));
+      button suppressed when path overlaps built-in denylist
+- [ ] Integration tests in `vetterd/tests/` for the file suggestion
+      flow
+
+### PR C — CLI ergonomics + denylist polish
+
+- [ ] `vet allow add --file-write <path>` / `--file-read <path>`
+      shims ([vet/src/allow.rs](vet/src/allow.rs))
+- [ ] `vet doctor` extended row: surface per-path built-in denylist
+      coverage in `vet allow list` output
+
+---
 
 ## Phase 6 — Ubuntu support  `[ ] not started`  (v0.2 milestone)
 

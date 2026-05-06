@@ -289,6 +289,14 @@ to the user scope (`~/.config/vet/allowlist.yaml`,
 `~/.vet/known-hosts.yaml`) in v1; project-scope writes still work
 through the existing `vet allow add --scope project` CLI.
 
+### File-path allowlist
+
+`file_write:` and `file_read:` clauses in the allowlist follow the same
+layered model. A built-in baseline auto-allows common scratch and cache
+directories while a built-in denylist blocks writes to sensitive credential
+paths (`~/.ssh/**`, `~/.aws/credentials`, etc.) at every scope. See
+[FilePaths.md](FilePaths.md) for the full strategy.
+
 ---
 
 ## 6. Threat model & non-goals
@@ -628,8 +636,10 @@ Generic (over `Effect::HttpRequest`):
   loopback addresses are always exempt
 
 Generic (over `Effect::FileWrite` / `FileRead`):
-- file upload of a path outside cwd
-- output to disk outside cwd
+- file outside the allowlist's known-safe directories (`UnknownWritePath` /
+  `UnknownReadPath`) — see [FilePaths.md](FilePaths.md) for the full
+  baseline and denylist strategy
+- path explicitly blocked by the built-in denylist (`DeniedPath`)
 
 Generic (over `Effect::ProcessSpawn`):
 - pipe to shell pattern (parent shell command contains `| sh|bash|zsh`)

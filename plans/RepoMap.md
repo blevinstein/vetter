@@ -124,6 +124,7 @@ Both sets are merged by `extend` in the explain path (`vet/src/explain.rs`).
 | Linux picker sheets (`Allowlist…` / `Trust host…`) | `vetterd/src/runloop/linux/popover_picker.rs` (Phase 6) |
 | systemd user unit + autostart .desktop + tray icon | `vetterd/resources/{vetter.service,vetter.desktop,icons/}` (Phase 6) |
 | Architecture spec | `plans/Overview.md` |
+| File-path allowlist strategy | `plans/FilePaths.md` |
 | Threat model | `plans/ThreatModel.md` |
 | Testing plan | `plans/TestingPlan.md` |
 | macOS operational guide | `plans/MacOSApp.md` |

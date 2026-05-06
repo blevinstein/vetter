@@ -105,6 +105,15 @@ containing directory is not mode `0700`/`0755` owned by `self_uid`;
 agent-controlled (`$CLAUDE_CODE`, `$CURSOR_AGENT`, …) unless the
 repo is on the trusted list.
 
+File-rule amplifier: once `file_write:` / `file_read:` rules are in
+scope (Phase 5.3, [plans/FilePaths.md](FilePaths.md)), a hostile
+project-scope allowlist can declare reads of `~/.aws/credentials` or
+writes to `~/.ssh/authorized_keys`. The built-in denylist blocks the
+worst write cases at every scope, but read rules for sensitive paths
+can still be granted by a project-scope file. The per-repo trust gate
+(H5) is the systematic close; until it lands, users should review
+project-scope allowlist files before trusting a repository.
+
 ---
 
 ## T8 — Audit log & allowlist files created with process umask

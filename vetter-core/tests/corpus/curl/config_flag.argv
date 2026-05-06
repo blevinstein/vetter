@@ -1,0 +1,6 @@
+# --config / -K can re-bind every other flag in a referenced file
+# (e.g. `output = /etc/passwd`). Until we recursively parse that
+# config we refuse the whole invocation rather than mis-vet it.
+--config
+some/file.cfg
+https://example.test/

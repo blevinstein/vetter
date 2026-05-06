@@ -178,6 +178,13 @@ fn absorb(state: &mut CurlState, tok: Token) -> Result<(), ParseError> {
                 // Accepted, but informational only — they don't change
                 // any effect we care about.
             }
+            FlagId::Config => {
+                let v = value.expect("Value flag has value");
+                return Err(ParseError::Other(format!(
+                    "--config / -K {v} is not supported; vet refuses to run rather \
+                     than mis-vet a config file that can override every other flag"
+                )));
+            }
         },
         Token::UnknownLong { name, value } => {
             state.unknown_longs.push(UnknownLong { name, value });

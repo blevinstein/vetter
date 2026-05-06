@@ -122,6 +122,35 @@ fn upload_stdin_rejected() {
 }
 
 #[test]
+fn config_long_flag_rejected() {
+    let r = parse_argv(
+        &argv(&["--config", "some/file.cfg", "https://example.test/"]),
+        &StdinHandle::empty(),
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
+fn config_short_flag_rejected() {
+    let r = parse_argv(
+        &argv(&["-K", "some/file.cfg", "https://example.test/"]),
+        &StdinHandle::empty(),
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
+fn config_short_flag_from_stdin_rejected() {
+    // `-K -` reads the curl config from stdin; we still refuse so an
+    // attacker cannot pipe a config that overrides every other flag.
+    let r = parse_argv(
+        &argv(&["-K", "-", "https://example.test/"]),
+        &StdinHandle::empty(),
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
 fn data_at_stdin_within_cap_yields_from_stdin() {
     let p = parse_stdin(&["-d", "@-", "https://example.test/"], b"hello", 1024).expect("parse");
     match &http_of(&p).body {
@@ -361,7 +390,8 @@ fn _exhaustive_flag_id_match_compiles() {
             | FlagId::Verbose
             | FlagId::Fail
             | FlagId::ShowError
-            | FlagId::ProgressBar => {}
+            | FlagId::ProgressBar
+            | FlagId::Config => {}
         }
     }
     let _ = _check;

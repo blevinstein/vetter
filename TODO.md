@@ -299,7 +299,7 @@ a fixture under
 unit test in
 [vetter-core/src/tests/parsers_curl_state.rs](vetter-core/src/tests/parsers_curl_state.rs).
 
-- [ ] Reject `-K` / `--config <file>` with `ParseError::Other` until we
+- [x] Reject `-K` / `--config <file>` with `ParseError::Other` until we
       recursively parse the referenced config (today it lands in
       `extras.unknown_long_flags`, so a config containing `output =
       /etc/passwd` or `url = https://attacker/` is invisible)

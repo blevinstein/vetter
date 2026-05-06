@@ -291,8 +291,75 @@ suggestions"), §11. Picker-sheet UI design lives in
 ## Phase 5.1 - Other improvements
 
 - [ ] add logo to the project, and use it for the menu bar icon
-- [ ] when URLs are long, they are overflowing the row width and causing problems in the popover. we need to fix so that they wrap or something
 - [ ] we need to make sure that when the "body" of a request is provided from a file, we handle correctly. and presumably the same if curl is writing directly to a file? not sure if that is possible without using a pipe to send it to a file?
+
+## Phase 5.2 — Curl parser file-effect gaps
+
+Bugs and omissions in
+[vetter-core/src/parsers/curl/](vetter-core/src/parsers/curl/) around
+`Effect::FileRead` / `Effect::FileWrite` emission. Today the parser
+covers `-o` / `-O` / `-J` (writes) and `-T` / `-d @file` (reads), but
+several common flags fall through to `extras.unknown_long_flags` and
+silently mis-vet. Spec: `plans/Overview.md` §8.4. Each item lands with
+a fixture under
+[vetter-core/tests/corpus/curl/](vetter-core/tests/corpus/curl/) and a
+unit test in
+[vetter-core/src/tests/parsers_curl_state.rs](vetter-core/src/tests/parsers_curl_state.rs).
+
+- [ ] Reject `-K` / `--config <file>` with `ParseError::Other` until we
+      recursively parse the referenced config (today it lands in
+      `extras.unknown_long_flags`, so a config containing `output =
+      /etc/passwd` or `url = https://attacker/` is invisible)
+- [ ] Reject `-:` / `--next` with `ParseError::Other` until the parser
+      can split one invocation into multiple `HttpRequest` effects
+      (today only the first request is rendered, the rest are
+      mis-vetted)
+- [ ] Resolve relative paths against `EnvSnapshot::cwd` inside the
+      parser before constructing `FileRead` / `FileWrite`, so `-o
+      ./out`, `-O thing.tgz`, `-d @./payload.json`, `-T rel` no longer
+      produce spurious `FileOutsideCwd` / `FileReadOutsideCwd` signals
+      via `signals::path_is_inside` (which requires absolute paths)
+- [ ] Parse `-F` / `--form` / `--form-string` (multipart): emit one
+      `FileRead` per `@file` reference, populate `Body::Form`, and
+      fail-closed on `@-` via `ParseError::StreamingUnsupported`
+- [ ] Distinguish `-b @file` / `--cookie @file` (`FileRead` of a
+      credential file) from `-b "k=v"` (header-only); today both are
+      `UnknownShort` / `UnknownLong`
+- [ ] Emit `FileWrite` for `-c <file>` / `--cookie-jar <file>` with
+      `WriteSource::RemoteHttp { url }`
+- [ ] Emit `FileRead` for `--cert`, `--key`, `--cert-type`, `--key-type`,
+      `--pass`, `--pubkey`, `--engine`, and add a parser-pushed
+      `RiskSignal` for `--cert` / `--key` alongside the existing
+      `CacertOverride`
+- [ ] Emit `FileWrite` for `-D` / `--dump-header <file>`
+- [ ] Emit `FileWrite` for `--trace` / `--trace-ascii <file>`,
+      treating the special `-` (stdout) and `%` (stderr) values as
+      non-file
+- [ ] Emit `FileRead` for `--write-out` / `-w` with a leading `@`
+      (e.g. `-w @fmt.txt`); bare format string stays informational
+- [ ] Emit `FileWrite` for `--etag-save <file>` and `FileRead` for
+      `--etag-compare <file>`
+- [ ] Honour `--output-dir <dir>` when constructing the
+      `FileWrite.path` for `-o` / `-O` / `-J`; today the dir is
+      silently dropped
+- [ ] Honour `--no-clobber` by flipping `FileWrite.overwrite` to
+      `false` (currently hard-coded `true` in `build_file_write`)
+- [ ] Add a parser-pushed signal for `-J` / `--remote-header-name`
+      noting the on-disk filename comes from `Content-Disposition`
+      and the surfaced path is a placeholder (new `SignalKind`, e.g.
+      `RemoteHeaderName`)
+- [ ] Surface `--create-dirs` as either a signal or
+      `WriteSource`-metadata flag so the approver sees that writes
+      can land arbitrarily deep below `--output-dir`
+- [ ] Emit one `FileRead` per `-d @file` chunk when mixed with inline
+      `-d` chunks (today only the first survives — the
+      `file_reads.into_iter().next()` in `build_body`); decide whether
+      to widen `Body` to a `Composite` variant or fail-closed when a
+      single invocation mixes inline + `@file`
+- [ ] Decide multi-URL handling (`curl URL1 URL2` with multiple `-o`
+      slots): either keep the current `ParseError::Other` rejection
+      and document, or emit one `HttpRequest` per URL with `-o` slots
+      paired in argv order
 
 ## Phase 6 — Ubuntu support  `[ ] not started`  (v0.2 milestone)
 

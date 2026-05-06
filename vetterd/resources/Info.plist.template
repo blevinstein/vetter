@@ -8,6 +8,14 @@
     <string>vetterd</string>
     <key>CFBundleIdentifier</key>
     <string>dev.vetter.daemon</string>
+    <!-- Finder / Get-Info icon. The bundled file is built by
+         tools/build-icons.sh from assets/vetter-logo.png and copied
+         into Contents/Resources/ by tools/_bundle_layout.sh. The
+         menu-bar status-item icon is a separate monochrome template
+         loaded at runtime from Contents/Resources/StatusItem.png
+         (see vetterd/src/runloop/status_item.rs). -->
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

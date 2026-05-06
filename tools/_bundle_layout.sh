@@ -48,6 +48,22 @@ vetter_layout_app() {
     cp "$vet_bin"     "$app/Contents/MacOS/vet"
     chmod +x "$app/Contents/MacOS/vetterd" "$app/Contents/MacOS/vet"
 
+    # Icon assets (Finder/Dock icon + menu-bar template). Built by
+    # tools/build-icons.sh from assets/vetter-logo.{png,svg} and
+    # committed under assets/generated/, so this layout step never
+    # depends on Apple-side image tooling at build time. Both files
+    # must be present — Info.plist.template references AppIcon by
+    # CFBundleIconFile, and the daemon's status-item code looks up
+    # StatusItem.png at runtime via NSBundle::mainBundle.
+    local icons_dir="$ROOT/assets/generated"
+    for icon in AppIcon.icns StatusItem.png; do
+        if [[ ! -f "$icons_dir/$icon" ]]; then
+            echo "vetter_layout_app: missing $icons_dir/$icon — re-run tools/build-icons.sh" >&2
+            return 1
+        fi
+        cp "$icons_dir/$icon" "$app/Contents/Resources/$icon"
+    done
+
     sed "s/__VERSION__/$VERSION/g" \
         "$ROOT/vetterd/resources/Info.plist.template" \
         > "$app/Contents/Info.plist"

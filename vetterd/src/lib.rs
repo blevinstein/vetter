@@ -172,22 +172,22 @@ pub fn run(
         load_known_hosts_default(None).map_err(DaemonError::KnownHosts)?,
     ));
     let audit = Arc::new(AuditLog::open(&audit_path).map_err(DaemonError::Audit)?);
-    let listener = socket::listen(&socket_path).map_err(DaemonError::Socket)?;
-
-    let admin_socket_path = admin_socket_path_for(&socket_path);
-    let admin_listener = socket::listen(&admin_socket_path).map_err(DaemonError::Socket)?;
 
     // Pidfile is co-located with the socket by default. Acquired
-    // *after* the listener binds so a pidfile's existence implies the
-    // socket is also live; the file is removed alongside the socket
-    // on shutdown so `vet daemon status` never sees a stale pid +
-    // missing socket pair on a clean exit. The POSIX write-lock
-    // (held in `_pidfile_lock` for the daemon's lifetime) is what
-    // `vet`'s PID-attestation check on connect verifies — see
-    // `plans/ThreatModel.md` T1 sequencing #1. Closing the fd
-    // (drop on shutdown, panic, or `kill -9`) atomically releases
-    // the lock, so a stale pidfile can never look "live" to a
-    // client that probes via `pidfile::read_locker_pid`.
+    // *before* the sockets bind so that, once any client successfully
+    // connects, the pidfile lock is already held — the
+    // `pidfile::read_locker_pid` cross-check in `vet`'s round-trip
+    // (see `plans/ThreatModel.md` T1 sequencing #1) cannot race a
+    // partially-started daemon. As a side benefit, a duplicate
+    // `vetterd` start fails with `WouldBlock` here before doing any
+    // IO on the socket paths. The POSIX write-lock (held in
+    // `_pidfile_lock` for the daemon's lifetime) is what attestation
+    // verifies; closing the fd (drop on shutdown, panic, or
+    // `kill -9`) atomically releases the lock, so a lingering
+    // pidfile can never look "live" to a client probing via
+    // `pidfile::read_locker_pid`. The file itself is removed
+    // alongside the sockets in the cleanup block at the end of
+    // `run`.
     let pidfile_path = paths::default_pidfile_path(&socket_path);
     let _pidfile_lock = pidfile::acquire(&pidfile_path, std::process::id(), SystemTime::now())
         .map_err(|e| match e.kind() {
@@ -198,6 +198,11 @@ pub fn run(
             )),
             _ => DaemonError::Pidfile(e),
         })?;
+
+    let listener = socket::listen(&socket_path).map_err(DaemonError::Socket)?;
+
+    let admin_socket_path = admin_socket_path_for(&socket_path);
+    let admin_listener = socket::listen(&admin_socket_path).map_err(DaemonError::Socket)?;
 
     let pending = Arc::new(PendingQueue::new());
 

@@ -193,6 +193,56 @@ fn next_short_flag_rejected() {
 }
 
 #[test]
+fn form_long_flag_rejected() {
+    // Multipart curl is uncommon in agent workflows and the parser does
+    // not yet model it precisely; reject up front rather than mis-vet
+    // (mirrors --config / --next).
+    let r = parse_argv(
+        &argv(&["--form", "name=value", "https://example.test/upload"]),
+        &StdinHandle::empty(),
+        None,
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
+fn form_short_flag_rejected() {
+    // -F upload=@./photo.png would today fall through to extras and
+    // ship without a FileRead effect; reject instead.
+    let r = parse_argv(
+        &argv(&["-F", "upload=@./photo.png", "https://example.test/upload"]),
+        &StdinHandle::empty(),
+        None,
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
+fn form_string_flag_rejected() {
+    // --form-string is the literal-only sibling of -F; we still refuse
+    // so the rejection surface is uniform.
+    let r = parse_argv(
+        &argv(&["--form-string", "note=hello", "https://example.test/notes"]),
+        &StdinHandle::empty(),
+        None,
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
+fn form_short_in_cluster_rejected() {
+    // -kF clusters -k (insecure, Bool) with -F (form, Value); the
+    // tokeniser rejects value-taking shorts inside a cluster, so this
+    // surfaces as ParseError::Other before the absorb arm runs.
+    let r = parse_argv(
+        &argv(&["-kF", "upload=@./x", "https://example.test/upload"]),
+        &StdinHandle::empty(),
+        None,
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
 fn next_short_in_cluster_rejected() {
     // `-k:` clusters `-k` (insecure, Bool) with `-:` (next, Bool); the
     // tokeniser must surface the `:` so finalisation can reject it.
@@ -593,7 +643,9 @@ fn _exhaustive_flag_id_match_compiles() {
             | FlagId::ShowError
             | FlagId::ProgressBar
             | FlagId::Config
-            | FlagId::Next => {}
+            | FlagId::Next
+            | FlagId::Form
+            | FlagId::FormString => {}
         }
     }
     let _ = _check;

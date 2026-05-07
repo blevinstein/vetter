@@ -320,9 +320,14 @@ unit test in
       ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
       [vetter-core/src/parsers/curl/mod.rs](vetter-core/src/parsers/curl/mod.rs),
       [vetter-core/src/tests/parsers_curl_state.rs](vetter-core/src/tests/parsers_curl_state.rs))
-- [ ] Parse `-F` / `--form` / `--form-string` (multipart): emit one
-      `FileRead` per `@file` reference, populate `Body::Form`, and
-      fail-closed on `@-` via `ParseError::StreamingUnsupported`
+- [x] Reject `-F` / `--form` / `--form-string` with `ParseError::Other`
+      until we model multipart precisely (today they fall through to
+      `extras.unknown_short_flags` and silently mis-vet `-F
+      file=@/etc/passwd`). Multipart curl is uncommon in agent
+      workflows; failing closed beats failing open. Same pattern as
+      `--config` / `-K` and `--next` / `-:` already use
+      ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/src/parsers/curl/flags.rs](vetter-core/src/parsers/curl/flags.rs))
 - [ ] Distinguish `-b @file` / `--cookie @file` (`FileRead` of a
       credential file) from `-b "k=v"` (header-only); today both are
       `UnknownShort` / `UnknownLong`

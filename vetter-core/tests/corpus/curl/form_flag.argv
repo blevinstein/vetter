@@ -1,0 +1,8 @@
+# -F / --form is multipart upload. The parser does not yet model it
+# precisely (file fields, ;type= / ;filename= modifiers, comma-separated
+# multi-file, --form-string semantics), so vet refuses to run rather
+# than mis-vet a request that could exfiltrate /etc/passwd via
+# `-F file=@/etc/passwd`.
+-F
+upload=@./photo.png
+https://api.example.test/upload

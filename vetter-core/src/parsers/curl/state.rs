@@ -202,6 +202,23 @@ fn absorb(state: &mut CurlState, tok: Token) -> Result<(), ParseError> {
                         .into(),
                 ));
             }
+            FlagId::Form => {
+                let v = value.expect("Value flag has value");
+                return Err(ParseError::Other(format!(
+                    "--form / -F {v} is not supported; vet refuses to run rather \
+                     than mis-vet a multipart form (use a smaller, parseable curl \
+                     invocation, or extend the parser if multipart is genuinely \
+                     needed for this workflow)"
+                )));
+            }
+            FlagId::FormString => {
+                let v = value.expect("Value flag has value");
+                return Err(ParseError::Other(format!(
+                    "--form-string {v} is not supported; vet refuses to run rather \
+                     than mis-vet a multipart form (use a smaller, parseable curl \
+                     invocation)"
+                )));
+            }
         },
         Token::UnknownLong { name, value } => {
             state.unknown_longs.push(UnknownLong { name, value });

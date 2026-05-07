@@ -58,6 +58,8 @@ pub enum FlagId {
     ProgressBar,
     Config,
     Next,
+    Form,
+    FormString,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +246,18 @@ pub const FLAG_SPECS: &[FlagSpec] = &[
         short: Some(':'),
         long: Some("next"),
         kind: FlagKind::Bool,
+    },
+    FlagSpec {
+        id: FlagId::Form,
+        short: Some('F'),
+        long: Some("form"),
+        kind: FlagKind::MultiValue,
+    },
+    FlagSpec {
+        id: FlagId::FormString,
+        short: None,
+        long: Some("form-string"),
+        kind: FlagKind::MultiValue,
     },
 ];
 

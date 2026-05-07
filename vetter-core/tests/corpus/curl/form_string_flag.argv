@@ -1,0 +1,7 @@
+# --form-string is the literal-only sibling of -F (never honours @file
+# or <file). We still refuse so the rejection surface is uniform across
+# the multipart family — agents that genuinely need form posts can use
+# `--data-urlencode` instead.
+--form-string
+note=hello
+https://api.example.test/notes

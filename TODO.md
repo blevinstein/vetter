@@ -275,7 +275,28 @@ suggestions"), §11. Picker-sheet UI design lives in
 
 - [x] add logo to the project, and use it for the menu bar icon
 - [ ] we need to make sure that when the "body" of a request is provided from a file, we handle correctly. and presumably the same if curl is writing directly to a file? not sure if that is possible without using a pipe to send it to a file?
-- [ ] after an action is already approved, I want a way to identify the allowlist entry that approved it (if applicable), in case I need to remove an overbroad allowlist rule
+- [x] after an action is already approved, I want a way to identify the allowlist entry that approved it (if applicable), in case I need to remove an overbroad allowlist rule
+      Auto-allow / auto-deny rows now carry the matcher's
+      `(rule_id, scope)` attribution end-to-end:
+      [`PolicyOutcome::Auto`](vetterd/src/policy.rs) plumbs it through
+      `resolve_outcome` and into [`AuditEntry`](vetterd/src/audit.rs)
+      as a new `rule_scope` field; `resolve_outcome` also pre-renders
+      the §8.5 detail and pushes auto-decisions onto
+      [`PendingQueue::record_auto`](vetterd/src/pending.rs) so the
+      popover's Recent section surfaces auto-allows alongside human
+      prompts. On the UI side, auto-allow Recent cards grow a new
+      `▸ See approval reason` disclosure (sibling of `Show raw`) that
+      names the rule + scope and exposes a **Revoke rule** button;
+      revoke routes through a confirmation `NSAlert` and the new
+      [`MgmtRequest::RemoveRule`](vetter-core/src/wire/mod.rs) admin
+      call, which calls
+      [`vetter_core::matcher::loader::remove_rule`](vetter-core/src/matcher/loader.rs)
+      via [`vetterd::suggestions::remove_allowlist_rule`](vetterd/src/suggestions.rs).
+      Past auto-allowed cards stay in Recent as a record of what was
+      approved while the rule was live; only future requests see the
+      change.
+      ([vetterd/src/runloop/popover.rs](vetterd/src/runloop/popover.rs),
+      [vetterd/src/runloop/popover_picker.rs](vetterd/src/runloop/popover_picker.rs))
 - [x] if an action to be approved has a file input, I want some way to easily inspect that from the UI (e.g. click a button to open that file in a text editor or something?)
       Per-row **Open file** button (SF Symbol `arrow.up.right.square`)
       sits on every `FileRead` and `Body::FromFile` row in the popover

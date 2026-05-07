@@ -385,3 +385,98 @@ fn add_known_host_does_not_auto_approve_but_flips_signals() {
     daemon.kill();
     let _ = worker.join();
 }
+
+/// Phase 5.1: the popover's "Revoke rule" button hits the daemon over
+/// the admin socket via [`MgmtRequest::RemoveRule`]. End-to-end check
+/// that an `AddRule` followed by a `RemoveRule` round-trips through
+/// the wire, the YAML on disk loses the rule, and a request that
+/// would have been auto-allowed now parks as a prompt-class
+/// request again.
+#[test]
+fn remove_rule_drops_persisted_rule_and_reverts_auto_allow() {
+    let daemon = DaemonHandle::spawn();
+
+    // Add a covering rule first so the daemon has something to
+    // remove. We don't drive a pending request through it — that
+    // path is covered by `add_rule_auto_approves_matching_pending`;
+    // here we want the rule on disk + in the live store before the
+    // remove call.
+    let added_id = match send_mgmt(
+        &daemon.admin_socket,
+        MgmtRequest::AddRule {
+            scope: WireScope::User,
+            rule: Box::new(covering_rule_for("api.example.test")),
+        },
+    ) {
+        MgmtResponse::RuleAdded { id, .. } => id,
+        other => panic!("unexpected AddRule response: {other:?}"),
+    };
+
+    // Sanity: the rule is live in the YAML file before remove.
+    let yaml_before = std::fs::read_to_string(&daemon.allow_path).unwrap();
+    assert!(
+        yaml_before.contains(&added_id),
+        "allowlist YAML missing rule id before remove: {yaml_before}"
+    );
+
+    // Send the RemoveRule admin call.
+    let resp = send_mgmt(
+        &daemon.admin_socket,
+        MgmtRequest::RemoveRule {
+            scope: WireScope::User,
+            id: added_id.clone(),
+        },
+    );
+    match resp {
+        MgmtResponse::RuleRemoved { id, scope } => {
+            assert_eq!(scope, WireScope::User);
+            assert_eq!(id, added_id);
+        }
+        other => panic!("unexpected RemoveRule response: {other:?}"),
+    }
+
+    // YAML on disk no longer contains the rule.
+    let yaml_after = std::fs::read_to_string(&daemon.allow_path).unwrap();
+    assert!(
+        !yaml_after.contains(&added_id),
+        "allowlist YAML still contains rule id after remove: {yaml_after}"
+    );
+
+    // A new request that would have been auto-allowed by the rule
+    // now parks as a prompt-class request again — proves the
+    // in-memory store reloaded too, not just the file.
+    let (req_id, worker) =
+        submit_pending_request(&daemon.socket, "https://api.example.test/v1/data");
+    wait_pending(&daemon.admin_socket, &req_id);
+
+    daemon.kill();
+    // The submit thread is parked on a noop-notifier prompt that
+    // never resolves; killing the daemon wakes it with a connection
+    // error which is fine for our purposes.
+    let _ = worker.join();
+}
+
+/// Sending RemoveRule with a nonexistent id surfaces an Error
+/// response instead of silently succeeding — the popover alert
+/// needs *some* failure string to render.
+#[test]
+fn remove_rule_unknown_id_returns_error() {
+    let daemon = DaemonHandle::spawn();
+    let resp = send_mgmt(
+        &daemon.admin_socket,
+        MgmtRequest::RemoveRule {
+            scope: WireScope::User,
+            id: "no-such-rule".into(),
+        },
+    );
+    match resp {
+        MgmtResponse::Error { message } => {
+            assert!(
+                !message.is_empty(),
+                "Error response must carry a non-empty message"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+    daemon.kill();
+}

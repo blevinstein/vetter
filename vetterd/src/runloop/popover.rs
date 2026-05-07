@@ -416,6 +416,20 @@ pub struct PopoverControllerIvars {
     /// other per-card registries; the `openFileClicked:` selector
     /// uses `[sender tag]` to look the path back up.
     file_paths: Mutex<Vec<PathBuf>>,
+    /// Per-card "See approval reason" disclosure body, indexed by
+    /// `disclosure_idx`. `Some(view)` only on auto-allow Recent
+    /// cards (those with a populated `rule_id` / `rule_scope`);
+    /// every other slot stays `None` so a stray firing of the
+    /// disclosure selector drops into a no-op. Powers Phase-5.1's
+    /// rule-attribution surface.
+    approval_reasons: Mutex<Vec<Option<Retained<NSView>>>>,
+    /// Per-card revoke-rule targets, indexed by the same
+    /// `disclosure_idx` slot `approval_reasons` uses. `Some((id,
+    /// scope))` mirrors the auto-allow attribution stamped onto the
+    /// resolved entry; the "Revoke rule" button reads this slot
+    /// when clicked and hands the pair to
+    /// [`super::popover_picker::confirm_and_revoke_rule`].
+    revoke_targets: Mutex<Vec<Option<(String, vetter_core::matcher::Scope)>>>,
     /// "Start at login" checkbox in the popover footer. Refreshed
     /// from `[SMAppService.mainApp status]` on every
     /// `popoverWillShow:` so the UI reflects whatever the user may
@@ -544,6 +558,27 @@ define_class!(
         #[unsafe(method(openFileClicked:))]
         fn open_file_clicked(&self, sender: Option<&NSButton>) {
             self.open_file_for_tag(sender);
+        }
+
+        /// "See approval reason" disclosure selector (Phase 5.1).
+        /// Toggles visibility of the `approval_reasons[sender.tag]`
+        /// view. Only auto-allow Recent cards register a slot here;
+        /// pending cards and human-resolved Recent cards leave the
+        /// slot `None` so a stray firing drops into a no-op.
+        #[unsafe(method(toggleApprovalReasonDisclosure:))]
+        fn toggle_approval_reason_disclosure(&self, sender: Option<&NSButton>) {
+            self.toggle_approval_reason_for_tag(sender);
+        }
+
+        /// "Revoke rule" button selector (Phase 5.1). Reads the
+        /// `(rule_id, scope)` slot at `revoke_targets[sender.tag]`
+        /// and hands it to
+        /// [`super::popover_picker::confirm_and_revoke_rule`] for
+        /// the NSAlert confirm + async write flow. Out-of-range or
+        /// `None` slots drop silently.
+        #[unsafe(method(revokeRuleClicked:))]
+        fn revoke_rule_clicked(&self, sender: Option<&NSButton>) {
+            self.invoke_revoke_for_tag(sender);
         }
     }
 );
@@ -788,6 +823,64 @@ impl PopoverController {
         }
     }
 
+    /// Body of `toggleApprovalReasonDisclosure:`. Same per-tag
+    /// disclosure pattern as `toggle_disclosure_for_tag`, but
+    /// targets the `approval_reasons[sender.tag]` view (the body of
+    /// the new "See approval reason" disclosure on auto-allow
+    /// Recent cards). Returns silently for tags whose slot is
+    /// `None` — pending cards and human-resolved Recent cards keep
+    /// the slot empty.
+    fn toggle_approval_reason_for_tag(&self, sender: Option<&NSButton>) {
+        let Some(button) = sender else { return };
+        let tag = button.tag();
+        let off = NSControlStateValueOff;
+        let hide = button.state() == off;
+        let view = {
+            let g = self
+                .ivars()
+                .approval_reasons
+                .lock()
+                .expect("approval_reasons poisoned");
+            g.get(tag as usize).cloned().flatten()
+        };
+        if let Some(view) = view {
+            view.setHidden(hide);
+            let title = if hide {
+                "▸ See approval reason"
+            } else {
+                "▾ Hide approval reason"
+            };
+            button.setTitle(&NSString::from_str(title));
+        }
+    }
+
+    /// Body of `revokeRuleClicked:`. Reads the `(rule_id, scope)`
+    /// pair stamped onto the auto-allow card at
+    /// `revoke_targets[sender.tag]` and hands it to the picker's
+    /// confirm+async helper. `None` slots / out-of-range tags drop
+    /// silently — the button should not have been visible in the
+    /// first place.
+    fn invoke_revoke_for_tag(&self, sender: Option<&NSButton>) {
+        let Some(button) = sender else { return };
+        let tag = button.tag();
+        let target = {
+            let g = self
+                .ivars()
+                .revoke_targets
+                .lock()
+                .expect("revoke_targets poisoned");
+            g.get(tag as usize).cloned().flatten()
+        };
+        let Some((rule_id, scope)) = target else {
+            eprintln!("vetterd: revoke-rule button tag {tag} has no target");
+            return;
+        };
+        let mtm =
+            MainThreadMarker::new().expect("revokeRuleClicked: must be called on the main thread");
+        let ctx = Arc::clone(self.ctx());
+        super::popover_picker::confirm_and_revoke_rule(mtm, ctx, rule_id, scope);
+    }
+
     /// Body of `openFileClicked:`. Looks up the path parked at
     /// `file_paths[sender.tag]` and asks `[NSWorkspace
     /// sharedWorkspace] openFile:` to dispatch it through Launch
@@ -840,6 +933,93 @@ impl PopoverController {
                 path.display()
             );
         }
+    }
+
+    /// Build the "See approval reason" disclosure surface on an
+    /// auto-allow Recent card (Phase 5.1).
+    ///
+    /// Adds two children to `card`:
+    /// 1. A borderless `PushOnPushOff` toggle whose tag is
+    ///    `disclosure_idx` so `toggle_approval_reason_for_tag` can
+    ///    find the body when clicked.
+    /// 2. A vertical stack hosting an attribution label
+    ///    ("Auto-allowed by rule `<id>` in <scope> scope.") plus a
+    ///    "Revoke rule" button. The stack starts hidden — the user
+    ///    has to expand the disclosure to see it.
+    ///
+    /// Returns the body view so the caller can park it in the
+    /// `approval_reasons` registry (the disclosure selector reads
+    /// the slot back by tag).
+    fn build_approval_reason_disclosure(
+        &self,
+        disclosure_idx: usize,
+        rule_id: &str,
+        scope: vetter_core::matcher::Scope,
+        card: &NSStackView,
+        mtm: MainThreadMarker,
+    ) -> Retained<NSView> {
+        // Toggle: same shape as the existing "Show raw" toggle so
+        // the visual idiom stays consistent across disclosures on
+        // a single card. Tag indexes into `approval_reasons`.
+        let toggle = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                ns_string!("▸ See approval reason"),
+                Some(&*(self as *const Self).cast::<AnyObject>()),
+                Some(sel!(toggleApprovalReasonDisclosure:)),
+                mtm,
+            )
+        };
+        toggle.setBordered(false);
+        toggle.setButtonType(NSButtonType::PushOnPushOff);
+        toggle.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        toggle.setTag(disclosure_idx as isize);
+        card.addArrangedSubview(&toggle);
+
+        // Body: attribution sentence + Revoke button. Hidden
+        // by default; the disclosure toggle flips `setHidden`
+        // on the wrapping container.
+        let body = NSStackView::new(mtm);
+        body.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        body.setAlignment(NSLayoutAttribute::Leading);
+        body.setSpacing(6.0);
+        body.setDistribution(NSStackViewDistribution::Fill);
+
+        let attribution_label = NSTextField::wrappingLabelWithString(
+            &NSString::from_str(&format!(
+                "Auto-allowed by rule `{rule_id}` in {} scope.",
+                scope.as_str()
+            )),
+            mtm,
+        );
+        attribution_label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        attribution_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        attribution_label.setSelectable(true);
+        body.addArrangedSubview(&attribution_label);
+
+        let revoke = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                ns_string!("Revoke rule"),
+                Some(&*(self as *const Self).cast::<AnyObject>()),
+                Some(sel!(revokeRuleClicked:)),
+                mtm,
+            )
+        };
+        // Bordered + small font so the destructive action looks
+        // like a button (not a borderless inline link). The
+        // disclosure title above it ("See approval reason") plus
+        // the destructive `NSAlert` confirm flow gives enough
+        // chrome — we deliberately don't try to colour the title
+        // red, which would require an `NSAttributedString` dance
+        // that doesn't compose well with system tint.
+        revoke.setBezelStyle(BEZEL_ROUNDED);
+        revoke.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        revoke.setTag(disclosure_idx as isize);
+        body.addArrangedSubview(&revoke);
+
+        body.setHidden(true);
+        card.addArrangedSubview(&body);
+
+        body.into_super()
     }
 
     /// Build the per-row "Open file" button used by the Phase 5.1
@@ -954,6 +1134,16 @@ impl PopoverController {
             .lock()
             .expect("file_paths poisoned")
             .clear();
+        self.ivars()
+            .approval_reasons
+            .lock()
+            .expect("approval_reasons poisoned")
+            .clear();
+        self.ivars()
+            .revoke_targets
+            .lock()
+            .expect("revoke_targets poisoned")
+            .clear();
 
         if entries.is_empty() && resolved.is_empty() {
             let empty = NSTextField::labelWithString(ns_string!("No pending requests."), mtm);
@@ -994,7 +1184,7 @@ impl PopoverController {
                 sep.setBoxType(NSBoxType::Separator);
                 add_full_width_arranged(cards, &sep);
             }
-            let card = self.build_card(mtm, idx, disclosure_idx, summary, rendered, None);
+            let card = self.build_card(mtm, idx, disclosure_idx, summary, rendered, None, None);
             disclosure_idx += 1;
             if focused_id.is_some_and(|f| f == summary.id) {
                 focused_view = Some(card.clone());
@@ -1029,6 +1219,18 @@ impl PopoverController {
                 // `disclosure_idx` keeps climbing so this card's
                 // `Show raw` button lands on its own slot in
                 // `body_scrolls`.
+                // Auto-allow attribution drives the new "See
+                // approval reason" disclosure on Allow-resolved
+                // cards. We only forward it on `Allow` outcomes —
+                // a Deny card with a rule_id (denylist hit) would
+                // surface a Revoke button for a denylist rule we
+                // deliberately don't edit from the popover today.
+                let attribution = match (entry.decision, &entry.rule_id, &entry.rule_scope) {
+                    (vetter_core::wire::WireDecision::Allow, Some(id), Some(scope)) => {
+                        Some((id.as_str(), *scope))
+                    }
+                    _ => None,
+                };
                 let card = self.build_card(
                     mtm,
                     idx,
@@ -1036,6 +1238,7 @@ impl PopoverController {
                     &entry.summary,
                     &entry.rendered,
                     Some(&entry.decision),
+                    attribution,
                 );
                 disclosure_idx += 1;
                 add_full_width_arranged(cards, &card);
@@ -1058,6 +1261,15 @@ impl PopoverController {
     /// - `None` → pending card: Approve/Reject buttons, normal colours.
     /// - `Some(decision)` → resolved card: outcome badge, no buttons,
     ///   secondary-colour header text.
+    ///
+    /// `attribution` carries the matcher's `(rule_id, scope)` for
+    /// auto-allow Recent cards. `Some(...)` triggers the new "See
+    /// approval reason" disclosure + Revoke rule button (Phase 5.1);
+    /// `None` for pending cards and human-resolved Recent cards
+    /// (no rule was involved). Callers must align the slot they
+    /// stamp into `approval_reasons` / `revoke_targets` with the
+    /// per-card `disclosure_idx`.
+    #[allow(clippy::too_many_arguments)]
     fn build_card(
         &self,
         mtm: MainThreadMarker,
@@ -1066,6 +1278,7 @@ impl PopoverController {
         summary: &PromptSummary,
         rendered: &str,
         outcome: Option<&vetter_core::wire::WireDecision>,
+        attribution: Option<(&str, vetter_core::matcher::Scope)>,
     ) -> Retained<NSView> {
         // Header row: `<command>  <smart URL row | fallback label>`.
         //
@@ -1420,6 +1633,28 @@ impl PopoverController {
             .lock()
             .expect("details_views poisoned")
             .push(details_container);
+
+        // "See approval reason" disclosure (Phase 5.1) — only built
+        // for auto-allow Recent cards (those with a populated
+        // `attribution`). Pending cards have nothing to show here
+        // (no rule fired yet); human-resolved cards have no rule to
+        // attribute; deny-resolved cards aren't editable from the
+        // popover today. We push a slot into both registries on
+        // every card regardless, so the per-tag lookups stay
+        // aligned with `disclosure_idx`.
+        let approval_view: Option<Retained<NSView>> = attribution.map(|(rule_id, scope)| {
+            self.build_approval_reason_disclosure(disclosure_idx, rule_id, scope, &card, mtm)
+        });
+        self.ivars()
+            .approval_reasons
+            .lock()
+            .expect("approval_reasons poisoned")
+            .push(approval_view);
+        self.ivars()
+            .revoke_targets
+            .lock()
+            .expect("revoke_targets poisoned")
+            .push(attribution.map(|(id, scope)| (id.to_string(), scope)));
 
         // "Show raw" disclosure — collapsed by default. Toggling
         // unhides the existing ANSI-attributed `body_scroll` so the

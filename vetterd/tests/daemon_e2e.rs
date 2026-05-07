@@ -170,10 +170,44 @@ fn audit_log_records_one_entry_per_request_with_decision() {
     // `argv: ["curl", ...]` cannot scribble a different command into
     // the log.
     assert_eq!(a.command, "curl");
+    // Phase 5.1: matcher-attributed auto-decisions persist their
+    // `rule_id` + `rule_scope` so the popover's Recent ring (and a
+    // post-hoc grep through the audit log) can name the rule that
+    // approved the request. The Daemon harness drives the daemon
+    // with `--allowlist <override>`, which the loader maps onto the
+    // `project` layer, so the recorded scope is `Project`.
+    assert_eq!(a.rule_id.as_deref(), Some("example-get"), "{:?}", a);
+    assert_eq!(
+        a.rule_scope,
+        Some(vetter_core::matcher::Scope::Project),
+        "{:?}",
+        a
+    );
+    // The auto-allow row also carries a non-empty `rendered` body so
+    // it surfaces in the popover's Recent section the same way human-
+    // resolved prompts do.
+    assert!(
+        !a.rendered.is_empty(),
+        "auto-allow rows must render: {:?}",
+        a
+    );
+    assert!(a.parsed.is_some(), "{:?}", a);
     let b = &by_id[&dec_b.id];
     assert_eq!(b.decision, WireDecision::Deny);
     assert!(b.reason.contains("blocked-host"), "{:?}", b);
     assert_eq!(b.command, "curl");
+    assert_eq!(b.rule_id.as_deref(), Some("blocked-host"), "{:?}", b);
+    assert_eq!(
+        b.rule_scope,
+        Some(vetter_core::matcher::Scope::Denylist),
+        "{:?}",
+        b
+    );
+    assert!(
+        !b.rendered.is_empty(),
+        "auto-deny rows must render: {:?}",
+        b
+    );
 }
 
 /// T2 regression: with v2 wire, the daemon parses argv itself, so a

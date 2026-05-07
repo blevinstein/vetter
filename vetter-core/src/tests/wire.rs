@@ -159,6 +159,40 @@ fn force_prompt_omitted_from_json_when_false() {
 }
 
 #[test]
+fn mgmt_remove_rule_request_round_trips_through_serde() {
+    let req = MgmtRequest::RemoveRule {
+        scope: WireScope::User,
+        id: "trust-api".into(),
+    };
+    let json = serde_json::to_string(&req).unwrap();
+    let back: MgmtRequest = serde_json::from_str(&json).unwrap();
+    match back {
+        MgmtRequest::RemoveRule { scope, id } => {
+            assert_eq!(scope, WireScope::User);
+            assert_eq!(id, "trust-api");
+        }
+        other => panic!("expected RemoveRule, got {other:?}"),
+    }
+}
+
+#[test]
+fn mgmt_rule_removed_response_round_trips_through_serde() {
+    let resp = MgmtResponse::RuleRemoved {
+        id: "trust-api".into(),
+        scope: WireScope::User,
+    };
+    let json = serde_json::to_string(&resp).unwrap();
+    let back: MgmtResponse = serde_json::from_str(&json).unwrap();
+    match back {
+        MgmtResponse::RuleRemoved { id, scope } => {
+            assert_eq!(id, "trust-api");
+            assert_eq!(scope, WireScope::User);
+        }
+        other => panic!("expected RuleRemoved, got {other:?}"),
+    }
+}
+
+#[test]
 fn from_match_maps_decisions_correctly() {
     use crate::matcher::Scope;
     assert_eq!(

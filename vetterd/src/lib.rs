@@ -487,6 +487,14 @@ fn handle_admin_request(ctx: &Arc<Context>, req: MgmtRequest) -> MgmtResponse {
                 },
             }
         }
+        MgmtRequest::RemoveRule { scope, id } => {
+            match suggestions::remove_allowlist_rule(ctx, scope, &id) {
+                Ok(()) => MgmtResponse::RuleRemoved { id, scope },
+                Err(e) => MgmtResponse::Error {
+                    message: e.to_string(),
+                },
+            }
+        }
         MgmtRequest::AddKnownHost { scope, entry } => {
             let pattern = entry.pattern.clone();
             match suggestions::add_known_host(ctx, scope, entry) {
@@ -724,12 +732,8 @@ pub fn handle_connection(
             // prompt-class and matcher-attributed auto-decision
             // paths. `force_prompt` mirrors what `evaluate` would
             // record on its own Prompt summary.
-            let auto_summary = policy::build_summary(
-                &req.id,
-                &parsed,
-                req.force_prompt,
-                &known_hosts,
-            );
+            let auto_summary =
+                policy::build_summary(&req.id, &parsed, req.force_prompt, &known_hosts);
             // Drop the read locks before resolve_outcome, which can
             // block the worker on the pending queue waiting for a
             // human decision; holding either lock across that wait
@@ -771,29 +775,37 @@ pub fn handle_connection(
     // `AuditLog::tail_resolved_entries` / `PendingQueue::warm_resolved`).
     // Parse-failure rows still leave those fields empty and
     // `skip_serializing_if` keeps them compact on disk.
-    let (primary_verb, primary_target, signals, parsed_payload, host_known, rendered, rule_id, rule_scope) =
-        match prompt_ctx {
-            Some(pc) => (
-                pc.summary.primary_verb,
-                pc.summary.primary_target,
-                pc.summary.signals,
-                pc.summary.parsed,
-                pc.summary.host_known,
-                pc.rendered,
-                pc.rule_id,
-                pc.rule_scope,
-            ),
-            None => (
-                String::new(),
-                String::new(),
-                Vec::new(),
-                None,
-                Vec::new(),
-                String::new(),
-                None,
-                None,
-            ),
-        };
+    let (
+        primary_verb,
+        primary_target,
+        signals,
+        parsed_payload,
+        host_known,
+        rendered,
+        rule_id,
+        rule_scope,
+    ) = match prompt_ctx {
+        Some(pc) => (
+            pc.summary.primary_verb,
+            pc.summary.primary_target,
+            pc.summary.signals,
+            pc.summary.parsed,
+            pc.summary.host_known,
+            pc.rendered,
+            pc.rule_id,
+            pc.rule_scope,
+        ),
+        None => (
+            String::new(),
+            String::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+            String::new(),
+            None,
+            None,
+        ),
+    };
 
     let entry = AuditEntry {
         id: req.id.clone(),

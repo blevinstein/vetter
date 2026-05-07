@@ -681,3 +681,82 @@ fn refresh_with_fires_listener_when_only_resolved_entries_present() {
         "empty queue refresh must not redraw"
     );
 }
+
+// -- record_auto -----------------------------------------------
+
+/// Auto-decisions skip the pending map entirely and land directly on
+/// the resolved-history ring with their matcher attribution intact.
+/// The popover's "See approval reason" disclosure reads back the
+/// `(rule_id, rule_scope)` pair stamped here.
+#[test]
+fn record_auto_pushes_entry_with_attribution_onto_ring() {
+    use vetter_core::matcher::Scope;
+    let q = PendingQueue::new();
+    q.record_auto(
+        summary("auto-1", "https://api.test/"),
+        "rendered-auto".into(),
+        WireDecision::Allow,
+        Some("trust-api".into()),
+        Some(Scope::User),
+    );
+    let ring = q.resolved_entries();
+    assert_eq!(ring.len(), 1);
+    assert_eq!(ring[0].summary.id, "auto-1");
+    assert_eq!(ring[0].decision, WireDecision::Allow);
+    assert_eq!(ring[0].rendered, "rendered-auto");
+    assert_eq!(ring[0].rule_id.as_deref(), Some("trust-api"));
+    assert_eq!(ring[0].rule_scope, Some(Scope::User));
+    assert!(q.is_empty(), "auto path must not park anything as pending");
+}
+
+/// Auto-decisions evict the oldest ring entry once the cap is hit,
+/// just like the human-resolved path. Without this the popover's
+/// Recent section would grow unbounded as auto-allow traffic
+/// dominates.
+#[test]
+fn record_auto_evicts_oldest_when_ring_full() {
+    use vetter_core::matcher::Scope;
+    let q = PendingQueue::new();
+    for i in 0..RESOLVED_CAP {
+        q.record_auto(
+            summary(&format!("auto-{i}"), "https://api.test/"),
+            "rendered".into(),
+            WireDecision::Allow,
+            Some(format!("rule-{i}")),
+            Some(Scope::User),
+        );
+    }
+    assert_eq!(q.resolved_entries().len(), RESOLVED_CAP);
+
+    q.record_auto(
+        summary("overflow", "https://api.test/"),
+        "rendered".into(),
+        WireDecision::Allow,
+        Some("rule-overflow".into()),
+        Some(Scope::User),
+    );
+    let ring = q.resolved_entries();
+    assert_eq!(ring.len(), RESOLVED_CAP);
+    assert_eq!(ring[0].summary.id, "overflow");
+    // The oldest entry (`auto-0`) should have rolled off the back.
+    assert!(ring.iter().all(|e| e.summary.id != "auto-0"));
+}
+
+#[test]
+fn record_auto_fires_change_listener() {
+    use vetter_core::matcher::Scope;
+    let q = Arc::new(PendingQueue::new());
+    let count = Arc::new(AtomicUsize::new(0));
+    let count2 = Arc::clone(&count);
+    q.set_change_listener(move || {
+        count2.fetch_add(1, Ordering::SeqCst);
+    });
+    q.record_auto(
+        summary("auto-1", "https://api.test/"),
+        "rendered".into(),
+        WireDecision::Allow,
+        Some("trust-api".into()),
+        Some(Scope::User),
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}

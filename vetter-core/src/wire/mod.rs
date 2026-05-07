@@ -336,6 +336,13 @@ pub enum MgmtRequest {
     /// enum's stack footprint (clippy::large_enum_variant —
     /// `Rule` is ~320 bytes, the other variants are ~50).
     AddRule { scope: WireScope, rule: Box<Rule> },
+    /// Remove the rule with `id` from the indicated allowlist scope.
+    /// The daemon rewrites the YAML (atomic temp + rename) and
+    /// reloads the in-memory store. The resolved-history ring is
+    /// **not** touched — past auto-allowed cards stay as a record of
+    /// what was approved while the rule was live. Used by the
+    /// popover's "Revoke rule" button on auto-allow Recent cards.
+    RemoveRule { scope: WireScope, id: String },
     /// Append `entry` to the indicated known-hosts scope. Adding a
     /// known-host never auto-approves anything (known-hosts only
     /// affect the `UnknownHost` *signal*, not the policy decision)
@@ -382,6 +389,12 @@ pub enum MgmtResponse {
         /// effect of adding this rule. Empty when the new rule
         /// did not cover any pending entry.
         auto_approved_ids: Vec<String>,
+    },
+    /// Result of [`MgmtRequest::RemoveRule`]. Echoes the id and
+    /// scope back so the caller can confirm the operation landed.
+    RuleRemoved {
+        id: String,
+        scope: WireScope,
     },
     /// Result of [`MgmtRequest::AddKnownHost`].
     KnownHostAdded {

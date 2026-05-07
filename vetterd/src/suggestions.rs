@@ -183,6 +183,38 @@ pub fn add_allowlist_rule(
     })
 }
 
+/// Remove the rule with `id` from the indicated allowlist scope and
+/// reload the in-memory store. Used by the popover's "Revoke rule"
+/// button on auto-allow Recent cards (Phase 5.1).
+///
+/// We do **not** retroactively touch the resolved-history ring —
+/// past auto-allowed cards stay as a record of what was approved
+/// while the rule was live. Only future requests see the change.
+///
+/// Same lock-ordering contract as [`add_allowlist_rule`]: write the
+/// YAML first, then take the store write lock for the reload.
+pub fn remove_allowlist_rule(
+    ctx: &Arc<Context>,
+    scope: WireScope,
+    id: &str,
+) -> Result<(), AddError> {
+    if scope != WireScope::User {
+        return Err(AddError::UnsupportedScope(scope));
+    }
+    let target = resolve_allowlist_path(ctx)?;
+    allow_loader::remove_rule(&target, id)?;
+
+    {
+        let new_store = allow_loader::load_default(None, ctx.allowlist_override.as_deref())?;
+        let mut g = ctx
+            .allowlist
+            .write()
+            .expect("allowlist lock poisoned (write)");
+        *g = new_store;
+    }
+    Ok(())
+}
+
 /// Persist `entry` to the indicated known-hosts scope, reload the
 /// in-memory store, and refresh the pending queue so any
 /// `UnknownHost` signals on cards that newly become "known" disappear.

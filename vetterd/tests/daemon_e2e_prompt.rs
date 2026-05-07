@@ -284,6 +284,78 @@ fn coalescing_does_not_drop_mock_observations() {
     assert_eq!(targets, vec!["https://first.test/", "https://second.test/"]);
 }
 
+/// Phase 5.1: an auto-allow rolls into the popover's resolved-
+/// history ring with `rule_id` / `rule_scope` populated, and that
+/// attribution survives the audit-log → tail → warm-up restart
+/// cycle. The popover's "See approval reason" disclosure on Recent
+/// cards relies on this ring slot.
+#[test]
+fn auto_allow_lands_in_resolved_ring_with_attribution_after_restart() {
+    // Use a custom allowlist that auto-allows a specific host so we
+    // get a matcher-attributed row, not a human-resolved prompt row.
+    let allowlist = r#"
+rules:
+  - id: auto-trust-rule
+    when:
+      http:
+        method: [GET]
+        url:
+          scheme: https
+          host: trust-test.example
+        headers_allow: ["*"]
+deny: []
+"#;
+    let d = Daemon::spawn(allowlist);
+
+    // No notifier expectations: this should never call the mock UI
+    // (matcher auto-allows it).
+    let req = make_req(curl_get("https://trust-test.example/"), false);
+    let req_id = req.id.clone();
+    let dec = round_trip(&d.socket, &req);
+    assert_eq!(dec.decision, WireDecision::Allow);
+    assert!(dec.reason.contains("auto-trust-rule"), "{}", dec.reason);
+
+    // Read the audit log before the daemon shuts down (it owns the
+    // tempdir, so the file vanishes on drop).
+    let audit_body = std::fs::read_to_string(&d.audit).expect("audit readable");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let audit_path = scratch.path().join("audit.log");
+    std::fs::write(&audit_path, &audit_body).expect("copy audit");
+    drop(d);
+
+    // The auto-allow row carries the matcher's attribution + a
+    // popover-renderable `rendered` body. The Daemon harness drives
+    // `vetterd --allowlist <override>`, which the loader maps onto
+    // the `project` layer (see `load_default(_, Some(_))`).
+    let line = audit_body
+        .lines()
+        .find(|l| l.contains(&req_id))
+        .unwrap_or_else(|| panic!("no audit row for id {req_id}: {audit_body}"));
+    let entry: AuditEntry = serde_json::from_str(line).expect("parse audit");
+    assert_eq!(entry.decision, WireDecision::Allow);
+    assert_eq!(entry.rule_id.as_deref(), Some("auto-trust-rule"));
+    assert_eq!(entry.rule_scope, Some(vetter_core::matcher::Scope::Project));
+    assert!(!entry.rendered.is_empty(), "{:?}", entry);
+    assert!(entry.parsed.is_some(), "{:?}", entry);
+
+    // Simulate a fresh daemon's startup warm-up against that audit
+    // file — same code path `run()` uses.
+    let log = AuditLog::open(&audit_path).unwrap();
+    let tailed = log
+        .tail_resolved_entries(vetterd::pending::RESOLVED_CAP)
+        .expect("tail resolved entries");
+    let queue = PendingQueue::new();
+    queue.warm_resolved(tailed.into_iter().filter_map(ResolvedEntry::try_from_audit));
+
+    let ring = queue.resolved_entries();
+    assert!(
+        ring.iter().any(|e| e.summary.id == req_id
+            && e.rule_id.as_deref() == Some("auto-trust-rule")
+            && e.rule_scope == Some(vetter_core::matcher::Scope::Project)),
+        "auto-allow row should land in resolved ring with attribution: {ring:?}"
+    );
+}
+
 /// Prompt-class audit rows carry the richer `PromptSummary`-derived
 /// fields so `AuditLog::tail_resolved_entries` + `ResolvedEntry::try_from_audit`
 /// can rebuild the popover's resolved-history ring on a fresh

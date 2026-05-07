@@ -34,7 +34,7 @@ use objc2_foundation::{
 };
 
 use vetter_core::known_hosts::KnownHostEntry;
-use vetter_core::matcher::Rule;
+use vetter_core::matcher::{Rule, Scope};
 use vetter_core::suggest::{HostSuggestion, RuleSuggestion};
 use vetter_core::wire::WireScope;
 
@@ -139,6 +139,76 @@ pub fn show_allowlist_picker(
         return;
     };
     persist_rule_async(mtm, ctx, suggestion.rule);
+}
+
+/// Confirm + execute a `Revoke rule` action surfaced from the
+/// "See approval reason" disclosure on an auto-allow Recent card.
+///
+/// Pops a destructive `NSAlert` ("Remove rule `<id>`…?") with the
+/// matched scope spelled out so the user knows where the YAML
+/// edit will land. On confirm, dispatches
+/// [`suggestions::remove_allowlist_rule`] onto the global concurrent
+/// queue so the file IO + reload doesn't stall the main thread, and
+/// surfaces a follow-up `NSAlert` (success / error) on the main
+/// queue. Past auto-allowed cards stay in the Recent ring as a
+/// historical record — only future requests see the change.
+pub fn confirm_and_revoke_rule(
+    mtm: MainThreadMarker,
+    ctx: Arc<Context>,
+    rule_id: String,
+    rule_scope: Scope,
+) {
+    // Today only `User`-scope rules are wired through the popover
+    // (matches the `add_allowlist_rule` path). A Recent card built
+    // from a built-in or denylist hit shouldn't surface the Revoke
+    // button in the first place — but we defend here so a stale
+    // popover snapshot can't trigger a misleading "removed" alert.
+    let scope = match rule_scope {
+        Scope::User => WireScope::User,
+        Scope::Project | Scope::Builtin | Scope::Session | Scope::Denylist => {
+            let alert = NSAlert::new(mtm);
+            pin_dark_appearance(&alert);
+            alert.setMessageText(ns_string!("Cannot revoke from this scope"));
+            alert.setInformativeText(&NSString::from_str(&format!(
+                "Rule `{rule_id}` lives in the {} layer, which the popover does not edit. \
+                 Use `vet allow rm` for project rules; built-in / denylist / session \
+                 entries are not removable from the UI.",
+                rule_scope.as_str()
+            )));
+            alert.setAlertStyle(NSAlertStyle::Informational);
+            alert.addButtonWithTitle(ns_string!("OK"));
+            let _ = alert.runModal();
+            return;
+        }
+    };
+
+    let confirm = NSAlert::new(mtm);
+    pin_dark_appearance(&confirm);
+    confirm.setMessageText(&NSString::from_str(&format!("Remove rule `{rule_id}`?")));
+    confirm.setInformativeText(&NSString::from_str(&format!(
+        "This deletes the rule from your user allowlist. \
+         Past auto-allowed entries will stay in Recent as a record \
+         of what was approved while the rule was active; only future \
+         requests will be re-prompted.\n\nScope: {}",
+        rule_scope.as_str()
+    )));
+    confirm.setAlertStyle(NSAlertStyle::Warning);
+    // First button is the destructive action; macOS HIG would prefer
+    // the cancel-as-default but `runModal()`'s convention is that
+    // the first added button is the default and returns
+    // `NSAlertFirstButtonReturn`. We add Cancel first to make it the
+    // default, then the destructive action second so an accidental
+    // Enter doesn't fire the revoke.
+    confirm.addButtonWithTitle(ns_string!("Cancel"));
+    confirm.addButtonWithTitle(ns_string!("Remove rule"));
+
+    let response = confirm.runModal();
+    // First button is Cancel; second is the destructive Remove.
+    if response == NSAlertFirstButtonReturn {
+        return;
+    }
+
+    revoke_rule_async(mtm, ctx, scope, rule_id);
 }
 
 /// Show the trust-host picker for `suggestions`.
@@ -398,6 +468,43 @@ fn persist_rule_async(mtm: MainThreadMarker, ctx: Arc<Context>, rule: Rule) {
                 }
                 Err(e) => {
                     alert.setMessageText(ns_string!("Could not add rule"));
+                    alert.setInformativeText(&NSString::from_str(&e.to_string()));
+                    alert.setAlertStyle(NSAlertStyle::Warning);
+                }
+            }
+            alert.addButtonWithTitle(ns_string!("OK"));
+            let _ = alert.runModal();
+        });
+    });
+}
+
+/// Background-dispatched sibling of [`persist_rule_async`] that
+/// removes (rather than appends) an allowlist rule. Mirrors the
+/// async hop pattern so the file-IO + YAML reload stays off the
+/// main thread, and surfaces a follow-up `NSAlert` on the main
+/// queue describing what happened.
+fn revoke_rule_async(mtm: MainThreadMarker, ctx: Arc<Context>, scope: WireScope, id: String) {
+    let _ = mtm; // captured for type checking; alert hops back to main below.
+    DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(
+        DispatchQoS::Default,
+    ))
+    .exec_async(move || {
+        let result = suggestions::remove_allowlist_rule(&ctx, scope, &id);
+        DispatchQueue::main().exec_async(move || {
+            let mtm =
+                MainThreadMarker::new().expect("post-revoke alert dispatched onto main queue");
+            let alert = NSAlert::new(mtm);
+            pin_dark_appearance(&alert);
+            match result {
+                Ok(()) => {
+                    alert.setMessageText(ns_string!("Rule removed"));
+                    alert.setInformativeText(&NSString::from_str(&format!(
+                        "Rule `{id}` has been removed from your user allowlist."
+                    )));
+                    alert.setAlertStyle(NSAlertStyle::Informational);
+                }
+                Err(e) => {
+                    alert.setMessageText(ns_string!("Could not remove rule"));
                     alert.setInformativeText(&NSString::from_str(&e.to_string()));
                     alert.setAlertStyle(NSAlertStyle::Warning);
                 }

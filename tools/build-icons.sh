@@ -4,8 +4,10 @@
 #
 # Inputs (the only files under version control that the artist needs
 # to touch when the brand changes):
-#   assets/vetter-logo.png        full-colour 1254×1254 source for the
-#                                  Finder / Dock icon (CFBundleIconFile)
+#   assets/vetter-logo.png        full-colour square source for the
+#                                  Finder / Dock icon (CFBundleIconFile).
+#                                  Should be ≥ 1024×1024 so the largest
+#                                  .icns representation isn't upscaled.
 #   assets/vetter-logo.svg        VTracer-derived vector mirror of the
 #                                  PNG above; the script auto-derives
 #                                  a monochrome variant from it for the

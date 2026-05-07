@@ -283,7 +283,7 @@ suggestions"), §11. Picker-sheet UI design lives in
 
 ## Phase 5.1 - Other improvements
 
-- [ ] add logo to the project, and use it for the menu bar icon
+- [x] add logo to the project, and use it for the menu bar icon
 - [ ] we need to make sure that when the "body" of a request is provided from a file, we handle correctly. and presumably the same if curl is writing directly to a file? not sure if that is possible without using a pipe to send it to a file?
 
 ## Phase 5.2 — Curl parser file-effect gaps

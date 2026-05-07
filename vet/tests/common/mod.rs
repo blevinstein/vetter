@@ -261,6 +261,24 @@ pub fn install_fake_curl(path_dir: &Path, marker: &Path) {
     std::fs::set_permissions(&curl_path, perm).unwrap();
 }
 
+/// Like [`install_fake_curl`], but the shim also writes `stdout_bytes`
+/// verbatim to its stdout before exiting. Use this to assert that
+/// `vet`'s allow / exec path is byte-perfect passthrough — anything
+/// `vet` itself wrote to fd 1 would corrupt the comparison.
+pub fn install_fake_curl_with_stdout(path_dir: &Path, marker: &Path, stdout_bytes: &str) {
+    let curl_path = path_dir.join("curl");
+    let script = format!(
+        "#!/bin/sh\nprintf '' > {marker_quoted}\nprintf '%s' {stdout_quoted}\nexit 0\n",
+        marker_quoted = shell_quote(&marker.display().to_string()),
+        stdout_quoted = shell_quote(stdout_bytes),
+    );
+    std::fs::write(&curl_path, script).expect("write fake curl");
+    use std::os::unix::fs::PermissionsExt;
+    let mut perm = std::fs::metadata(&curl_path).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&curl_path, perm).unwrap();
+}
+
 fn shell_quote(s: &str) -> String {
     // Single-quote and escape embedded single quotes the POSIX way.
     let mut out = String::with_capacity(s.len() + 2);

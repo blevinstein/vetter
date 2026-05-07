@@ -14,6 +14,14 @@
 //! path that does not receive a final `decision: allow` exits without
 //! ever calling `Command::exec`. A static check in tests verifies the
 //! sentinel marker file is absent in deny / no-daemon paths.
+//!
+//! Stdout discipline (Phase 5.1): `vet` writes nothing of its own to
+//! stdout on this path. Stderr carries every status line, every render
+//! block, and every error message; stdout is reserved for the wrapped
+//! command's bytes (after `execvp`) so `vet curl https://api/foo | jq .`
+//! works unmodified. Regression-tested in
+//! `vet/tests/wrap_cli.rs::allow_path_passes_through_curl_stdout_unchanged`
+//! and the companion deny / fail-closed assertions.
 
 use std::io::{self, Write};
 use std::os::unix::net::UnixStream;

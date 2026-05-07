@@ -201,3 +201,46 @@ fn dry_run_without_daemon_also_fails_closed() {
         .code(78)
         .stderr(contains("vetterd is not reachable"));
 }
+
+/// Phase 5.1 stdout-discipline guarantee: `--explain` is read-only and
+/// must keep stdout pristine so it composes with shell pipelines.
+#[test]
+fn explain_happy_path_emits_nothing_to_stdout() {
+    let (mut cmd, _scratch) = vet_nocolor_clean();
+    let assertion = cmd
+        .args(["--explain", "curl", "https://example.test/"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).expect("utf-8");
+    assert!(
+        stdout.is_empty(),
+        "explain mode leaked bytes to stdout: {stdout:?}"
+    );
+}
+
+#[test]
+fn explain_parse_error_emits_nothing_to_stdout() {
+    let (mut cmd, _scratch) = vet_nocolor_clean();
+    let assertion = cmd.args(["--explain", "curl", "-k"]).assert().code(78);
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).expect("utf-8");
+    assert!(
+        stdout.is_empty(),
+        "explain parse-error path leaked to stdout: {stdout:?}"
+    );
+}
+
+#[test]
+fn non_explain_wrap_no_daemon_emits_nothing_to_stdout() {
+    let (mut cmd, scratch) = vet_nocolor_clean();
+    let socket = scratch.path().join("missing.sock");
+    let assertion = cmd
+        .env("VETTERD_SOCKET", &socket)
+        .args(["curl", "https://example.test/"])
+        .assert()
+        .code(78);
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).expect("utf-8");
+    assert!(
+        stdout.is_empty(),
+        "fail-closed (no daemon) path leaked to stdout: {stdout:?}"
+    );
+}

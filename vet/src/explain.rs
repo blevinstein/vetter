@@ -6,6 +6,14 @@
 //! evaluates the matcher, renders the §8.5 layout to stderr, and
 //! prints the policy decision. It never executes the wrapped binary
 //! and never has any other side effects.
+//!
+//! Stdout discipline (Phase 5.1): explain-mode writes nothing to
+//! stdout. The §8.5 render block, the policy line, and every error
+//! message all go to stderr so `--explain` composes cleanly inside
+//! shell pipelines and never disturbs a downstream `| jq` /
+//! `| grep`. Regression-tested in
+//! `vet/tests/explain.rs::explain_happy_path_emits_nothing_to_stdout`
+//! and its parse-error / no-daemon companions.
 
 use std::io::{self, Write};
 use std::path::Path;

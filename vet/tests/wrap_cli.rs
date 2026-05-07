@@ -6,7 +6,7 @@ mod common;
 
 use predicates::str::contains;
 
-use common::{install_fake_curl, vet_cmd, Daemon, MockResponse};
+use common::{install_fake_curl, install_fake_curl_with_stdout, vet_cmd, Daemon, MockResponse};
 
 const ALLOWLIST: &str = r#"
 rules:
@@ -135,6 +135,35 @@ fn quiet_suppresses_render_block_but_still_prints_outcome() {
     assert!(
         stderr.contains("vet: allow"),
         "outcome line missing: {stderr:?}"
+    );
+}
+
+/// Phase 5.1 stdout-discipline guarantee: on the allow / exec path,
+/// `vet` writes nothing of its own to stdout. The wrapped command's
+/// stdout must reach the caller byte-perfect so pipelines like
+/// `vet curl https://api/foo | jq .` work unmodified. Anything `vet`
+/// itself wrote to fd 1 would corrupt this comparison.
+#[test]
+fn allow_path_passes_through_curl_stdout_unchanged() {
+    let d = Daemon::spawn(ALLOWLIST);
+    let dir = scratch();
+    let marker = dir.path().join("ran.marker");
+    let sentinel = "RESPONSE-BODY-FROM-FAKE-CURL\n";
+    install_fake_curl_with_stdout(dir.path(), &marker, sentinel);
+
+    let assertion = vet_cmd(&d.socket, dir.path())
+        .args(["curl", "https://example.test/"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).unwrap();
+    assert_eq!(
+        stdout, sentinel,
+        "vet leaked extra bytes to stdout on the allow / exec path: {stdout:?}"
+    );
+
+    assert!(
+        marker.exists(),
+        "fake curl marker missing — exec did not happen"
     );
 }
 

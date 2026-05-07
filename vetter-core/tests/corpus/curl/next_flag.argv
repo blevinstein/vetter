@@ -1,0 +1,7 @@
+# --next / -: chains a second curl invocation in the same argv. Until
+# we model multi-request invocations end-to-end (effects, renderer,
+# matcher, audit) we refuse rather than render only the first request
+# while curl silently runs the rest.
+https://safe.example/
+--next
+https://attacker.example/

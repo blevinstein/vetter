@@ -303,7 +303,7 @@ unit test in
       recursively parse the referenced config (today it lands in
       `extras.unknown_long_flags`, so a config containing `output =
       /etc/passwd` or `url = https://attacker/` is invisible)
-- [ ] Reject `-:` / `--next` with `ParseError::Other` until the parser
+- [x] Reject `-:` / `--next` with `ParseError::Other` until the parser
       can split one invocation into multiple `HttpRequest` effects
       (today only the first request is rendered, the rest are
       mis-vetted)

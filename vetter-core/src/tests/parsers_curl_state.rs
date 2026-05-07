@@ -151,6 +151,41 @@ fn config_short_flag_from_stdin_rejected() {
 }
 
 #[test]
+fn next_long_flag_rejected() {
+    // `--next` chains a second curl invocation in the same argv; we
+    // refuse rather than render only the first request.
+    let r = parse_argv(
+        &argv(&[
+            "https://safe.example/",
+            "--next",
+            "https://attacker.example/",
+        ]),
+        &StdinHandle::empty(),
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
+fn next_short_flag_rejected() {
+    let r = parse_argv(
+        &argv(&["https://safe.example/", "-:", "https://attacker.example/"]),
+        &StdinHandle::empty(),
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
+fn next_short_in_cluster_rejected() {
+    // `-k:` clusters `-k` (insecure, Bool) with `-:` (next, Bool); the
+    // tokeniser must surface the `:` so finalisation can reject it.
+    let r = parse_argv(
+        &argv(&["-k:", "https://safe.example/", "https://attacker.example/"]),
+        &StdinHandle::empty(),
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
 fn data_at_stdin_within_cap_yields_from_stdin() {
     let p = parse_stdin(&["-d", "@-", "https://example.test/"], b"hello", 1024).expect("parse");
     match &http_of(&p).body {
@@ -391,7 +426,8 @@ fn _exhaustive_flag_id_match_compiles() {
             | FlagId::Fail
             | FlagId::ShowError
             | FlagId::ProgressBar
-            | FlagId::Config => {}
+            | FlagId::Config
+            | FlagId::Next => {}
         }
     }
     let _ = _check;

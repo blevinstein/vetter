@@ -20,6 +20,15 @@ fn lookup_short_and_long_resolve_same_flag() {
 }
 
 #[test]
+fn lookup_next_short_and_long_resolve_same_flag() {
+    let by_short = lookup_short(':').expect(":");
+    let by_long = lookup_long("next").expect("next");
+    assert_eq!(by_short.id, by_long.id);
+    assert_eq!(by_short.id, FlagId::Next);
+    assert_eq!(by_short.kind, FlagKind::Bool);
+}
+
+#[test]
 fn positional_url() {
     let toks = tokens(&["https://example.test/"]);
     assert_eq!(

@@ -185,6 +185,13 @@ fn absorb(state: &mut CurlState, tok: Token) -> Result<(), ParseError> {
                      than mis-vet a config file that can override every other flag"
                 )));
             }
+            FlagId::Next => {
+                return Err(ParseError::Other(
+                    "--next / -: is not supported; vet refuses to run rather than \
+                     only vet the first of multiple requests in one curl invocation"
+                        .into(),
+                ));
+            }
         },
         Token::UnknownLong { name, value } => {
             state.unknown_longs.push(UnknownLong { name, value });

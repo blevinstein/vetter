@@ -57,6 +57,7 @@ pub enum FlagId {
     ShowError,
     ProgressBar,
     Config,
+    Next,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,6 +238,12 @@ pub const FLAG_SPECS: &[FlagSpec] = &[
         short: Some('K'),
         long: Some("config"),
         kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::Next,
+        short: Some(':'),
+        long: Some("next"),
+        kind: FlagKind::Bool,
     },
 ];
 

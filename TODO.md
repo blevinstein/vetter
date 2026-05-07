@@ -340,11 +340,21 @@ unit test in
       `--config` / `-K` and `--next` / `-:` already use
       ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
       [vetter-core/src/parsers/curl/flags.rs](vetter-core/src/parsers/curl/flags.rs))
-- [ ] Distinguish `-b @file` / `--cookie @file` (`FileRead` of a
-      credential file) from `-b "k=v"` (header-only); today both are
-      `UnknownShort` / `UnknownLong`
-- [ ] Emit `FileWrite` for `-c <file>` / `--cookie-jar <file>` with
-      `WriteSource::RemoteHttp { url }`
+- [x] Distinguish `-b @file` / `--cookie @file` (`FileRead` of a
+      credential file) from `-b "k=v"` (header-only); inline pairs
+      surface in `extras.cookies_inline` for visibility, file
+      occurrences emit one `FileRead` each (with `cwd` resolution)
+      and `-b @-` fails closed via `ParseError::StreamingUnsupported`
+      ([vetter-core/src/parsers/curl/flags.rs](vetter-core/src/parsers/curl/flags.rs),
+      [vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/cookie_file.argv](vetter-core/tests/corpus/curl/cookie_file.argv),
+      [vetter-core/tests/corpus/curl/cookie_inline.argv](vetter-core/tests/corpus/curl/cookie_inline.argv))
+- [x] Emit `FileWrite` for `-c <file>` / `--cookie-jar <file>` with
+      `WriteSource::RemoteHttp { url }`; only the most-recent
+      occurrence wins, the path is resolved against `cwd`, and the
+      jar write coexists with any `-o`/`-O` body write
+      ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/cookie_jar.argv](vetter-core/tests/corpus/curl/cookie_jar.argv))
 - [x] Recognise the seven curl client-TLS flags (`--cert`, `--key`,
       `--cert-type`, `--key-type`, `--pass`, `--pubkey`, `--engine`):
       emit `FileRead` for the path-bearing trio (`--cert`, `--key`,

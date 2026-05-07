@@ -652,7 +652,9 @@ fn _exhaustive_flag_id_match_compiles() {
             | FlagId::KeyType
             | FlagId::Pass
             | FlagId::Pubkey
-            | FlagId::Engine => {}
+            | FlagId::Engine
+            | FlagId::Cookie
+            | FlagId::CookieJar => {}
         }
     }
     let _ = _check;
@@ -827,4 +829,180 @@ fn cert_short_e_alias_works() {
         .signals
         .iter()
         .any(|s| s.kind == SignalKind::ClientCertificate));
+}
+
+// -- cookie I/O ------------------------------------------------------
+//
+// Closes the Phase 5.2 "cookie file FileRead / cookie-jar FileWrite"
+// items. `-b @file` loads cookies from a Netscape-format file (a
+// credential file) and must surface as a FileRead; `-b "k=v"` is
+// purely header-shaped and only lands in `extras.cookies_inline`.
+// `-c <file>` writes the in-memory cookie jar on exit and surfaces
+// as a FileWrite with `WriteSource::RemoteHttp`.
+
+fn collect_file_writes(p: &ParsedCommand) -> Vec<&FileWrite> {
+    p.effects
+        .iter()
+        .filter_map(|e| {
+            if let Effect::FileWrite(w) = e {
+                Some(w)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn cookie_file_emits_file_read() {
+    let p = parse(&["-b", "@/tmp/cookies.txt", "https://example.test/"]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/cookies.txt"));
+    assert!(
+        p.extras.get("cookies_inline").is_none(),
+        "file-form cookie should not populate cookies_inline: {:?}",
+        p.extras
+    );
+}
+
+#[test]
+fn cookie_file_relative_path_resolved_against_cwd() {
+    let p = parse_with_cwd(&["-b", "@cookies.txt", "https://example.test/"], "/work");
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/work/cookies.txt"));
+}
+
+#[test]
+fn cookie_long_alias_works() {
+    let p = parse(&["--cookie", "@/tmp/c.txt", "https://example.test/"]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/c.txt"));
+}
+
+#[test]
+fn cookie_inline_does_not_emit_file_read() {
+    let p = parse(&["-b", "session=abc", "https://example.test/"]);
+    assert!(
+        collect_file_reads(&p).is_empty(),
+        "inline cookie produced unexpected FileRead effects"
+    );
+    assert_eq!(
+        p.extras
+            .get("cookies_inline")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>()),
+        Some(vec!["session=abc"])
+    );
+}
+
+#[test]
+fn multiple_cookie_files_emit_one_file_read_each() {
+    let p = parse(&[
+        "-b",
+        "@/tmp/a.txt",
+        "-b",
+        "@/tmp/b.txt",
+        "https://example.test/",
+    ]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 2);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/a.txt"));
+    assert_eq!(reads[1].path, PathBuf::from("/tmp/b.txt"));
+}
+
+#[test]
+fn mixed_cookie_inline_and_file_split_correctly() {
+    let p = parse(&[
+        "-b",
+        "session=abc",
+        "-b",
+        "@/tmp/cookies.txt",
+        "https://example.test/",
+    ]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/cookies.txt"));
+    assert_eq!(
+        p.extras
+            .get("cookies_inline")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>()),
+        Some(vec!["session=abc"])
+    );
+}
+
+#[test]
+fn cookie_at_dash_rejected_as_streaming_unsupported() {
+    let r = parse_argv(
+        &argv(&["-b", "@-", "https://example.test/"]),
+        &StdinHandle::empty(),
+        None,
+    );
+    assert!(matches!(r, Err(ParseError::StreamingUnsupported)));
+}
+
+#[test]
+fn cookie_jar_emits_file_write_with_remote_http_source() {
+    let p = parse(&["-c", "/tmp/jar.txt", "https://example.test/login"]);
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/tmp/jar.txt"));
+    match &writes[0].source {
+        WriteSource::RemoteHttp { url } => {
+            assert_eq!(url.as_str(), "https://example.test/login");
+        }
+        other => panic!("expected RemoteHttp source, got {other:?}"),
+    }
+    assert!(writes[0].overwrite);
+}
+
+#[test]
+fn cookie_jar_relative_path_resolved_against_cwd() {
+    let p = parse_with_cwd(&["-c", "jar.txt", "https://example.test/"], "/work");
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/work/jar.txt"));
+}
+
+#[test]
+fn cookie_jar_long_alias_works() {
+    let p = parse(&["--cookie-jar", "/tmp/jar.txt", "https://example.test/"]);
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/tmp/jar.txt"));
+}
+
+#[test]
+fn cookie_jar_last_occurrence_wins() {
+    let p = parse(&[
+        "-c",
+        "/tmp/old.txt",
+        "-c",
+        "/tmp/new.txt",
+        "https://example.test/",
+    ]);
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/tmp/new.txt"));
+}
+
+#[test]
+fn cookie_jar_coexists_with_output_flag() {
+    // -c writes the jar; -o writes the response body. Both must
+    // surface as separate FileWrite effects.
+    let p = parse(&[
+        "-c",
+        "/tmp/jar.txt",
+        "-o",
+        "/tmp/body.json",
+        "https://example.test/",
+    ]);
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 2);
+    let paths: Vec<&std::path::Path> = writes.iter().map(|w| w.path.as_path()).collect();
+    assert!(paths.contains(&std::path::Path::new("/tmp/jar.txt")));
+    assert!(paths.contains(&std::path::Path::new("/tmp/body.json")));
 }

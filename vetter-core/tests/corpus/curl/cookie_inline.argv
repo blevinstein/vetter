@@ -1,0 +1,6 @@
+# -b "k=v" sends an inline Cookie: header. No FileRead effect; the
+# raw value lands in extras.cookies_inline so the renderer can show
+# the user what was passed without it leaking into unknown_short_flags.
+-b
+session=abc123
+https://api.example.test/me

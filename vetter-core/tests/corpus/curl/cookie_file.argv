@@ -1,0 +1,5 @@
+# -b @file loads cookies from a Netscape-format file; the path
+# surfaces as a FileRead effect (credential file).
+-b
+@./cookies.txt
+https://api.example.test/me

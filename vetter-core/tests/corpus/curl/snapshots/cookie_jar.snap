@@ -1,0 +1,47 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "-b",
+    "@./cookies.txt",
+    "-c",
+    "./cookies.txt",
+    "https://api.example.test/login"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "url": "https://api.example.test/login",
+      "headers": [],
+      "body": {
+        "kind": "none"
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    },
+    {
+      "kind": "file_read",
+      "path": "./cookies.txt"
+    },
+    {
+      "kind": "file_write",
+      "path": "./cookies.txt",
+      "source": {
+        "kind": "remote_http",
+        "url": "https://api.example.test/login"
+      },
+      "overwrite": true
+    }
+  ],
+  "signals": [],
+  "display_hints": {
+    "primary_verb": "GET",
+    "primary_target": "https://api.example.test/login",
+    "badges": []
+  }
+}

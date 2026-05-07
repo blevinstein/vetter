@@ -67,6 +67,8 @@ pub enum FlagId {
     Pass,
     Pubkey,
     Engine,
+    Cookie,
+    CookieJar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,6 +310,22 @@ pub const FLAG_SPECS: &[FlagSpec] = &[
         id: FlagId::Engine,
         short: None,
         long: Some("engine"),
+        kind: FlagKind::Value,
+    },
+    // Cookie I/O. `-b` accepts inline `key=value` pairs OR `@file` to
+    // read a Netscape-format cookie file; we model the variant in
+    // state.rs. `-c` writes the in-memory cookie jar to disk; only
+    // the most-recent occurrence wins, hence `Value` not `MultiValue`.
+    FlagSpec {
+        id: FlagId::Cookie,
+        short: Some('b'),
+        long: Some("cookie"),
+        kind: FlagKind::MultiValue,
+    },
+    FlagSpec {
+        id: FlagId::CookieJar,
+        short: Some('c'),
+        long: Some("cookie-jar"),
         kind: FlagKind::Value,
     },
 ];

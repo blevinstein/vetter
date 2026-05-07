@@ -31,6 +31,16 @@ enum DataChunk {
     Stdin,
 }
 
+/// One `-b` / `--cookie` occurrence. Curl accepts either inline
+/// `key=value` pairs (sent as a `Cookie:` header) or `@file` to load
+/// a Netscape-format cookie file. We keep them split so finalisation
+/// can emit a [`FileRead`] for every file occurrence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CookieChunk {
+    Inline(String),
+    File(PathBuf),
+}
+
 #[derive(Debug, Default)]
 struct CurlState {
     url: Option<Url>,
@@ -76,6 +86,16 @@ struct CurlState {
     /// optional `:password` suffix on `--cert`. The passphrase value
     /// itself is deliberately never stored — see absorb / build_extras.
     cert_password_supplied: bool,
+    /// `-b` / `--cookie` occurrences. Each is either an inline
+    /// `key=value` pair (sent as a `Cookie:` header by curl) or a
+    /// path to a Netscape-format cookie file (`@file`). File entries
+    /// surface as [`FileRead`] effects in finalise; inline entries
+    /// only land in `extras.cookies_inline` for visibility.
+    cookies: Vec<CookieChunk>,
+    /// `-c` / `--cookie-jar <file>`: curl writes the in-memory jar
+    /// here on exit. Curl honours only the most-recent occurrence so
+    /// this is `Option`, not `Vec`.
+    cookie_jar: Option<PathBuf>,
     /// Unrecognised long flags, optionally with values, preserved into
     /// `extras` so the renderer's detail view can display them.
     unknown_longs: Vec<UnknownLong>,
@@ -274,6 +294,13 @@ fn absorb(state: &mut CurlState, tok: Token) -> Result<(), ParseError> {
                 let _ = value.expect("Value flag has value");
                 state.cert_password_supplied = true;
             }
+            FlagId::Cookie => {
+                let v = value.expect("Value flag has value");
+                state.cookies.push(classify_cookie(&v)?);
+            }
+            FlagId::CookieJar => {
+                state.cookie_jar = Some(PathBuf::from(value.expect("Value flag has value")));
+            }
         },
         Token::UnknownLong { name, value } => {
             state.unknown_longs.push(UnknownLong { name, value });
@@ -309,6 +336,24 @@ fn classify_data(raw: &str, id: FlagId) -> DataChunk {
     } else {
         DataChunk::Inline(raw.to_string())
     }
+}
+
+/// Split a `-b` / `--cookie` value into its `Inline` / `File` form.
+///
+/// Curl treats a leading `@` as "load this Netscape cookie file". A
+/// bare `-` after the `@` would mean "load from stdin" — we don't
+/// stream stdin into the parser today (see `Body::FromStdin` /
+/// `StreamingUnsupported` for the existing precedent), and the
+/// approver UI cannot represent a credential file that doesn't exist
+/// yet, so we fail closed there.
+fn classify_cookie(raw: &str) -> Result<CookieChunk, ParseError> {
+    if let Some(rest) = raw.strip_prefix('@') {
+        if rest == "-" {
+            return Err(ParseError::StreamingUnsupported);
+        }
+        return Ok(CookieChunk::File(PathBuf::from(rest)));
+    }
+    Ok(CookieChunk::Inline(raw.to_string()))
 }
 
 fn parse_header(raw: &str) -> Result<Header, ParseError> {
@@ -402,6 +447,20 @@ fn finalise(
     if let Some(pubkey_path) = &state.pubkey {
         effects.push(Effect::FileRead(FileRead {
             path: resolve_path(pubkey_path, cwd),
+        }));
+    }
+    for c in &state.cookies {
+        if let CookieChunk::File(path) = c {
+            effects.push(Effect::FileRead(FileRead {
+                path: resolve_path(path, cwd),
+            }));
+        }
+    }
+    if let Some(jar) = &state.cookie_jar {
+        effects.push(Effect::FileWrite(FileWrite {
+            path: resolve_path(jar, cwd),
+            source: WriteSource::RemoteHttp { url: url.clone() },
+            overwrite: true,
         }));
     }
     if let Some(write) = build_file_write(&state, &url, cwd) {
@@ -744,6 +803,20 @@ fn build_extras(state: &CurlState) -> serde_json::Value {
         extras.insert(
             "cert_password_supplied".to_string(),
             serde_json::Value::Bool(true),
+        );
+    }
+    let inline_cookies: Vec<serde_json::Value> = state
+        .cookies
+        .iter()
+        .filter_map(|c| match c {
+            CookieChunk::Inline(s) => Some(serde_json::Value::String(s.clone())),
+            CookieChunk::File(_) => None,
+        })
+        .collect();
+    if !inline_cookies.is_empty() {
+        extras.insert(
+            "cookies_inline".to_string(),
+            serde_json::Value::Array(inline_cookies),
         );
     }
     if extras.is_empty() {

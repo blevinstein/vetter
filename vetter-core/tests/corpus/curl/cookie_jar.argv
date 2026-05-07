@@ -1,0 +1,9 @@
+# -c <file> writes the in-memory cookie jar on exit; surfaces as a
+# FileWrite effect with WriteSource::RemoteHttp (curl populated the
+# jar from the response). Combined with -b @file the same call both
+# reads and writes a cookie file.
+-b
+@./cookies.txt
+-c
+./cookies.txt
+https://api.example.test/login

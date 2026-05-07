@@ -1,0 +1,37 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "-b",
+    "session=abc123",
+    "https://api.example.test/me"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "url": "https://api.example.test/me",
+      "headers": [],
+      "body": {
+        "kind": "none"
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    }
+  ],
+  "signals": [],
+  "display_hints": {
+    "primary_verb": "GET",
+    "primary_target": "https://api.example.test/me",
+    "badges": []
+  },
+  "extras": {
+    "cookies_inline": [
+      "session=abc123"
+    ]
+  }
+}

@@ -276,7 +276,19 @@ suggestions"), §11. Picker-sheet UI design lives in
 - [x] add logo to the project, and use it for the menu bar icon
 - [ ] we need to make sure that when the "body" of a request is provided from a file, we handle correctly. and presumably the same if curl is writing directly to a file? not sure if that is possible without using a pipe to send it to a file?
 - [ ] after an action is already approved, I want a way to identify the allowlist entry that approved it (if applicable), in case I need to remove an overbroad allowlist rule
-- [ ] if an action to be approved has a file input, I want some way to easily inspect that from the UI (e.g. click a button to open that file in a text editor or something?)
+- [x] if an action to be approved has a file input, I want some way to easily inspect that from the UI (e.g. click a button to open that file in a text editor or something?)
+      Per-row **Open file** button (SF Symbol `arrow.up.right.square`)
+      sits on every `FileRead` and `Body::FromFile` row in the popover
+      card; clicking it routes through `[NSWorkspace sharedWorkspace]
+      openURL:` to the user's default app. The button is suppressed
+      when the path doesn't exist on disk so writes-to-be-created
+      and dangling references stay button-free; `FileWrite` and
+      `ProcessSpawn` rows deliberately remain untouched this round
+      ([vetterd/src/runloop/popover_effects.rs](vetterd/src/runloop/popover_effects.rs)
+      gains the `FileButtonFactory` plumbing,
+      [vetterd/src/runloop/popover.rs](vetterd/src/runloop/popover.rs)
+      adds the `openFileClicked:` selector + `file_paths` registry
+      and `build_open_file_button` helper)
 - [x] I am concerned about the stuff that `vet` adds to stdout, in case I want to pipe my curl output into another command like jq. Let's make sure all of our output is sent to `stderr` only? or some other solution? to avoid messing with such pipe-based commands
       (audit confirms `vet` writes only to stderr on the wrap / explain
       / fail-closed paths; `vet/tests/wrap_cli.rs::allow_path_passes_through_curl_stdout_unchanged`

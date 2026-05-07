@@ -22,9 +22,12 @@
 
 #![cfg(target_os = "macos")]
 
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSColor, NSFont, NSFontWeightSemibold, NSImage, NSImageView, NSStackView,
+    NSButton, NSColor, NSFont, NSFontWeightSemibold, NSImage, NSImageView, NSStackView,
     NSStackViewDistribution, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
@@ -41,29 +44,148 @@ const SECTION_FONT_SIZE: f64 = 11.0;
 /// monospaced path label baseline.
 const GLYPH_SIZE: f64 = 13.0;
 
-/// Walk `parsed.effects` and produce a flat `Vec<NSView>` of
-/// per-effect rows in source order. Empty effects (today: only
-/// `Body::None` HTTP bodies) are silently dropped so the resulting
-/// stack has no blank slots.
-pub fn build_effect_views(parsed: &ParsedCommand, mtm: MainThreadMarker) -> Vec<Retained<NSView>> {
-    let mut out: Vec<Retained<NSView>> = Vec::new();
+/// Factory the popover supplies so this presentation-only module
+/// can attach an "Open file" button next to FileRead /
+/// `Body::FromFile` rows without taking a hard dependency on
+/// [`super::popover::PopoverController`]. Returning `None` means
+/// "skip the button on this row" — the popover side returns `None`
+/// when `path.exists()` is false so writes-to-be-created and
+/// dangling references don't sprout a useless button. Tests pass a
+/// `|_, _| None` stub for "no button" coverage and a small factory
+/// returning `Some(NSButton::new(mtm))` to exercise the wiring
+/// without needing a real on-disk file.
+pub type FileButtonFactory<'a> = dyn Fn(&Path, MainThreadMarker) -> Option<Retained<NSButton>> + 'a;
+
+/// Per-effect views split by visibility class so the popover can
+/// keep the Recent stack compact without hiding the Phase 5.1
+/// "Open file" button behind a disclosure.
+///
+/// - `file_inputs`: file-input rows — `Effect::FileRead` plus the
+///   `Body::FromFile` branch of `build_body_section`. Always rendered
+///   inline on both pending and resolved cards so the Open button is
+///   one click away after a request moves into "Recent".
+/// - `others`: everything else — headers, non-file body, auth,
+///   `FileWrite`, `ProcessSpawn`. Rendered inline on pending cards
+///   (the user is deciding now and wants to see them); on resolved
+///   cards they live behind the "▸ Details" disclosure.
+///
+/// Within each bucket, items are emitted in source order. Across
+/// buckets, the popover paints `file_inputs` first (visible), then
+/// `others` (possibly hidden). Pending cards show both inline so
+/// the global ordering of headers / body / auth on a single card
+/// matches the §8.5 renderer.
+pub struct EffectViews {
+    pub file_inputs: Vec<Retained<NSView>>,
+    pub others: Vec<Retained<NSView>>,
+}
+
+// `total` and `is_empty` are convenience helpers used by the
+// row-count assertions in `crate::tests::popover_effects`. The
+// popover itself reaches into `file_inputs` / `others` directly
+// because pending and resolved cards lay them out differently
+// (see `PopoverController::build_card`), so a single "is everything
+// empty?" predicate isn't enough on the production path. Marking
+// the impl `#[allow(dead_code)]` keeps clippy quiet on the lib
+// build (where `#[cfg(test)]` test modules are absent) without
+// hiding either method from the test binary.
+#[allow(dead_code)]
+impl EffectViews {
+    /// Total number of per-effect rows across both buckets.
+    pub fn total(&self) -> usize {
+        self.file_inputs.len() + self.others.len()
+    }
+
+    /// True when both buckets are empty — the GET-with-no-headers
+    /// case, after CredentialUse / Network filtering, etc.
+    pub fn is_empty(&self) -> bool {
+        self.file_inputs.is_empty() && self.others.is_empty()
+    }
+}
+
+/// Walk `parsed.effects` and produce a per-effect view set, split
+/// into file-input rows (always visible on both card kinds) and
+/// "other" rows (possibly hidden behind a disclosure on resolved
+/// cards). Empty effects (today: only `Body::None` HTTP bodies)
+/// are silently dropped so neither bucket has blank slots.
+///
+/// `file_button_factory` is consulted for every file-input row
+/// (`FileRead` and the `Body::FromFile` branch of `build_body_section`).
+/// File outputs (`FileWrite`) and `ProcessSpawn` deliberately don't
+/// get the button this round — write paths may not exist yet, and
+/// "Reveal in Finder" is a separate UX call left for follow-up.
+///
+/// De-duplication: the curl parser intentionally emits **both**
+/// `Body::FromFile { path }` (for `-d @file`) **and** a separate
+/// `Effect::FileRead { path }` so the matcher / audit log can
+/// reason about the file read independently of the HTTP body.
+/// That double-bookkeeping is invisible in the §8.5 renderer (one
+/// "body" line, one "files" line) but the popover would render two
+/// identical rows — body row + read row, same path — without help.
+/// Any FileRead whose path also appears as a `Body::FromFile` in
+/// this parsed command is skipped on the read row; the body row
+/// already exposes the path and the Open button. We keep the
+/// FileRead in the underlying effect list (the matcher still sees
+/// it) — only the visible row collapses.
+pub fn build_effect_views(
+    parsed: &ParsedCommand,
+    mtm: MainThreadMarker,
+    file_button_factory: &FileButtonFactory<'_>,
+) -> EffectViews {
+    let body_file_paths = collect_body_file_paths(parsed);
+    let mut out = EffectViews {
+        file_inputs: Vec::new(),
+        others: Vec::new(),
+    };
     for eff in &parsed.effects {
         match eff {
             Effect::HttpRequest(req) => {
                 if let Some(view) = build_headers_section(&req.headers, mtm) {
-                    out.push(view);
+                    out.others.push(view);
                 }
-                if let Some(view) = build_body_section(&req.body, mtm) {
-                    out.push(view);
+                if let Some(view) = build_body_section(&req.body, mtm, file_button_factory) {
+                    // `Body::FromFile` is the only file-input
+                    // variant of the body section. Other body
+                    // shapes (Inline / Form / FromStdin) live in
+                    // `others` so they fall behind the resolved-
+                    // card disclosure with the rest of the request
+                    // metadata.
+                    if matches!(req.body, Body::FromFile { .. }) {
+                        out.file_inputs.push(view);
+                    } else {
+                        out.others.push(view);
+                    }
                 }
                 if let Some(view) = build_auth_row(req.auth.as_ref(), mtm) {
-                    out.push(view);
+                    out.others.push(view);
                 }
             }
-            Effect::FileRead(fr) => out.push(build_file_read_row(fr, mtm)),
-            Effect::FileWrite(fw) => out.push(build_file_write_row(fw, mtm)),
-            Effect::ProcessSpawn(ps) => out.push(build_process_row(ps, mtm)),
+            Effect::FileRead(fr) => {
+                if body_file_paths.contains(&fr.path) {
+                    // Path already surfaced by the matching
+                    // `Body::FromFile` row above — skip the duplicate.
+                    continue;
+                }
+                out.file_inputs
+                    .push(build_file_read_row(fr, mtm, file_button_factory));
+            }
+            Effect::FileWrite(fw) => out.others.push(build_file_write_row(fw, mtm)),
+            Effect::ProcessSpawn(ps) => out.others.push(build_process_row(ps, mtm)),
             Effect::CredentialUse(_) | Effect::Network(_) => {}
+        }
+    }
+    out
+}
+
+/// Gather every `Body::FromFile` path across this parsed command's
+/// HttpRequest effects. Used by [`build_effect_views`] to suppress
+/// the duplicate `read` row the curl parser emits for `-d @file`.
+fn collect_body_file_paths(parsed: &ParsedCommand) -> HashSet<PathBuf> {
+    let mut out: HashSet<PathBuf> = HashSet::new();
+    for eff in &parsed.effects {
+        if let Effect::HttpRequest(req) = eff {
+            if let Body::FromFile { path } = &req.body {
+                out.insert(path.clone());
+            }
         }
     }
     out
@@ -124,7 +246,16 @@ fn build_header_row(h: &Header, mtm: MainThreadMarker) -> Retained<NSView> {
 
 /// Build the body section. Returns `None` for `Body::None` so we
 /// don't render a stub "body" label for bodyless GETs.
-fn build_body_section(body: &Body, mtm: MainThreadMarker) -> Option<Retained<NSView>> {
+///
+/// `file_button_factory` is threaded in so the `Body::FromFile`
+/// branch can attach the per-row "Open file" button (Phase 5.1).
+/// Other body variants don't reference an on-disk path and ignore
+/// the factory.
+fn build_body_section(
+    body: &Body,
+    mtm: MainThreadMarker,
+    file_button_factory: &FileButtonFactory<'_>,
+) -> Option<Retained<NSView>> {
     let (meta, content): (String, Option<Retained<NSView>>) = match body {
         Body::None => return None,
         Body::Inline { bytes } => (
@@ -133,7 +264,12 @@ fn build_body_section(body: &Body, mtm: MainThreadMarker) -> Option<Retained<NSV
         ),
         Body::FromFile { path } => (
             "from file".to_string(),
-            Some(file_glyph_row("doc.text", &path.display().to_string(), mtm)),
+            Some(file_glyph_row_with_open(
+                "doc.text",
+                path,
+                mtm,
+                file_button_factory,
+            )),
         ),
         Body::FromStdin { digest, len } => (
             format!("from stdin, {len} B, sha256 {}", digest.as_str()),
@@ -236,12 +372,17 @@ fn build_auth_row(auth: Option<&Auth>, mtm: MainThreadMarker) -> Option<Retained
     Some(stack.into_super())
 }
 
-fn build_file_read_row(fr: &FileRead, mtm: MainThreadMarker) -> Retained<NSView> {
+fn build_file_read_row(
+    fr: &FileRead,
+    mtm: MainThreadMarker,
+    file_button_factory: &FileButtonFactory<'_>,
+) -> Retained<NSView> {
     let stack = vertical_section("read", mtm);
-    stack.addArrangedSubview(&file_glyph_row(
+    stack.addArrangedSubview(&file_glyph_row_with_open(
         "doc.text",
-        &fr.path.display().to_string(),
+        &fr.path,
         mtm,
+        file_button_factory,
     ));
     stack.into_super()
 }
@@ -268,6 +409,38 @@ fn build_process_row(ps: &ProcessSpawn, mtm: MainThreadMarker) -> Retained<NSVie
 /// running OS doesn't ship the requested SF Symbol (older macOS,
 /// future renames).
 fn file_glyph_row(symbol: &str, text: &str, mtm: MainThreadMarker) -> Retained<NSView> {
+    let row = file_glyph_row_base(symbol, text, mtm);
+    let spacer = NSView::new(mtm);
+    row.addArrangedSubview(&spacer);
+    row.into_super()
+}
+
+/// File-input variant of [`file_glyph_row`] that also asks
+/// `file_button_factory` for an "Open file" button (Phase 5.1) and
+/// inserts it between the path label and the trailing flexible
+/// spacer. The factory returns `None` for paths that don't exist on
+/// disk, keeping the row identical to the no-button case for
+/// pre-write or vanished paths.
+fn file_glyph_row_with_open(
+    symbol: &str,
+    path: &Path,
+    mtm: MainThreadMarker,
+    file_button_factory: &FileButtonFactory<'_>,
+) -> Retained<NSView> {
+    let row = file_glyph_row_base(symbol, &path.display().to_string(), mtm);
+    if let Some(btn) = file_button_factory(path, mtm) {
+        row.addArrangedSubview(&btn);
+    }
+    let spacer = NSView::new(mtm);
+    row.addArrangedSubview(&spacer);
+    row.into_super()
+}
+
+/// Glyph + label without the trailing spacer, so the spacer can sit
+/// after any optional trailing controls (e.g. the Phase 5.1 "Open
+/// file" button) and the layout still reads as `[glyph] [label]
+/// [controls] <spacer>`.
+fn file_glyph_row_base(symbol: &str, text: &str, mtm: MainThreadMarker) -> Retained<NSStackView> {
     let row = NSStackView::new(mtm);
     row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
     row.setSpacing(6.0);
@@ -287,9 +460,7 @@ fn file_glyph_row(symbol: &str, text: &str, mtm: MainThreadMarker) -> Retained<N
     label.setFont(Some(&monospaced(ROW_FONT_SIZE)));
     row.addArrangedSubview(&label);
 
-    let spacer = NSView::new(mtm);
-    row.addArrangedSubview(&spacer);
-    row.into_super()
+    row
 }
 
 /// Make a vertical `NSStackView` titled with a small dim section

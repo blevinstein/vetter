@@ -127,6 +127,18 @@ driven by [`vetterd/tests/daemon_e2e_prompt.rs`].
     reappear without you opening anything. Untick the checkbox
     and reboot to confirm the unregistration also takes effect
     (or run `vet daemon autostart disable` from the CLI).
+13. **Inspect file input from popover.**
+    `printf '{"x":1}\n' > /tmp/sample.json && vet curl -d @/tmp/sample.json https://prompt-test.example/`.
+    Open the popover; the body row (`from file`) and the `read`
+    row both show the path with a small **↗** glyph button to its
+    right. Click either button — the JSON should open in your
+    default app for `.json` (TextEdit / VS Code / Quick Look).
+    Sanity-check: `Body::FromStdin` cards (`vet curl -d @- …` with
+    a piped payload) and `FileWrite` rows (`vet curl -o /tmp/out
+    https://prompt-test.example/`) intentionally do **not** show
+    the button this round — write paths may not exist yet, and
+    "Reveal in Finder" is a follow-up. Approve the request to
+    finish.
 
 ## Autostart on login
 

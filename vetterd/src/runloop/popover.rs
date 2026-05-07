@@ -20,6 +20,7 @@
 //! `card_ids` vector. `refresh` rebuilds both — the tags stay in
 //! lockstep with the underlying queue snapshot for that paint.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use objc2::define_class;
@@ -35,6 +36,7 @@ use objc2_app_kit::{
     NSLayoutConstraint, NSPasteboard, NSPasteboardTypeString, NSPopover, NSPopoverBehavior,
     NSPopoverDelegate, NSScrollView, NSStackView, NSStackViewDistribution, NSStatusBarButton,
     NSTextField, NSTextView, NSUserInterfaceLayoutOrientation, NSView, NSViewController,
+    NSWorkspace,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSArray, NSEdgeInsets, NSObject, NSObjectProtocol, NSPoint,
@@ -404,6 +406,16 @@ pub struct PopoverControllerIvars {
     /// popover's transient first-responder state, which was the
     /// root cause of the "can't copy the raw contents" bug.
     raw_texts: Mutex<Vec<String>>,
+    /// Per-button file paths registered by the per-effect "Open"
+    /// buttons (Phase 5.1: inspect file inputs). Indexed by the
+    /// button's `tag` — a flat counter that climbs across every
+    /// card in the current refresh, independent of `disclosure_idx`
+    /// (a single card can hold multiple file rows; FileRead and
+    /// the matching `Body::FromFile` for `-d @file` each register
+    /// their own button). Cleared in `refresh()` alongside the
+    /// other per-card registries; the `openFileClicked:` selector
+    /// uses `[sender tag]` to look the path back up.
+    file_paths: Mutex<Vec<PathBuf>>,
     /// "Start at login" checkbox in the popover footer. Refreshed
     /// from `[SMAppService.mainApp status]` on every
     /// `popoverWillShow:` so the UI reflects whatever the user may
@@ -519,6 +531,19 @@ define_class!(
         #[unsafe(method(trustHostClicked:))]
         fn trust_host_clicked(&self, sender: Option<&NSButton>) {
             self.open_host_picker(sender);
+        }
+
+        /// Per-effect "Open file" selector (Phase 5.1). Looks up the
+        /// path parked at `file_paths[sender.tag]` and asks
+        /// `NSWorkspace` to open it via the user's default app — the
+        /// approver wants to inspect the bytes a `-d @file` /
+        /// `-T file` is about to upload before clicking Approve.
+        /// Out-of-range tags / vanished paths drop silently; the
+        /// button should not have been built in the first place but
+        /// a stale popover snapshot can race with a delete on disk.
+        #[unsafe(method(openFileClicked:))]
+        fn open_file_clicked(&self, sender: Option<&NSButton>) {
+            self.open_file_for_tag(sender);
         }
     }
 );
@@ -763,6 +788,100 @@ impl PopoverController {
         }
     }
 
+    /// Body of `openFileClicked:`. Looks up the path parked at
+    /// `file_paths[sender.tag]` and asks `[NSWorkspace
+    /// sharedWorkspace] openFile:` to dispatch it through Launch
+    /// Services' content-type handler — Quick Look / TextEdit /
+    /// VS Code etc., depending on the file's UTI.
+    ///
+    /// We deliberately use the deprecated `openFile:` rather than
+    /// the modern `openURL:` here. `openURL:` for a `file://` URL
+    /// routes through Launch Services' URL-handler chain, where
+    /// any browser that has registered itself as a generic
+    /// `file://` scheme handler (Firefox, Chrome with certain
+    /// flags) intercepts the open and shows the file inside the
+    /// browser instead of the user's actual editor. The
+    /// content-type-keyed `openFile:` path bypasses scheme
+    /// handlers entirely and matches what Finder's "Open" menu
+    /// would do — which is the user's mental model when they
+    /// click an Open button next to a file path.
+    ///
+    /// Tag-out-of-range / vanished file: drop silently (warn to
+    /// stderr for the tag case so a refresh-vs-click race is
+    /// debuggable). The button's existence implies `path.exists()`
+    /// at the time `build_card` ran, but the file may have been
+    /// removed since; `openFile:` returns `false` in that case and
+    /// we surface a stderr line rather than pre-empting Finder's
+    /// own error dialog.
+    fn open_file_for_tag(&self, sender: Option<&NSButton>) {
+        let Some(button) = sender else { return };
+        let tag = button.tag();
+        let path = {
+            let g = self.ivars().file_paths.lock().expect("file_paths poisoned");
+            g.get(tag as usize).cloned()
+        };
+        let Some(path) = path else {
+            eprintln!("vetterd: open-file button tag {tag} out of range");
+            return;
+        };
+        let path_str = path.to_string_lossy();
+        let workspace = NSWorkspace::sharedWorkspace();
+        // `openFile:` is marked deprecated in favour of `openURL:`,
+        // but the replacement has the scheme-handler routing bug
+        // documented above. The behaviour we want — "open this
+        // file in the default app for its content type" — is what
+        // `openFile:` has always done; AppKit still supports it on
+        // every macOS version we target.
+        #[allow(deprecated)]
+        let opened = workspace.openFile(&NSString::from_str(&path_str));
+        if !opened {
+            eprintln!(
+                "vetterd: NSWorkspace openFile: refused to open {}",
+                path.display()
+            );
+        }
+    }
+
+    /// Build the per-row "Open file" button used by the Phase 5.1
+    /// inspect-file-input flow. Returns `None` when `path` doesn't
+    /// exist on disk so writes-to-be-created and dangling
+    /// references stay button-free; otherwise pushes `path` onto
+    /// `file_paths`, builds a borderless SF-Symbol button, and
+    /// stamps the new index onto `setTag` so `open_file_for_tag`
+    /// can find the path back.
+    ///
+    /// `target_ptr` is the controller itself (shared across every
+    /// row in a single refresh). The unsafe cast mirrors how the
+    /// Approve/Reject buttons borrow the controller pointer.
+    fn build_open_file_button(
+        &self,
+        path: &std::path::Path,
+        target_ptr: *const AnyObject,
+        mtm: MainThreadMarker,
+    ) -> Option<Retained<NSButton>> {
+        if !path.exists() {
+            return None;
+        }
+        let tag = {
+            let mut g = self.ivars().file_paths.lock().expect("file_paths poisoned");
+            let tag = g.len();
+            g.push(path.to_path_buf());
+            tag
+        };
+        let btn = build_open_file_button(mtm);
+        // SAFETY: target_ptr is the live `&PopoverController` we
+        // were called from; it outlives the button because the
+        // button is dropped when `refresh()` rebuilds the cards
+        // stack — and `refresh()` only runs from the same
+        // controller, on the same main thread.
+        unsafe {
+            btn.setTarget(Some(&*target_ptr));
+            btn.setAction(Some(sel!(openFileClicked:)));
+        }
+        btn.setTag(tag as isize);
+        Some(btn)
+    }
+
     /// Replace the cards stack with one card per pending entry
     /// followed by a "Recent" section for resolved entries.
     /// If `focused_id` is `Some` and matches a pending entry, that
@@ -829,6 +948,11 @@ impl PopoverController {
             .raw_texts
             .lock()
             .expect("raw_texts poisoned")
+            .clear();
+        self.ivars()
+            .file_paths
+            .lock()
+            .expect("file_paths poisoned")
             .clear();
 
         if entries.is_empty() && resolved.is_empty() {
@@ -1210,44 +1334,80 @@ impl PopoverController {
         //   wall of redundant detail; the structured rows are one
         //   click away when the user wants to audit a past
         //   decision.
-        let effect_views: Vec<Retained<NSView>> = summary
+        // Phase 5.1: per-row "Open file" buttons on FileRead /
+        // `Body::FromFile` rows. The factory closure pushes the
+        // resolved path onto `file_paths`, returns the matching tag
+        // wired to `openFileClicked:`, and silently bows out for
+        // paths that don't exist on disk yet (so writes-to-be-
+        // created and dangling references don't sprout a useless
+        // button). The `target` pointer is the controller itself —
+        // shared across every row in this refresh, mirrors how the
+        // Approve/Reject buttons borrow `self` for their selectors.
+        let target_ptr: *const AnyObject = (self as *const Self).cast::<AnyObject>();
+        let file_button_factory = |path: &std::path::Path, mtm: MainThreadMarker| {
+            self.build_open_file_button(path, target_ptr, mtm)
+        };
+        let effect_views = summary
             .parsed
             .as_ref()
-            .map(|parsed| popover_effects::build_effect_views(parsed, mtm))
-            .unwrap_or_default();
+            .map(|parsed| popover_effects::build_effect_views(parsed, mtm, &file_button_factory))
+            .unwrap_or_else(|| popover_effects::EffectViews {
+                file_inputs: Vec::new(),
+                others: Vec::new(),
+            });
         let mut details_container: Option<Retained<NSView>> = None;
-        if outcome.is_some() && !effect_views.is_empty() {
-            // Resolved + has structured rows → wrap them in a
-            // hidden container.
-            let container = NSStackView::new(mtm);
-            container.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
-            container.setSpacing(8.0);
-            container.setDistribution(NSStackViewDistribution::Fill);
-            for view in &effect_views {
-                container.addArrangedSubview(view);
+        if outcome.is_some() {
+            // Resolved card. File-input rows always render inline
+            // so the per-row "Open file" button stays one click
+            // away after the request lands in "Recent" — the user
+            // often comes back to a recently approved card to
+            // re-inspect what they uploaded. The other effect rows
+            // (headers, non-file body, auth, file writes, process
+            // spawns) sit behind a "▸ Details" disclosure so the
+            // Recent stack stays compact when only the audit
+            // header matters.
+            for view in &effect_views.file_inputs {
+                card.addArrangedSubview(view);
             }
-            container.setHidden(true);
+            if !effect_views.others.is_empty() {
+                let container = NSStackView::new(mtm);
+                container.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+                container.setSpacing(8.0);
+                container.setDistribution(NSStackViewDistribution::Fill);
+                for view in &effect_views.others {
+                    container.addArrangedSubview(view);
+                }
+                container.setHidden(true);
 
-            let details_toggle = unsafe {
-                NSButton::buttonWithTitle_target_action(
-                    ns_string!("▸ Details"),
-                    Some(&*(self as *const Self).cast::<AnyObject>()),
-                    Some(sel!(toggleDetailsDisclosure:)),
-                    mtm,
-                )
-            };
-            details_toggle.setBordered(false);
-            details_toggle.setButtonType(NSButtonType::PushOnPushOff);
-            details_toggle.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-            details_toggle.setTag(disclosure_idx as isize);
-            card.addArrangedSubview(&details_toggle);
-            card.addArrangedSubview(&container);
+                let details_toggle = unsafe {
+                    NSButton::buttonWithTitle_target_action(
+                        ns_string!("▸ Details"),
+                        Some(&*(self as *const Self).cast::<AnyObject>()),
+                        Some(sel!(toggleDetailsDisclosure:)),
+                        mtm,
+                    )
+                };
+                details_toggle.setBordered(false);
+                details_toggle.setButtonType(NSButtonType::PushOnPushOff);
+                details_toggle.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+                details_toggle.setTag(disclosure_idx as isize);
+                card.addArrangedSubview(&details_toggle);
+                card.addArrangedSubview(&container);
 
-            details_container = Some(container.into_super());
+                details_container = Some(container.into_super());
+            }
         } else {
-            // Pending card or no effect rows: render directly into
-            // the card (no disclosure).
-            for view in &effect_views {
+            // Pending card. Render every per-effect row inline in
+            // source order — the user is making a decision *now*
+            // and wants to see headers / body / auth / file ops
+            // without reaching for a disclosure. Painting
+            // `file_inputs` first matches the resolved layout and
+            // keeps the "what file are you uploading?" question at
+            // the top of every card.
+            for view in &effect_views.file_inputs {
+                card.addArrangedSubview(view);
+            }
+            for view in &effect_views.others {
                 card.addArrangedSubview(view);
             }
         }
@@ -1649,6 +1809,47 @@ fn build_copy_button(mtm: MainThreadMarker) -> Retained<NSButton> {
     // Constrain the button to a compact square so it sits flush
     // with the 11pt "Show raw" text and doesn't hijack the
     // horizontal stack's intrinsic-content allocation.
+    let side = 18.0;
+    btn.setFrameSize(NSSize::new(side, side));
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+        btn.widthAnchor().constraintEqualToConstant(side),
+        btn.heightAnchor().constraintEqualToConstant(side),
+    ]));
+    btn
+}
+
+/// Build the per-effect "Open file" button (Phase 5.1) — a
+/// borderless SF Symbol glyph that sits between the file path and
+/// the trailing spacer in a `popover_effects::file_glyph_row_with_open`.
+/// Tapping it asks the user's default app to open the file via
+/// [`PopoverController::open_file_for_tag`].
+///
+/// Wiring the target / selector / tag is the caller's job (see
+/// [`PopoverController::build_open_file_button`]) — same split as
+/// [`build_copy_button`] so we don't drag a `Retained<PopoverController>`
+/// down through every row helper.
+///
+/// Falls back to a text-glyph title when the SF Symbol lookup
+/// fails so older macOS / stripped SF Symbols installs still get a
+/// clickable affordance.
+fn build_open_file_button(mtm: MainThreadMarker) -> Retained<NSButton> {
+    let btn = NSButton::new(mtm);
+    btn.setBordered(false);
+    btn.setBezelStyle(BEZEL_ROUNDED);
+    btn.setButtonType(NSButtonType::MomentaryChange);
+    btn.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
+    btn.setToolTip(Some(ns_string!("Open file in default app")));
+    if let Some(img) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        ns_string!("arrow.up.right.square"),
+        Some(ns_string!("Open file in default app")),
+    ) {
+        btn.setImage(Some(&img));
+        btn.setImageScaling(NSImageScaling::ScaleProportionallyDown);
+        btn.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
+        btn.setTitle(ns_string!(""));
+    } else {
+        btn.setTitle(ns_string!("↗"));
+    }
     let side = 18.0;
     btn.setFrameSize(NSSize::new(side, side));
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[

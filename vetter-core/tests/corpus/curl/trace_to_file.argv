@@ -1,0 +1,7 @@
+# --trace <file> writes a full hex+ASCII protocol trace to disk;
+# surfaces as a FileWrite. The `-` (stdout) and `%` (stderr)
+# sentinels are handled at the unit-test level; this fixture pins
+# the regular-path emission.
+--trace
+/tmp/trace.bin
+https://example.test/

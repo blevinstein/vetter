@@ -654,7 +654,13 @@ fn _exhaustive_flag_id_match_compiles() {
             | FlagId::Pubkey
             | FlagId::Engine
             | FlagId::Cookie
-            | FlagId::CookieJar => {}
+            | FlagId::CookieJar
+            | FlagId::DumpHeader
+            | FlagId::Trace
+            | FlagId::TraceAscii
+            | FlagId::EtagSave
+            | FlagId::EtagCompare
+            | FlagId::WriteOut => {}
         }
     }
     let _ = _check;
@@ -1004,5 +1010,258 @@ fn cookie_jar_coexists_with_output_flag() {
     assert_eq!(writes.len(), 2);
     let paths: Vec<&std::path::Path> = writes.iter().map(|w| w.path.as_path()).collect();
     assert!(paths.contains(&std::path::Path::new("/tmp/jar.txt")));
+    assert!(paths.contains(&std::path::Path::new("/tmp/body.json")));
+}
+
+// -- diagnostic outputs ---------------------------------------------
+//
+// `-D`, `--trace`, `--trace-ascii`, `--etag-save` write data derived
+// from the HTTP transaction to disk and surface as `FileWrite` with
+// `WriteSource::RemoteHttp { url }` (mirroring `--cookie-jar`).
+// `--etag-compare` and `-w @file` surface as `FileRead`. `-w` without
+// a leading `@` is informational and emits no effect; `-w @-` is
+// rejected like other stdin streams.
+
+#[test]
+fn dump_header_emits_file_write_with_remote_http_source() {
+    let p = parse(&["-D", "/tmp/headers.txt", "https://example.test/"]);
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/tmp/headers.txt"));
+    match &writes[0].source {
+        WriteSource::RemoteHttp { url } => {
+            assert_eq!(url.as_str(), "https://example.test/");
+        }
+        other => panic!("expected RemoteHttp source, got {other:?}"),
+    }
+    assert!(writes[0].overwrite);
+}
+
+#[test]
+fn dump_header_long_alias_works() {
+    let p = parse(&["--dump-header", "/tmp/h.txt", "https://example.test/"]);
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/tmp/h.txt"));
+}
+
+#[test]
+fn dump_header_dash_emits_no_file_write() {
+    // `-D -` dumps to stdout — not a file the user is asking us to
+    // approve.
+    let p = parse(&["-D", "-", "https://example.test/"]);
+    assert!(
+        collect_file_writes(&p).is_empty(),
+        "`-D -` produced unexpected FileWrite effects"
+    );
+}
+
+#[test]
+fn dump_header_relative_path_resolved_against_cwd() {
+    let p = parse_with_cwd(&["-D", "headers.txt", "https://example.test/"], "/work");
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/work/headers.txt"));
+}
+
+#[test]
+fn dump_header_last_occurrence_wins() {
+    let p = parse(&[
+        "-D",
+        "/tmp/old.txt",
+        "-D",
+        "/tmp/new.txt",
+        "https://example.test/",
+    ]);
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/tmp/new.txt"));
+}
+
+#[test]
+fn trace_emits_file_write() {
+    let p = parse(&["--trace", "/tmp/trace.bin", "https://example.test/"]);
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/tmp/trace.bin"));
+    match &writes[0].source {
+        WriteSource::RemoteHttp { url } => {
+            assert_eq!(url.as_str(), "https://example.test/");
+        }
+        other => panic!("expected RemoteHttp source, got {other:?}"),
+    }
+}
+
+#[test]
+fn trace_dash_no_effect() {
+    let p = parse(&["--trace", "-", "https://example.test/"]);
+    assert!(
+        collect_file_writes(&p).is_empty(),
+        "`--trace -` produced unexpected FileWrite effects"
+    );
+}
+
+#[test]
+fn trace_percent_no_effect() {
+    let p = parse(&["--trace", "%", "https://example.test/"]);
+    assert!(
+        collect_file_writes(&p).is_empty(),
+        "`--trace %` produced unexpected FileWrite effects"
+    );
+}
+
+#[test]
+fn trace_relative_path_resolved_against_cwd() {
+    let p = parse_with_cwd(&["--trace", "trace.bin", "https://example.test/"], "/work");
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/work/trace.bin"));
+}
+
+#[test]
+fn trace_ascii_emits_file_write() {
+    let p = parse(&["--trace-ascii", "/tmp/trace.txt", "https://example.test/"]);
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/tmp/trace.txt"));
+}
+
+#[test]
+fn trace_ascii_dash_no_effect() {
+    let p = parse(&["--trace-ascii", "-", "https://example.test/"]);
+    assert!(collect_file_writes(&p).is_empty());
+}
+
+#[test]
+fn trace_ascii_percent_no_effect() {
+    let p = parse(&["--trace-ascii", "%", "https://example.test/"]);
+    assert!(collect_file_writes(&p).is_empty());
+}
+
+#[test]
+fn etag_save_emits_file_write_with_remote_http_source() {
+    let p = parse(&["--etag-save", "/tmp/etag", "https://example.test/data.json"]);
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/tmp/etag"));
+    match &writes[0].source {
+        WriteSource::RemoteHttp { url } => {
+            assert_eq!(url.as_str(), "https://example.test/data.json");
+        }
+        other => panic!("expected RemoteHttp source, got {other:?}"),
+    }
+}
+
+#[test]
+fn etag_save_relative_path_resolved_against_cwd() {
+    let p = parse_with_cwd(&["--etag-save", "etag", "https://example.test/"], "/work");
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].path, PathBuf::from("/work/etag"));
+}
+
+#[test]
+fn etag_compare_emits_file_read() {
+    let p = parse(&[
+        "--etag-compare",
+        "/tmp/etag",
+        "https://example.test/data.json",
+    ]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/etag"));
+    assert!(
+        collect_file_writes(&p).is_empty(),
+        "`--etag-compare` should not produce a FileWrite"
+    );
+}
+
+#[test]
+fn etag_compare_relative_path_resolved_against_cwd() {
+    let p = parse_with_cwd(
+        &["--etag-compare", "etag", "https://example.test/"],
+        "/work",
+    );
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/work/etag"));
+}
+
+#[test]
+fn etag_save_and_compare_coexist_as_separate_effects() {
+    let p = parse(&[
+        "--etag-save",
+        "/tmp/etag",
+        "--etag-compare",
+        "/tmp/etag",
+        "https://example.test/data.json",
+    ]);
+    assert_eq!(collect_file_writes(&p).len(), 1);
+    assert_eq!(collect_file_reads(&p).len(), 1);
+}
+
+#[test]
+fn write_out_at_file_emits_file_read() {
+    let p = parse(&["-w", "@/tmp/fmt.txt", "https://example.test/"]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/fmt.txt"));
+    assert!(
+        collect_file_writes(&p).is_empty(),
+        "`-w @file` should not produce a FileWrite"
+    );
+}
+
+#[test]
+fn write_out_long_alias_at_file_emits_file_read() {
+    let p = parse(&["--write-out", "@/tmp/fmt.txt", "https://example.test/"]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/fmt.txt"));
+}
+
+#[test]
+fn write_out_inline_format_emits_no_effect() {
+    let p = parse(&["-w", "%{http_code}\n", "https://example.test/"]);
+    assert!(collect_file_reads(&p).is_empty());
+    assert!(collect_file_writes(&p).is_empty());
+}
+
+#[test]
+fn write_out_at_dash_rejected() {
+    let r = parse_argv(
+        &argv(&["-w", "@-", "https://example.test/"]),
+        &StdinHandle::empty(),
+        None,
+    );
+    assert!(matches!(r, Err(ParseError::StreamingUnsupported)), "{r:?}");
+}
+
+#[test]
+fn write_out_relative_path_resolved_against_cwd() {
+    let p = parse_with_cwd(&["-w", "@fmt.txt", "https://example.test/"], "/work");
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/work/fmt.txt"));
+}
+
+#[test]
+fn dump_header_etag_save_and_output_emit_three_writes() {
+    // Mirrors `cookie_jar_coexists_with_output_flag`: three flags
+    // each contribute their own FileWrite effect.
+    let p = parse(&[
+        "-D",
+        "/tmp/headers.txt",
+        "--etag-save",
+        "/tmp/etag",
+        "-o",
+        "/tmp/body.json",
+        "https://example.test/data.json",
+    ]);
+    let writes = collect_file_writes(&p);
+    assert_eq!(writes.len(), 3);
+    let paths: Vec<&std::path::Path> = writes.iter().map(|w| w.path.as_path()).collect();
+    assert!(paths.contains(&std::path::Path::new("/tmp/headers.txt")));
+    assert!(paths.contains(&std::path::Path::new("/tmp/etag")));
     assert!(paths.contains(&std::path::Path::new("/tmp/body.json")));
 }

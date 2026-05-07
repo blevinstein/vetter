@@ -96,6 +96,26 @@ struct CurlState {
     /// here on exit. Curl honours only the most-recent occurrence so
     /// this is `Option`, not `Vec`.
     cookie_jar: Option<PathBuf>,
+    /// `-D` / `--dump-header <file>`: response headers as received.
+    /// `None` when the user passed `-` (stdout) or omitted the flag,
+    /// so finalisation only emits a `FileWrite` for real paths.
+    dump_header: Option<PathBuf>,
+    /// `--trace <file>`: full hex+ASCII protocol trace. `None` for the
+    /// `-` (stdout) and `%` (stderr) sentinels.
+    trace: Option<PathBuf>,
+    /// `--trace-ascii <file>`: ASCII-only protocol trace. Same `-` /
+    /// `%` sentinels as `--trace`.
+    trace_ascii: Option<PathBuf>,
+    /// `--etag-save <file>`: write the response ETag to disk.
+    etag_save: Option<PathBuf>,
+    /// `--etag-compare <file>`: read an ETag from disk and add it as
+    /// `If-None-Match` on the request.
+    etag_compare: Option<PathBuf>,
+    /// `-w` / `--write-out <fmt>`: only the `@file` form references a
+    /// file the parser surfaces (as `FileRead`); bare format strings
+    /// are informational and leave this `None`. `@-` (stdin) is
+    /// rejected at absorb-time via `StreamingUnsupported`.
+    write_out_file: Option<PathBuf>,
     /// Unrecognised long flags, optionally with values, preserved into
     /// `extras` so the renderer's detail view can display them.
     unknown_longs: Vec<UnknownLong>,
@@ -301,6 +321,47 @@ fn absorb(state: &mut CurlState, tok: Token) -> Result<(), ParseError> {
             FlagId::CookieJar => {
                 state.cookie_jar = Some(PathBuf::from(value.expect("Value flag has value")));
             }
+            FlagId::DumpHeader => {
+                let v = value.expect("Value flag has value");
+                state.dump_header = if v == "-" {
+                    None
+                } else {
+                    Some(PathBuf::from(v))
+                };
+            }
+            FlagId::Trace => {
+                let v = value.expect("Value flag has value");
+                state.trace = if v == "-" || v == "%" {
+                    None
+                } else {
+                    Some(PathBuf::from(v))
+                };
+            }
+            FlagId::TraceAscii => {
+                let v = value.expect("Value flag has value");
+                state.trace_ascii = if v == "-" || v == "%" {
+                    None
+                } else {
+                    Some(PathBuf::from(v))
+                };
+            }
+            FlagId::EtagSave => {
+                state.etag_save = Some(PathBuf::from(value.expect("Value flag has value")));
+            }
+            FlagId::EtagCompare => {
+                state.etag_compare = Some(PathBuf::from(value.expect("Value flag has value")));
+            }
+            FlagId::WriteOut => {
+                let v = value.expect("Value flag has value");
+                if let Some(rest) = v.strip_prefix('@') {
+                    if rest == "-" {
+                        return Err(ParseError::StreamingUnsupported);
+                    }
+                    state.write_out_file = Some(PathBuf::from(rest));
+                } else {
+                    state.write_out_file = None;
+                }
+            }
         },
         Token::UnknownLong { name, value } => {
             state.unknown_longs.push(UnknownLong { name, value });
@@ -461,6 +522,37 @@ fn finalise(
             path: resolve_path(jar, cwd),
             source: WriteSource::RemoteHttp { url: url.clone() },
             overwrite: true,
+        }));
+    }
+    // Diagnostic outputs: `-D`, `--trace`, `--trace-ascii`,
+    // `--etag-save`. All four write data derived from the HTTP
+    // transaction, so they share `WriteSource::RemoteHttp { url }`
+    // with `--cookie-jar` / `-o`. The state fields are already
+    // `None` for the `-` (stdout) / `%` (stderr) sentinels — see
+    // `absorb`.
+    for diag_path in [
+        state.dump_header.as_ref(),
+        state.trace.as_ref(),
+        state.trace_ascii.as_ref(),
+        state.etag_save.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        effects.push(Effect::FileWrite(FileWrite {
+            path: resolve_path(diag_path, cwd),
+            source: WriteSource::RemoteHttp { url: url.clone() },
+            overwrite: true,
+        }));
+    }
+    if let Some(etag) = &state.etag_compare {
+        effects.push(Effect::FileRead(FileRead {
+            path: resolve_path(etag, cwd),
+        }));
+    }
+    if let Some(fmt) = &state.write_out_file {
+        effects.push(Effect::FileRead(FileRead {
+            path: resolve_path(fmt, cwd),
         }));
     }
     if let Some(write) = build_file_write(&state, &url, cwd) {

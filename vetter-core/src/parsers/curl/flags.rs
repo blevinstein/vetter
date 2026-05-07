@@ -69,6 +69,12 @@ pub enum FlagId {
     Engine,
     Cookie,
     CookieJar,
+    DumpHeader,
+    Trace,
+    TraceAscii,
+    EtagSave,
+    EtagCompare,
+    WriteOut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,6 +332,46 @@ pub const FLAG_SPECS: &[FlagSpec] = &[
         id: FlagId::CookieJar,
         short: Some('c'),
         long: Some("cookie-jar"),
+        kind: FlagKind::Value,
+    },
+    // Diagnostic outputs. All single-occurrence-wins (last value
+    // overrides earlier ones), so FlagKind::Value rather than
+    // MultiValue. Path semantics + --trace / --dump-header special
+    // sentinels (`-` / `%`) are handled in state.rs.
+    FlagSpec {
+        id: FlagId::DumpHeader,
+        short: Some('D'),
+        long: Some("dump-header"),
+        kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::Trace,
+        short: None,
+        long: Some("trace"),
+        kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::TraceAscii,
+        short: None,
+        long: Some("trace-ascii"),
+        kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::EtagSave,
+        short: None,
+        long: Some("etag-save"),
+        kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::EtagCompare,
+        short: None,
+        long: Some("etag-compare"),
+        kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::WriteOut,
+        short: Some('w'),
+        long: Some("write-out"),
         kind: FlagKind::Value,
     },
 ];

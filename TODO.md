@@ -390,14 +390,25 @@ unit test in
       [vetter-core/src/signals/mod.rs](vetter-core/src/signals/mod.rs),
       [vetter-core/src/render/mod.rs](vetter-core/src/render/mod.rs),
       [vetter-core/tests/corpus/curl/client_cert.argv](vetter-core/tests/corpus/curl/client_cert.argv))
-- [ ] Emit `FileWrite` for `-D` / `--dump-header <file>`
-- [ ] Emit `FileWrite` for `--trace` / `--trace-ascii <file>`,
+- [x] Emit `FileWrite` for `-D` / `--dump-header <file>` (treating
+      `-` / stdout as no effect)
+      ([vetter-core/src/parsers/curl/flags.rs](vetter-core/src/parsers/curl/flags.rs),
+      [vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/dump_header.argv](vetter-core/tests/corpus/curl/dump_header.argv))
+- [x] Emit `FileWrite` for `--trace` / `--trace-ascii <file>`,
       treating the special `-` (stdout) and `%` (stderr) values as
       non-file
-- [ ] Emit `FileRead` for `--write-out` / `-w` with a leading `@`
-      (e.g. `-w @fmt.txt`); bare format string stays informational
-- [ ] Emit `FileWrite` for `--etag-save <file>` and `FileRead` for
+      ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/trace_to_file.argv](vetter-core/tests/corpus/curl/trace_to_file.argv))
+- [x] Emit `FileRead` for `--write-out` / `-w` with a leading `@`
+      (e.g. `-w @fmt.txt`); bare format string stays informational;
+      `@-` (stdin format) fails closed via `StreamingUnsupported`
+      ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/write_out_stdin.argv](vetter-core/tests/corpus/curl/write_out_stdin.argv))
+- [x] Emit `FileWrite` for `--etag-save <file>` and `FileRead` for
       `--etag-compare <file>`
+      ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/etag_roundtrip.argv](vetter-core/tests/corpus/curl/etag_roundtrip.argv))
 - [ ] Honour `--output-dir <dir>` when constructing the
       `FileWrite.path` for `-o` / `-O` / `-J`; today the dir is
       silently dropped

@@ -1,0 +1,47 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "--etag-save",
+    "/tmp/etag",
+    "--etag-compare",
+    "/tmp/etag",
+    "https://example.test/data.json"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "url": "https://example.test/data.json",
+      "headers": [],
+      "body": {
+        "kind": "none"
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    },
+    {
+      "kind": "file_write",
+      "path": "/tmp/etag",
+      "source": {
+        "kind": "remote_http",
+        "url": "https://example.test/data.json"
+      },
+      "overwrite": true
+    },
+    {
+      "kind": "file_read",
+      "path": "/tmp/etag"
+    }
+  ],
+  "signals": [],
+  "display_hints": {
+    "primary_verb": "GET",
+    "primary_target": "https://example.test/data.json",
+    "badges": []
+  }
+}

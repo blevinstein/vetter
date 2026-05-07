@@ -1,0 +1,6 @@
+# `-w @-` reads the format string from stdin. We don't stream stdin
+# into the parser for non-body sources, so vet refuses rather than
+# mis-vet a request whose response-format string is unknown.
+-w
+@-
+https://example.test/

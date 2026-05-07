@@ -1,0 +1,6 @@
+# -D <file> writes the response headers to disk; surfaces as a
+# FileWrite effect with WriteSource::RemoteHttp (the bytes are
+# derived from the HTTP response).
+-D
+/tmp/headers.txt
+https://example.test/

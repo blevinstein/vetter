@@ -1,0 +1,9 @@
+# --etag-save writes the response ETag to disk (FileWrite with
+# WriteSource::RemoteHttp); --etag-compare reads a previously-saved
+# ETag and adds it as If-None-Match (FileRead). One fixture exercises
+# both flags together — the typical conditional-GET pattern.
+--etag-save
+/tmp/etag
+--etag-compare
+/tmp/etag
+https://example.test/data.json

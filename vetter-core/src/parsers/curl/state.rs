@@ -5,7 +5,7 @@
 //! materialising the body, file effects, auth, TLS policy, and
 //! curl-specific risk signals.
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::json;
 use sha2::{Digest, Sha256 as Sha256Hasher};
@@ -73,9 +73,19 @@ struct UnknownLong {
 }
 
 /// Public entry point used by `super::CurlParser::parse`.
+///
+/// `cwd` is the agent's working directory as reported by
+/// [`crate::parsers::EnvSnapshot::cwd`]. When present, all relative
+/// `FileRead` / `FileWrite` paths produced by this parser are resolved
+/// against it (and `.`/`..` segments collapsed) so downstream
+/// [`crate::signals::analyze`] sees absolute paths and stops emitting
+/// spurious `FileOutsideCwd` / `FileReadOutsideCwd` signals for things
+/// like `-o ./out`. When `cwd` is `None` (the unit-test / corpus path)
+/// the parser leaves paths verbatim.
 pub(super) fn parse_argv(
     argv: &[String],
     stdin: &StdinHandle<'_>,
+    cwd: Option<&Path>,
 ) -> Result<ParsedCommand, ParseError> {
     if argv.is_empty() {
         return Err(ParseError::Other("argv is empty".into()));
@@ -85,7 +95,7 @@ pub(super) fn parse_argv(
     for tok in tokens {
         absorb(&mut state, tok)?;
     }
-    finalise(state, argv, stdin)
+    finalise(state, argv, stdin, cwd)
 }
 
 fn absorb(state: &mut CurlState, tok: Token) -> Result<(), ParseError> {
@@ -253,6 +263,7 @@ fn finalise(
     state: CurlState,
     argv: &[String],
     stdin: &StdinHandle<'_>,
+    cwd: Option<&Path>,
 ) -> Result<ParsedCommand, ParseError> {
     if !state.extra_positionals.is_empty() {
         return Err(ParseError::Other(format!(
@@ -273,7 +284,7 @@ fn finalise(
 
     let method = infer_method(&state);
 
-    let (body, file_read_effect, stdin_digest) = build_body(&state, stdin)?;
+    let (body, file_read_effect, stdin_digest) = build_body(&state, stdin, cwd)?;
 
     let tls = if state.insecure {
         TlsPolicy::InsecureSkipVerify
@@ -303,10 +314,10 @@ fn finalise(
     }
     if let Some(upload_path) = &state.upload {
         effects.push(Effect::FileRead(FileRead {
-            path: upload_path.clone(),
+            path: resolve_path(upload_path, cwd),
         }));
     }
-    if let Some(write) = build_file_write(&state, &url) {
+    if let Some(write) = build_file_write(&state, &url, cwd) {
         effects.push(Effect::FileWrite(write));
     }
 
@@ -319,13 +330,45 @@ fn finalise(
     Ok(ParsedCommand {
         command: "curl".into(),
         argv: argv.to_vec(),
-        cwd: None,
+        cwd: cwd.map(Path::to_path_buf),
         stdin_digest,
         effects,
         signals,
         display_hints,
         extras,
     })
+}
+
+/// Resolve `path` against `cwd` so the result is suitable to feed into
+/// [`crate::signals::analyze`]'s `path_is_inside` check (which compares
+/// absolute paths logically).
+///
+/// - Absolute `path` is returned unchanged.
+/// - When `cwd` is `None`, `path` is returned unchanged. This matches
+///   the corpus-test driver, which builds an empty `EnvSnapshot`.
+/// - Otherwise the path is joined onto `cwd` and any `.` / `..`
+///   segments are collapsed without touching the filesystem (so this
+///   stays a pure parser-side transform; no symlink semantics yet —
+///   the post-launch backlog tracks that).
+fn resolve_path(path: &Path, cwd: Option<&Path>) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let Some(cwd) = cwd else {
+        return path.to_path_buf();
+    };
+    let joined = cwd.join(path);
+    let mut out = PathBuf::new();
+    for comp in joined.components() {
+        match comp {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn has_chunked_transfer(headers: &[Header]) -> bool {
@@ -357,6 +400,7 @@ fn infer_method(state: &CurlState) -> HttpMethod {
 fn build_body(
     state: &CurlState,
     stdin: &StdinHandle<'_>,
+    cwd: Option<&Path>,
 ) -> Result<(Body, Option<FileRead>, Option<Sha256>), ParseError> {
     if state.data.is_empty() {
         return Ok((Body::None, None, None));
@@ -385,12 +429,16 @@ fn build_body(
         ));
     }
 
-    // Single file chunk → FromFile + FileRead.
+    // Single file chunk → FromFile + FileRead. Resolve once and reuse
+    // so Body::FromFile.path and the FileRead.path stay in lockstep.
     if state.data.len() == 1 {
         if let DataChunk::File(path) = &state.data[0] {
+            let resolved = resolve_path(path, cwd);
             return Ok((
-                Body::FromFile { path: path.clone() },
-                Some(FileRead { path: path.clone() }),
+                Body::FromFile {
+                    path: resolved.clone(),
+                },
+                Some(FileRead { path: resolved }),
                 None,
             ));
         }
@@ -404,7 +452,9 @@ fn build_body(
     for c in &state.data {
         match c {
             DataChunk::Inline(s) => inline_parts.push(s.clone()),
-            DataChunk::File(p) => file_reads.push(FileRead { path: p.clone() }),
+            DataChunk::File(p) => file_reads.push(FileRead {
+                path: resolve_path(p, cwd),
+            }),
             DataChunk::Stdin => unreachable!("handled above"),
         }
     }
@@ -461,10 +511,10 @@ fn derive_auth(state: &CurlState) -> Option<Auth> {
     None
 }
 
-fn build_file_write(state: &CurlState, url: &Url) -> Option<FileWrite> {
+fn build_file_write(state: &CurlState, url: &Url, cwd: Option<&Path>) -> Option<FileWrite> {
     if let Some(path) = &state.output {
         return Some(FileWrite {
-            path: path.clone(),
+            path: resolve_path(path, cwd),
             source: WriteSource::RemoteHttp { url: url.clone() },
             overwrite: true,
         });
@@ -476,7 +526,7 @@ fn build_file_write(state: &CurlState, url: &Url) -> Option<FileWrite> {
             .filter(|s| !s.is_empty())
             .unwrap_or("download");
         return Some(FileWrite {
-            path: PathBuf::from(basename),
+            path: resolve_path(Path::new(basename), cwd),
             source: WriteSource::RemoteHttp { url: url.clone() },
             overwrite: true,
         });

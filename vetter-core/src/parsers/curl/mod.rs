@@ -32,8 +32,8 @@ impl CommandParser for CurlParser {
         &self,
         argv: &[String],
         stdin: StdinHandle<'_>,
-        _env: &EnvSnapshot,
+        env: &EnvSnapshot,
     ) -> Result<ParsedCommand, ParseError> {
-        state::parse_argv(argv, &stdin)
+        state::parse_argv(argv, &stdin, env.cwd.as_deref())
     }
 }

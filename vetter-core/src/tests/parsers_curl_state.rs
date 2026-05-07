@@ -10,11 +10,20 @@ fn argv(args: &[&str]) -> Vec<String> {
 }
 
 fn parse(args: &[&str]) -> ParsedCommand {
-    parse_argv(&argv(args), &StdinHandle::empty()).expect("parse")
+    parse_argv(&argv(args), &StdinHandle::empty(), None).expect("parse")
+}
+
+fn parse_with_cwd(args: &[&str], cwd: &str) -> ParsedCommand {
+    parse_argv(
+        &argv(args),
+        &StdinHandle::empty(),
+        Some(std::path::Path::new(cwd)),
+    )
+    .expect("parse")
 }
 
 fn parse_stdin(args: &[&str], stdin: &[u8], cap: usize) -> Result<ParsedCommand, ParseError> {
-    parse_argv(&argv(args), &StdinHandle::from_bytes(stdin, cap))
+    parse_argv(&argv(args), &StdinHandle::from_bytes(stdin, cap), None)
 }
 
 fn http_of(p: &ParsedCommand) -> &HttpRequest {
@@ -26,13 +35,13 @@ fn http_of(p: &ParsedCommand) -> &HttpRequest {
 
 #[test]
 fn missing_url_errors() {
-    let r = parse_argv(&argv(&[]), &StdinHandle::empty());
+    let r = parse_argv(&argv(&[]), &StdinHandle::empty(), None);
     assert!(matches!(r, Err(ParseError::MissingArgument(_))));
 }
 
 #[test]
 fn missing_url_with_flags_only_errors() {
-    let r = parse_argv(&argv(&["-k"]), &StdinHandle::empty());
+    let r = parse_argv(&argv(&["-k"]), &StdinHandle::empty(), None);
     assert!(matches!(r, Err(ParseError::MissingArgument(_))));
 }
 
@@ -65,6 +74,7 @@ fn conflicting_methods_error() {
     let r = parse_argv(
         &argv(&["-X", "GET", "-X", "POST", "https://example.test/"]),
         &StdinHandle::empty(),
+        None,
     );
     assert!(matches!(r, Err(ParseError::ConflictingArgs(_))));
 }
@@ -99,6 +109,7 @@ fn malformed_header_errors() {
     let r = parse_argv(
         &argv(&["-H", "no-colon-here", "https://example.test/"]),
         &StdinHandle::empty(),
+        None,
     );
     assert!(matches!(r, Err(ParseError::Other(_))));
 }
@@ -108,6 +119,7 @@ fn chunked_transfer_header_rejected_case_insensitive() {
     let r = parse_argv(
         &argv(&["-H", "transfer-encoding: Chunked", "https://example.test/"]),
         &StdinHandle::empty(),
+        None,
     );
     assert!(matches!(r, Err(ParseError::StreamingUnsupported)));
 }
@@ -117,6 +129,7 @@ fn upload_stdin_rejected() {
     let r = parse_argv(
         &argv(&["-T", "-", "https://example.test/"]),
         &StdinHandle::empty(),
+        None,
     );
     assert!(matches!(r, Err(ParseError::StreamingUnsupported)));
 }
@@ -126,6 +139,7 @@ fn config_long_flag_rejected() {
     let r = parse_argv(
         &argv(&["--config", "some/file.cfg", "https://example.test/"]),
         &StdinHandle::empty(),
+        None,
     );
     assert!(matches!(r, Err(ParseError::Other(_))));
 }
@@ -135,6 +149,7 @@ fn config_short_flag_rejected() {
     let r = parse_argv(
         &argv(&["-K", "some/file.cfg", "https://example.test/"]),
         &StdinHandle::empty(),
+        None,
     );
     assert!(matches!(r, Err(ParseError::Other(_))));
 }
@@ -146,6 +161,7 @@ fn config_short_flag_from_stdin_rejected() {
     let r = parse_argv(
         &argv(&["-K", "-", "https://example.test/"]),
         &StdinHandle::empty(),
+        None,
     );
     assert!(matches!(r, Err(ParseError::Other(_))));
 }
@@ -161,6 +177,7 @@ fn next_long_flag_rejected() {
             "https://attacker.example/",
         ]),
         &StdinHandle::empty(),
+        None,
     );
     assert!(matches!(r, Err(ParseError::Other(_))));
 }
@@ -170,6 +187,7 @@ fn next_short_flag_rejected() {
     let r = parse_argv(
         &argv(&["https://safe.example/", "-:", "https://attacker.example/"]),
         &StdinHandle::empty(),
+        None,
     );
     assert!(matches!(r, Err(ParseError::Other(_))));
 }
@@ -181,6 +199,7 @@ fn next_short_in_cluster_rejected() {
     let r = parse_argv(
         &argv(&["-k:", "https://safe.example/", "https://attacker.example/"]),
         &StdinHandle::empty(),
+        None,
     );
     assert!(matches!(r, Err(ParseError::Other(_))));
 }
@@ -389,6 +408,153 @@ fn unknown_long_flag_preserved_in_extras() {
             .is_some_and(|a| !a.is_empty()),
         "extras: {:?}",
         p.extras
+    );
+}
+
+// -- relative-path resolution against EnvSnapshot::cwd ---------------
+//
+// Closes the Phase 5.2 "spurious FileOutsideCwd" item: the parser must
+// resolve relative `FileRead` / `FileWrite` paths against the agent's
+// cwd before constructing effects, so downstream `signals::analyze`
+// (which compares absolute paths via `path_is_inside`) stops firing
+// false positives for things like `-o ./out` or `-O thing.tgz`.
+
+fn first_file_write(p: &ParsedCommand) -> &FileWrite {
+    p.effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::FileWrite(w) = e {
+                Some(w)
+            } else {
+                None
+            }
+        })
+        .expect("expected a file_write effect")
+}
+
+fn first_file_read(p: &ParsedCommand) -> &FileRead {
+    p.effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::FileRead(r) = e {
+                Some(r)
+            } else {
+                None
+            }
+        })
+        .expect("expected a file_read effect")
+}
+
+#[test]
+fn output_relative_path_resolved_against_cwd() {
+    let p = parse_with_cwd(&["-o", "./out", "https://example.test/x"], "/work");
+    assert_eq!(first_file_write(&p).path, PathBuf::from("/work/out"));
+}
+
+#[test]
+fn output_bare_relative_path_resolved_against_cwd() {
+    let p = parse_with_cwd(&["-o", "out.json", "https://example.test/x"], "/work");
+    assert_eq!(first_file_write(&p).path, PathBuf::from("/work/out.json"));
+}
+
+#[test]
+fn output_absolute_path_unchanged_when_cwd_set() {
+    let p = parse_with_cwd(&["-o", "/tmp/out", "https://example.test/x"], "/work");
+    assert_eq!(first_file_write(&p).path, PathBuf::from("/tmp/out"));
+}
+
+#[test]
+fn output_relative_with_parent_collapses() {
+    let p = parse_with_cwd(
+        &["-o", "../sibling/x", "https://example.test/y"],
+        "/work/sub",
+    );
+    assert_eq!(first_file_write(&p).path, PathBuf::from("/work/sibling/x"));
+}
+
+#[test]
+fn remote_name_basename_resolved_against_cwd() {
+    let p = parse_with_cwd(&["-O", "https://example.test/dir/thing.tgz"], "/work");
+    assert_eq!(first_file_write(&p).path, PathBuf::from("/work/thing.tgz"));
+}
+
+#[test]
+fn upload_relative_path_resolved_against_cwd() {
+    let p = parse_with_cwd(&["-T", "rel", "https://example.test/x"], "/work");
+    assert_eq!(first_file_read(&p).path, PathBuf::from("/work/rel"));
+}
+
+#[test]
+fn upload_absolute_path_unchanged_when_cwd_set() {
+    let p = parse_with_cwd(&["-T", "/tmp/x", "https://example.test/x"], "/work");
+    assert_eq!(first_file_read(&p).path, PathBuf::from("/tmp/x"));
+}
+
+#[test]
+fn data_at_file_relative_path_resolved_and_body_matches() {
+    let p = parse_with_cwd(
+        &["-d", "@./payload.json", "https://example.test/submit"],
+        "/work",
+    );
+    let resolved = PathBuf::from("/work/payload.json");
+    assert_eq!(first_file_read(&p).path, resolved);
+    match &http_of(&p).body {
+        Body::FromFile { path } => assert_eq!(path, &resolved),
+        other => panic!("expected FromFile, got {other:?}"),
+    }
+}
+
+#[test]
+fn parsed_cwd_is_threaded_from_env() {
+    let p = parse_with_cwd(&["https://example.test/"], "/work");
+    assert_eq!(p.cwd.as_deref(), Some(std::path::Path::new("/work")));
+}
+
+#[test]
+fn relative_paths_unchanged_when_cwd_absent() {
+    // Regression guard: the corpus driver and the signal-free unit
+    // tests above all parse with `cwd = None`. In that mode the parser
+    // must leave file paths verbatim so existing snapshots stay
+    // byte-identical.
+    let p = parse(&["-d", "@./payload.json", "https://example.test/submit"]);
+    assert_eq!(first_file_read(&p).path, PathBuf::from("./payload.json"));
+    assert!(p.cwd.is_none());
+}
+
+#[test]
+fn relative_output_does_not_trigger_file_outside_cwd_signal() {
+    // The bug fix: with cwd=/work, `-o out` resolves to `/work/out`,
+    // which `path_is_inside` recognises as inside cwd. The generic
+    // analyzer should produce zero `FileOutsideCwd` signals.
+    let p = parse_with_cwd(&["-o", "out", "https://example.test/x"], "/work");
+    let signals = crate::signals::analyze(&p);
+    assert!(
+        !signals.iter().any(|s| s.kind == SignalKind::FileOutsideCwd),
+        "unexpected FileOutsideCwd signal: {signals:?}"
+    );
+}
+
+#[test]
+fn absolute_output_outside_cwd_still_triggers_file_outside_cwd_signal() {
+    // Regression guard for the inverse: a real out-of-cwd write must
+    // still surface the signal so the user sees the warning.
+    let p = parse_with_cwd(&["-o", "/etc/passwd", "https://example.test/x"], "/work");
+    let signals = crate::signals::analyze(&p);
+    assert!(
+        signals.iter().any(|s| s.kind == SignalKind::FileOutsideCwd),
+        "expected FileOutsideCwd signal, got: {signals:?}"
+    );
+}
+
+#[test]
+fn relative_upload_does_not_trigger_file_read_outside_cwd_signal() {
+    let p = parse_with_cwd(&["-T", "payload.bin", "https://example.test/x"], "/work");
+    let signals = crate::signals::analyze(&p);
+    assert!(
+        !signals
+            .iter()
+            .any(|s| s.kind == SignalKind::FileReadOutsideCwd),
+        "unexpected FileReadOutsideCwd signal: {signals:?}"
     );
 }
 

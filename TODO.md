@@ -178,16 +178,6 @@ ship-blockers.
       separate [`blevinstein/homebrew-vetter`](https://github.com/blevinstein/homebrew-vetter)
       tap repo). Local pipeline only; automated CI release workflow
       tracked separately below.
-- [ ] CI release workflow on tag push — **deferred to Backlog**.
-      Local `tools/release.sh` is sufficient for v0.1; automating
-      from CI is convenience.
-- [ ] Full §7 cross-cutting security property suite passes —
-      **superseded by Hardening §H1–H2 below**, which track the
-      §7 properties as concrete owning items.
-- [ ] E2E happy-path + deny-path tests against the signed bundle —
-      **deferred to Backlog**. PR 1/2 cover the logic via
-      `MockNotifier`; a signed-app E2E job waits on the
-      notarisation pipeline being stable across releases.
 - [x] `vet daemon list` — CLI command to list pending approvals over
       a new admin socket (`vetter-admin.sock`); `vet daemon status`
       now shows real pending count
@@ -307,11 +297,19 @@ unit test in
       can split one invocation into multiple `HttpRequest` effects
       (today only the first request is rendered, the rest are
       mis-vetted)
-- [ ] Resolve relative paths against `EnvSnapshot::cwd` inside the
+- [x] Resolve relative paths against `EnvSnapshot::cwd` inside the
       parser before constructing `FileRead` / `FileWrite`, so `-o
       ./out`, `-O thing.tgz`, `-d @./payload.json`, `-T rel` no longer
       produce spurious `FileOutsideCwd` / `FileReadOutsideCwd` signals
-      via `signals::path_is_inside` (which requires absolute paths)
+      via `signals::path_is_inside` (which requires absolute paths).
+      `parse_argv` now takes the agent cwd, joins it onto every
+      relative `FileRead` / `FileWrite` path (collapsing `.`/`..`
+      segments), and threads `parsed.cwd = env.cwd` so the CLI side
+      (`vet --explain`, `vet curl …`) gets the same signal coverage
+      the daemon already had
+      ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/src/parsers/curl/mod.rs](vetter-core/src/parsers/curl/mod.rs),
+      [vetter-core/src/tests/parsers_curl_state.rs](vetter-core/src/tests/parsers_curl_state.rs))
 - [ ] Parse `-F` / `--form` / `--form-string` (multipart): emit one
       `FileRead` per `@file` reference, populate `Body::Form`, and
       fail-closed on `@-` via `ParseError::StreamingUnsupported`

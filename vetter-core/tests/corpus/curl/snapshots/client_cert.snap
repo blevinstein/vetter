@@ -1,0 +1,53 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "--cert",
+    "/tmp/c.pem",
+    "--key",
+    "/tmp/c.key",
+    "https://mtls.example.test/"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "url": "https://mtls.example.test/",
+      "headers": [],
+      "body": {
+        "kind": "none"
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    },
+    {
+      "kind": "file_read",
+      "path": "/tmp/c.pem"
+    },
+    {
+      "kind": "file_read",
+      "path": "/tmp/c.key"
+    }
+  ],
+  "signals": [
+    {
+      "kind": "client_certificate",
+      "detail": "--cert /tmp/c.pem",
+      "effect_idx": 0
+    },
+    {
+      "kind": "client_certificate",
+      "detail": "--key /tmp/c.key",
+      "effect_idx": 0
+    }
+  ],
+  "display_hints": {
+    "primary_verb": "GET",
+    "primary_target": "https://mtls.example.test/",
+    "badges": []
+  }
+}

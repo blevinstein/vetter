@@ -60,6 +60,13 @@ pub enum FlagId {
     Next,
     Form,
     FormString,
+    Cert,
+    Key,
+    CertType,
+    KeyType,
+    Pass,
+    Pubkey,
+    Engine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,6 +265,50 @@ pub const FLAG_SPECS: &[FlagSpec] = &[
         short: None,
         long: Some("form-string"),
         kind: FlagKind::MultiValue,
+    },
+    // Client-TLS material. Curl ignores all but the last occurrence of
+    // each, so these are FlagKind::Value (not MultiValue).
+    FlagSpec {
+        id: FlagId::Cert,
+        short: Some('E'),
+        long: Some("cert"),
+        kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::Key,
+        short: None,
+        long: Some("key"),
+        kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::CertType,
+        short: None,
+        long: Some("cert-type"),
+        kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::KeyType,
+        short: None,
+        long: Some("key-type"),
+        kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::Pass,
+        short: None,
+        long: Some("pass"),
+        kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::Pubkey,
+        short: None,
+        long: Some("pubkey"),
+        kind: FlagKind::Value,
+    },
+    FlagSpec {
+        id: FlagId::Engine,
+        short: None,
+        long: Some("engine"),
+        kind: FlagKind::Value,
     },
 ];
 

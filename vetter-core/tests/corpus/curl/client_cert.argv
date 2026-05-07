@@ -1,0 +1,7 @@
+# --cert + --key supply client TLS material; both paths surface as
+# FileRead effects and each pushes a ClientCertificate signal.
+--cert
+/tmp/c.pem
+--key
+/tmp/c.key
+https://mtls.example.test/

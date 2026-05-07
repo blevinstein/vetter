@@ -59,6 +59,23 @@ struct CurlState {
     resolve: Vec<String>,
     unix_socket: Option<PathBuf>,
     follow_redirects: bool,
+    /// `--cert <cert[:password]>` path component (left of the optional
+    /// `:password` suffix).
+    cert: Option<PathBuf>,
+    /// `--key <key>` private-key path.
+    key: Option<PathBuf>,
+    /// `--pubkey <key>` SSH public-key path.
+    pubkey: Option<PathBuf>,
+    /// `--cert-type <type>` (e.g. PEM, DER, ENG, P12). Not a path.
+    cert_type: Option<String>,
+    /// `--key-type <type>` (e.g. PEM, DER, ENG). Not a path.
+    key_type: Option<String>,
+    /// `--engine <name>` OpenSSL engine name. Not a path.
+    engine: Option<String>,
+    /// True if a key passphrase was supplied via either `--pass` or the
+    /// optional `:password` suffix on `--cert`. The passphrase value
+    /// itself is deliberately never stored — see absorb / build_extras.
+    cert_password_supplied: bool,
     /// Unrecognised long flags, optionally with values, preserved into
     /// `extras` so the renderer's detail view can display them.
     unknown_longs: Vec<UnknownLong>,
@@ -219,6 +236,44 @@ fn absorb(state: &mut CurlState, tok: Token) -> Result<(), ParseError> {
                      invocation)"
                 )));
             }
+            FlagId::Cert => {
+                // `--cert <cert[:password]>`. Split once on `:`; the
+                // left half is the file path, the right half (if any)
+                // is the passphrase. Store only the password-supplied
+                // bit so the value cannot leak through extras / audit.
+                let v = value.expect("Value flag has value");
+                let (path, password_present) = match v.split_once(':') {
+                    Some((p, _pw)) => (p.to_string(), true),
+                    None => (v, false),
+                };
+                state.cert = Some(PathBuf::from(path));
+                if password_present {
+                    state.cert_password_supplied = true;
+                }
+            }
+            FlagId::Key => {
+                state.key = Some(PathBuf::from(value.expect("Value flag has value")));
+            }
+            FlagId::Pubkey => {
+                state.pubkey = Some(PathBuf::from(value.expect("Value flag has value")));
+            }
+            FlagId::CertType => {
+                state.cert_type = Some(value.expect("Value flag has value"));
+            }
+            FlagId::KeyType => {
+                state.key_type = Some(value.expect("Value flag has value"));
+            }
+            FlagId::Engine => {
+                state.engine = Some(value.expect("Value flag has value"));
+            }
+            FlagId::Pass => {
+                // Deliberately drop the value: `--pass` is a key
+                // passphrase. We surface only the boolean
+                // `cert_password_supplied` flag in extras so a future
+                // renderer cannot accidentally echo the passphrase.
+                let _ = value.expect("Value flag has value");
+                state.cert_password_supplied = true;
+            }
         },
         Token::UnknownLong { name, value } => {
             state.unknown_longs.push(UnknownLong { name, value });
@@ -332,6 +387,21 @@ fn finalise(
     if let Some(upload_path) = &state.upload {
         effects.push(Effect::FileRead(FileRead {
             path: resolve_path(upload_path, cwd),
+        }));
+    }
+    if let Some(cert_path) = &state.cert {
+        effects.push(Effect::FileRead(FileRead {
+            path: resolve_path(cert_path, cwd),
+        }));
+    }
+    if let Some(key_path) = &state.key {
+        effects.push(Effect::FileRead(FileRead {
+            path: resolve_path(key_path, cwd),
+        }));
+    }
+    if let Some(pubkey_path) = &state.pubkey {
+        effects.push(Effect::FileRead(FileRead {
+            path: resolve_path(pubkey_path, cwd),
         }));
     }
     if let Some(write) = build_file_write(&state, &url, cwd) {
@@ -581,6 +651,20 @@ fn build_signals(state: &CurlState) -> Vec<RiskSignal> {
             effect_idx: Some(0),
         });
     }
+    if let Some(p) = &state.cert {
+        out.push(RiskSignal {
+            kind: SignalKind::ClientCertificate,
+            detail: format!("--cert {}", p.display()),
+            effect_idx: Some(0),
+        });
+    }
+    if let Some(p) = &state.key {
+        out.push(RiskSignal {
+            kind: SignalKind::ClientCertificate,
+            detail: format!("--key {}", p.display()),
+            effect_idx: Some(0),
+        });
+    }
     out
 }
 
@@ -642,6 +726,24 @@ fn build_extras(state: &CurlState) -> serde_json::Value {
         extras.insert(
             "user_agent_flag".to_string(),
             serde_json::Value::String(ua.clone()),
+        );
+    }
+    if let Some(t) = &state.cert_type {
+        extras.insert(
+            "cert_type".to_string(),
+            serde_json::Value::String(t.clone()),
+        );
+    }
+    if let Some(t) = &state.key_type {
+        extras.insert("key_type".to_string(), serde_json::Value::String(t.clone()));
+    }
+    if let Some(e) = &state.engine {
+        extras.insert("engine".to_string(), serde_json::Value::String(e.clone()));
+    }
+    if state.cert_password_supplied {
+        extras.insert(
+            "cert_password_supplied".to_string(),
+            serde_json::Value::Bool(true),
         );
     }
     if extras.is_empty() {

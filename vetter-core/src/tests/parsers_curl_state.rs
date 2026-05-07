@@ -645,8 +645,186 @@ fn _exhaustive_flag_id_match_compiles() {
             | FlagId::Config
             | FlagId::Next
             | FlagId::Form
-            | FlagId::FormString => {}
+            | FlagId::FormString
+            | FlagId::Cert
+            | FlagId::Key
+            | FlagId::CertType
+            | FlagId::KeyType
+            | FlagId::Pass
+            | FlagId::Pubkey
+            | FlagId::Engine => {}
         }
     }
     let _ = _check;
+}
+
+// -- client-TLS material flags ---------------------------------------
+//
+// Closes the Phase 5.2 "cert/key/pubkey FileRead + ClientCertificate
+// signal" item. `--cert`, `--key`, and `--pubkey` are paths and must
+// surface as `FileRead` effects. `--cert` and `--key` additionally
+// push a `ClientCertificate` signal (Danger). `--cert-type`,
+// `--key-type`, `--engine`, and `--pass` are non-path strings and
+// must not produce file effects; `--pass` must never have its value
+// echoed anywhere in the parsed command.
+
+fn collect_file_reads(p: &ParsedCommand) -> Vec<&FileRead> {
+    p.effects
+        .iter()
+        .filter_map(|e| {
+            if let Effect::FileRead(r) = e {
+                Some(r)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn parsed_command_contains_substring(p: &ParsedCommand, needle: &str) -> bool {
+    if p.signals.iter().any(|s| s.detail.contains(needle)) {
+        return true;
+    }
+    if p.display_hints.primary_target.contains(needle)
+        || p.display_hints.primary_verb.contains(needle)
+        || p.display_hints
+            .badges
+            .iter()
+            .any(|b| b.label.contains(needle))
+    {
+        return true;
+    }
+    p.extras.to_string().contains(needle)
+}
+
+#[test]
+fn cert_flag_emits_file_read_and_signal() {
+    let p = parse(&["--cert", "/tmp/c.pem", "https://example.test/"]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/c.pem"));
+    assert_eq!(
+        p.signals
+            .iter()
+            .filter(|s| s.kind == SignalKind::ClientCertificate)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn cert_with_password_strips_suffix_and_does_not_leak_value() {
+    let p = parse(&["--cert", "/tmp/c.pem:hunter2", "https://example.test/"]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/c.pem"));
+    assert!(
+        !parsed_command_contains_substring(&p, "hunter2"),
+        "--cert password leaked into parsed command surface: {p:#?}"
+    );
+    assert_eq!(
+        p.extras
+            .get("cert_password_supplied")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
+
+#[test]
+fn key_flag_emits_file_read_and_signal() {
+    let p = parse(&["--key", "/tmp/c.key", "https://example.test/"]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/c.key"));
+    assert_eq!(
+        p.signals
+            .iter()
+            .filter(|s| s.kind == SignalKind::ClientCertificate)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn pubkey_flag_emits_file_read_no_signal() {
+    let p = parse(&["--pubkey", "/tmp/id_rsa.pub", "https://example.test/"]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/id_rsa.pub"));
+    assert!(!p
+        .signals
+        .iter()
+        .any(|s| s.kind == SignalKind::ClientCertificate));
+}
+
+#[test]
+fn cert_type_does_not_emit_file_read() {
+    let p = parse(&["--cert-type", "PEM", "https://example.test/"]);
+    let reads = collect_file_reads(&p);
+    assert!(
+        reads.is_empty(),
+        "--cert-type PEM produced unexpected FileRead effects: {reads:?}"
+    );
+    assert_eq!(
+        p.extras.get("cert_type").and_then(|v| v.as_str()),
+        Some("PEM")
+    );
+}
+
+#[test]
+fn key_type_and_engine_surface_in_extras() {
+    let p = parse(&[
+        "--key-type",
+        "DER",
+        "--engine",
+        "dynamic",
+        "https://example.test/",
+    ]);
+    assert!(collect_file_reads(&p).is_empty());
+    assert_eq!(
+        p.extras.get("key_type").and_then(|v| v.as_str()),
+        Some("DER")
+    );
+    assert_eq!(
+        p.extras.get("engine").and_then(|v| v.as_str()),
+        Some("dynamic")
+    );
+}
+
+#[test]
+fn pass_flag_value_not_leaked() {
+    let p = parse(&["--pass", "hunter2", "https://example.test/"]);
+    assert!(
+        !parsed_command_contains_substring(&p, "hunter2"),
+        "--pass value leaked into parsed command surface: {p:#?}"
+    );
+    assert_eq!(
+        p.extras
+            .get("cert_password_supplied")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert!(collect_file_reads(&p).is_empty());
+}
+
+#[test]
+fn cert_relative_path_resolved_against_cwd() {
+    let p = parse_with_cwd(&["--cert", "client.pem", "https://example.test/"], "/work");
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/work/client.pem"));
+}
+
+#[test]
+fn cert_short_e_alias_works() {
+    // `-E` is the curl-canonical short form of `--cert`. Make sure the
+    // tokeniser routes it the same way as the long form.
+    let p = parse(&["-E", "/tmp/c.pem", "https://example.test/"]);
+    let reads = collect_file_reads(&p);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].path, PathBuf::from("/tmp/c.pem"));
+    assert!(p
+        .signals
+        .iter()
+        .any(|s| s.kind == SignalKind::ClientCertificate));
 }

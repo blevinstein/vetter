@@ -422,6 +422,7 @@ pub fn signal_kind_label(k: SignalKind) -> &'static str {
         SignalKind::ResolveOverride => "resolve-override",
         SignalKind::CacertOverride => "cacert-override",
         SignalKind::UnixSocket => "unix-socket",
+        SignalKind::ClientCertificate => "client-certificate",
     }
 }
 

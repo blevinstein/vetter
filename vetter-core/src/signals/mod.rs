@@ -58,6 +58,10 @@ pub enum SignalKind {
     ResolveOverride,
     CacertOverride,
     UnixSocket,
+    /// `--cert` / `--key` was supplied to curl, supplying client TLS
+    /// material. Treated as Danger because client identity overrides
+    /// alter authentication.
+    ClientCertificate,
 }
 
 impl SignalKind {
@@ -88,7 +92,8 @@ impl SignalKind {
             | SignalKind::ResolveOverride
             | SignalKind::UnixSocket
             | SignalKind::PipeToShell
-            | SignalKind::RawIpLiteral => BadgeSeverity::Danger,
+            | SignalKind::RawIpLiteral
+            | SignalKind::ClientCertificate => BadgeSeverity::Danger,
 
             SignalKind::WriteMethod
             | SignalKind::AuthHeader

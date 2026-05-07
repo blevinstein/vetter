@@ -345,10 +345,21 @@ unit test in
       `UnknownShort` / `UnknownLong`
 - [ ] Emit `FileWrite` for `-c <file>` / `--cookie-jar <file>` with
       `WriteSource::RemoteHttp { url }`
-- [ ] Emit `FileRead` for `--cert`, `--key`, `--cert-type`, `--key-type`,
-      `--pass`, `--pubkey`, `--engine`, and add a parser-pushed
-      `RiskSignal` for `--cert` / `--key` alongside the existing
-      `CacertOverride`
+- [x] Recognise the seven curl client-TLS flags (`--cert`, `--key`,
+      `--cert-type`, `--key-type`, `--pass`, `--pubkey`, `--engine`):
+      emit `FileRead` for the path-bearing trio (`--cert`, `--key`,
+      `--pubkey`) with `cwd` resolution, push a new
+      `SignalKind::ClientCertificate` (Danger) for `--cert` / `--key`
+      alongside the existing `CacertOverride`, surface
+      `--cert-type` / `--key-type` / `--engine` plus a
+      `cert_password_supplied` boolean in `extras`, and never echo the
+      `--pass` value (or the `:password` suffix on `--cert`) anywhere
+      in the parsed command surface
+      ([vetter-core/src/parsers/curl/flags.rs](vetter-core/src/parsers/curl/flags.rs),
+      [vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/src/signals/mod.rs](vetter-core/src/signals/mod.rs),
+      [vetter-core/src/render/mod.rs](vetter-core/src/render/mod.rs),
+      [vetter-core/tests/corpus/curl/client_cert.argv](vetter-core/tests/corpus/curl/client_cert.argv))
 - [ ] Emit `FileWrite` for `-D` / `--dump-header <file>`
 - [ ] Emit `FileWrite` for `--trace` / `--trace-ascii <file>`,
       treating the special `-` (stdout) and `%` (stderr) values as

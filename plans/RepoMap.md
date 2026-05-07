@@ -55,7 +55,7 @@ Optional `rule.command` must equal `parsed.command`.
 
 - **`RiskSignal`**: `kind: SignalKind`, `detail: String`, optional `effect_idx`.
 - **`SignalKind`** generic: `WriteMethod`, `AuthHeader`, `InsecureTls`, `NonStandardPort`, `IdnHost`, `RawIpLiteral`, `FileOutsideCwd`, `FileReadOutsideCwd`, `PipeToShell`.
-- **`SignalKind`** parser-specific: `InsecureFlag`, `ResolveOverride`, `CacertOverride`, `UnixSocket` (produced by the curl parser, **not** by `analyze`).
+- **`SignalKind`** parser-specific: `InsecureFlag`, `ResolveOverride`, `CacertOverride`, `UnixSocket`, `ClientCertificate` (produced by the curl parser, **not** by `analyze`).
 
 **`analyze(parsed)`** — generic, walks `parsed.effects`, command-agnostic.  
 Curl-only signals are built in `parsers/curl/state.rs → build_signals` and pushed into `ParsedCommand.signals` by the parser itself.

@@ -305,12 +305,14 @@ fn ui_severity_classifies_each_signal_kind() {
         (SignalKind::UnixSocket, Danger),
         (SignalKind::PipeToShell, Danger),
         (SignalKind::RawIpLiteral, Danger),
+        (SignalKind::ClientCertificate, Danger),
         (SignalKind::WriteMethod, Warn),
         (SignalKind::AuthHeader, Warn),
         (SignalKind::NonStandardPort, Warn),
         (SignalKind::IdnHost, Warn),
         (SignalKind::FileOutsideCwd, Warn),
         (SignalKind::FileReadOutsideCwd, Warn),
+        (SignalKind::UnknownHost, Warn),
     ];
     for (kind, expected) in cases {
         assert_eq!(
@@ -337,10 +339,12 @@ fn no_current_signal_is_info_tier() {
         SignalKind::FileOutsideCwd,
         SignalKind::FileReadOutsideCwd,
         SignalKind::PipeToShell,
+        SignalKind::UnknownHost,
         SignalKind::InsecureFlag,
         SignalKind::ResolveOverride,
         SignalKind::CacertOverride,
         SignalKind::UnixSocket,
+        SignalKind::ClientCertificate,
     ];
     for k in all {
         assert_ne!(

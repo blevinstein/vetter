@@ -1,0 +1,43 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "-H",
+    "X-Evil: before\u001b[2J\u001b[Hmid\u001b[31mafter\rrtail",
+    "-H",
+    "X-Bidi: path/‮gpj.exe",
+    "https://example.test/"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "url": "https://example.test/",
+      "headers": [
+        {
+          "name": "X-Evil",
+          "value": "before\u001b[2J\u001b[Hmid\u001b[31mafter\rrtail"
+        },
+        {
+          "name": "X-Bidi",
+          "value": "path/‮gpj.exe"
+        }
+      ],
+      "body": {
+        "kind": "none"
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    }
+  ],
+  "signals": [],
+  "display_hints": {
+    "primary_verb": "GET",
+    "primary_target": "https://example.test/",
+    "badges": []
+  }
+}

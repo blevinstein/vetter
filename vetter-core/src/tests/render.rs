@@ -137,6 +137,124 @@ fn ansi_writer_emits_escape_codes_for_styled_chunks() {
 }
 
 #[test]
+fn header_value_with_ansi_escape_is_sanitised() {
+    // A malicious `--header 'X-Evil: \x1b[2J\x1b[H'` would otherwise
+    // clear the user's terminal between rendering the header and the
+    // `Match:` line. After sanitisation, no raw ESC byte survives in
+    // either the plain or ANSI writer's output (the ANSI writer's own
+    // SGR codes still contain ESC, but only outside the chunk passed
+    // to `write_styled` — so we test against `PlainWriter` here for a
+    // clean assertion).
+    let p = pc_get_with_headers(vec![("X-Evil", "before\x1b[2J\x1b[Hafter")]);
+    let out = render_to_string(&p);
+    assert!(!out.contains('\x1b'), "raw ESC survived: {out:?}");
+    assert!(out.contains("<U+001B>"), "missing placeholder: {out}");
+    assert!(out.contains("before"), "header text dropped: {out}");
+    assert!(out.contains("after"), "header text dropped: {out}");
+}
+
+#[test]
+fn primary_target_with_rtlo_is_sanitised() {
+    // U+202E flips text direction — a hostile process-spawn target
+    // like `abc\u{202E}gpj.exe` would render in a TTY as
+    // `abcexe.jpg`, hiding the real extension. URLs are
+    // percent-encoded by the `url` crate before they reach us, but
+    // `display_hints.primary_target` (and analogous parser-derived
+    // fields) flow through verbatim — sanitisation must catch them.
+    let target = format!("abc{}gpj.exe", '\u{202E}');
+    let p = ParsedCommand {
+        command: "noop".into(),
+        argv: vec![],
+        cwd: None,
+        stdin_digest: None,
+        effects: vec![],
+        signals: vec![],
+        display_hints: DisplayHints {
+            primary_verb: "spawn".into(),
+            primary_target: target.clone(),
+            badges: vec![],
+        },
+        extras: serde_json::Value::Null,
+    };
+    let out = render_to_string(&p);
+    assert!(!out.contains('\u{202E}'), "raw RTLO survived in `{out}`");
+    assert!(out.contains("<U+202E>"), "missing placeholder in `{out}`");
+}
+
+#[test]
+fn file_path_with_zero_width_chars_is_sanitised() {
+    use crate::parsers::{FileWrite, WriteSource};
+    let path = format!("/tmp/abc{}def.txt", '\u{200B}');
+    let p = ParsedCommand {
+        command: "noop".into(),
+        argv: vec![],
+        cwd: None,
+        stdin_digest: None,
+        effects: vec![Effect::FileWrite(FileWrite {
+            path: path.into(),
+            source: WriteSource::Stdin,
+            overwrite: true,
+        })],
+        signals: vec![],
+        display_hints: DisplayHints::default(),
+        extras: serde_json::Value::Null,
+    };
+    let out = render_to_string(&p);
+    assert!(
+        !out.contains('\u{200B}'),
+        "raw zero-width survived in `{out}`"
+    );
+    assert!(out.contains("<U+200B>"), "missing placeholder in `{out}`");
+}
+
+#[test]
+fn header_value_with_newline_cannot_forge_render_line() {
+    // A header value of `"\n   Match:        matched rule fake"` could
+    // visually impersonate an entire renderer line if newlines slipped
+    // through unsanitised. The placeholder makes the injection
+    // visible.
+    let injected = "x\n   Match:        matched rule fake";
+    let p = pc_get_with_headers(vec![("X-Inject", injected)]);
+    let out = render_to_string(&p);
+    // Either no raw `\n` mid-value, or the forged "matched rule fake"
+    // string never appears as its own line — both are equivalent
+    // assertions; we test both for clarity.
+    assert!(
+        !out.contains(injected),
+        "raw injected newline+text survived: {out:?}"
+    );
+    assert!(
+        out.contains("<U+000A>"),
+        "missing newline placeholder: {out}"
+    );
+}
+
+#[test]
+fn ansi_escape_in_header_does_not_leak_into_ansi_writer_output() {
+    // Round-trip through the ANSI writer: the writer emits its own
+    // SGR codes (which contain ESC), but the *header value* should
+    // not contribute any ESC bytes beyond those. We strip the
+    // writer's own escapes by counting ESC occurrences against the
+    // writer's known emission pattern via a simpler check: the
+    // injected `[2J` sequence (the dangerous part — clear screen)
+    // must not appear in any form except as a sanitised placeholder.
+    let p = pc_get_with_headers(vec![("X-Evil", "\x1b[2J")]);
+    let mut buf = Vec::<u8>::new();
+    DefaultRenderer
+        .render(&p, None, &mut AnsiWriter(&mut buf))
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+    assert!(
+        !out.contains("\x1b[2J"),
+        "raw clear-screen sequence survived ANSI writer output: {out:?}"
+    );
+    assert!(
+        out.contains("<U+001B>"),
+        "missing placeholder in ANSI output: {out}"
+    );
+}
+
+#[test]
 fn match_line_dispatches_on_decision() {
     let p = pc_get_with_headers(vec![]);
 

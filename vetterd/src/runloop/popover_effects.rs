@@ -31,7 +31,7 @@ use objc2_app_kit::{
     NSStackViewDistribution, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
-use vetter_core::render::{is_secret_header, redact_value};
+use vetter_core::render::{is_secret_header, redact_value, sanitize_for_display};
 use vetter_core::{Auth, Body, Effect, FileRead, FileWrite, Header, ParsedCommand, ProcessSpawn};
 
 /// Body / monospaced-label font size. Picked to read at the same
@@ -214,14 +214,18 @@ fn build_header_row(h: &Header, mtm: MainThreadMarker) -> Retained<NSView> {
     row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
     row.setSpacing(4.0);
 
-    let name = NSTextField::labelWithString(&NSString::from_str(&format!("{}:", h.name)), mtm);
+    let safe_name = sanitize_for_display(&h.name);
+    let name = NSTextField::labelWithString(&NSString::from_str(&format!("{safe_name}:")), mtm);
     name.setFont(Some(&NSFont::boldSystemFontOfSize(ROW_FONT_SIZE)));
     name.setTextColor(Some(&NSColor::systemBlueColor()));
     row.addArrangedSubview(&name);
 
     if is_secret_header(&h.name) {
         let redacted = redact_value(&h.value);
-        let value = NSTextField::labelWithString(&NSString::from_str(&redacted), mtm);
+        let value = NSTextField::labelWithString(
+            &NSString::from_str(&sanitize_for_display(&redacted)),
+            mtm,
+        );
         value.setFont(Some(&monospaced(ROW_FONT_SIZE)));
         value.setTextColor(Some(&NSColor::systemRedColor()));
         row.addArrangedSubview(&value);
@@ -234,7 +238,8 @@ fn build_header_row(h: &Header, mtm: MainThreadMarker) -> Retained<NSView> {
         suffix.setTextColor(Some(&NSColor::secondaryLabelColor()));
         row.addArrangedSubview(&suffix);
     } else {
-        let value = NSTextField::labelWithString(&NSString::from_str(&h.value), mtm);
+        let value =
+            NSTextField::labelWithString(&NSString::from_str(&sanitize_for_display(&h.value)), mtm);
         value.setFont(Some(&monospaced(ROW_FONT_SIZE)));
         row.addArrangedSubview(&value);
     }
@@ -272,7 +277,10 @@ fn build_body_section(
             )),
         ),
         Body::FromStdin { digest, len } => (
-            format!("from stdin, {len} B, sha256 {}", digest.as_str()),
+            format!(
+                "from stdin, {len} B, sha256 {}",
+                sanitize_for_display(digest.as_str())
+            ),
             None,
         ),
         Body::Form { fields } => {
@@ -282,7 +290,11 @@ fn build_body_section(
             stack.setDistribution(NSStackViewDistribution::Fill);
             for f in fields {
                 let pair = NSTextField::labelWithString(
-                    &NSString::from_str(&format!("{}={}", f.name, f.value)),
+                    &NSString::from_str(&format!(
+                        "{}={}",
+                        sanitize_for_display(&f.name),
+                        sanitize_for_display(&f.value)
+                    )),
                     mtm,
                 );
                 pair.setFont(Some(&monospaced(ROW_FONT_SIZE)));
@@ -314,7 +326,7 @@ fn build_body_section(
 /// in the design doc.
 fn inline_body_content(bytes: &[u8], mtm: MainThreadMarker) -> Retained<NSView> {
     let text = match std::str::from_utf8(bytes) {
-        Ok(s) => s.to_string(),
+        Ok(s) => sanitize_for_display(s).into_owned(),
         Err(_) => {
             let max = 64.min(bytes.len());
             let hex: String = bytes[..max]
@@ -353,11 +365,11 @@ fn build_auth_row(auth: Option<&Auth>, mtm: MainThreadMarker) -> Option<Retained
             user,
             password_redacted,
         } => (
-            format!("Basic user={user} password=••••"),
+            format!("Basic user={} password=••••", sanitize_for_display(user)),
             *password_redacted,
         ),
         Auth::Bearer { token_redacted } => ("Bearer ••••".to_string(), *token_redacted),
-        Auth::Header { name } => (format!("{name}: ••••"), true),
+        Auth::Header { name } => (format!("{}: ••••", sanitize_for_display(name)), true),
         Auth::Netrc => ("from .netrc".to_string(), false),
     };
     let stack = vertical_section("auth", mtm);
@@ -456,7 +468,7 @@ fn file_glyph_row_base(symbol: &str, text: &str, mtm: MainThreadMarker) -> Retai
         row.addArrangedSubview(&view);
     }
 
-    let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
+    let label = NSTextField::labelWithString(&NSString::from_str(&sanitize_for_display(text)), mtm);
     label.setFont(Some(&monospaced(ROW_FONT_SIZE)));
     row.addArrangedSubview(&label);
 

@@ -6,6 +6,18 @@
 //! responsibility — the renderer emits styled chunks via [`StyledWriter`]
 //! and the binary chooses [`PlainWriter`] (tests, redirected stderr) or
 //! [`AnsiWriter`] (TTY).
+//!
+//! ## Trust boundary (H2 / `plans/ThreatModel.md`)
+//!
+//! Every chunk derived from `ParsedCommand` (URLs, header names +
+//! values, paths, body content, auth labels, badges, display hints,
+//! rule ids) MUST flow through [`escape::sanitize_for_display`]
+//! before reaching `write_styled` / `plain`. Renderer-owned literals
+//! (the `─` rule line, indents, `Match:` label, scope/severity text,
+//! signal slugs from [`signal_kind_label`]) bypass it — they're the
+//! only legitimate source of control bytes / non-printable codepoints
+//! in the rendered output, and the writer's own ANSI SGR escapes are
+//! emitted *outside* `write_styled`'s `s` argument by [`AnsiWriter`].
 
 use std::io::{self, Write};
 
@@ -16,8 +28,10 @@ use crate::parsers::{
 };
 use crate::signals::{RiskSignal, SignalKind};
 
+mod escape;
 mod redact;
 
+pub use escape::sanitize_for_display;
 pub use redact::{is_secret_header, redact_value};
 
 /// Style tag for a chunk of output. The writer implementation decides
@@ -159,7 +173,7 @@ impl Renderer for DefaultRenderer {
         const RULE: &str = " ─────────────────────────────────────────────────────────────────\n";
 
         w.write_styled(" vet  ", Style::Plain)?;
-        w.write_styled(&p.command, Style::Header)?;
+        w.write_styled(&sanitize_for_display(&p.command), Style::Header)?;
         w.newline()?;
         w.write_styled(RULE, Style::RuleLine)?;
 
@@ -199,7 +213,10 @@ fn write_header_line(w: &mut dyn StyledWriter, p: &ParsedCommand) -> io::Result<
 
     if let Some(Effect::HttpRequest(req)) = p.effects.first() {
         let colour = HttpMethodColour::for_method(&req.method);
-        w.write_styled(req.method.as_str(), Style::Method(colour))?;
+        w.write_styled(
+            &sanitize_for_display(req.method.as_str()),
+            Style::Method(colour),
+        )?;
         w.plain("  ")?;
 
         let url_str = req.url.as_str();
@@ -208,12 +225,18 @@ fn write_header_line(w: &mut dyn StyledWriter, p: &ParsedCommand) -> io::Result<
         } else {
             Style::Url
         };
-        w.write_styled(url_str, url_style)?;
+        w.write_styled(&sanitize_for_display(url_str), url_style)?;
     } else if !p.display_hints.primary_verb.is_empty() || !p.display_hints.primary_target.is_empty()
     {
-        w.write_styled(&p.display_hints.primary_verb, Style::Header)?;
+        w.write_styled(
+            &sanitize_for_display(&p.display_hints.primary_verb),
+            Style::Header,
+        )?;
         w.plain("  ")?;
-        w.write_styled(&p.display_hints.primary_target, Style::Url)?;
+        w.write_styled(
+            &sanitize_for_display(&p.display_hints.primary_target),
+            Style::Url,
+        )?;
     } else {
         w.write_styled("(no effects)", Style::Plain)?;
     }
@@ -227,7 +250,7 @@ fn write_header_line(w: &mut dyn StyledWriter, p: &ParsedCommand) -> io::Result<
 
 fn write_badge(w: &mut dyn StyledWriter, b: &Badge) -> io::Result<()> {
     w.write_styled("[", Style::Badge(b.severity))?;
-    w.write_styled(&b.label, Style::Badge(b.severity))?;
+    w.write_styled(&sanitize_for_display(&b.label), Style::Badge(b.severity))?;
     w.write_styled("]", Style::Badge(b.severity))?;
     Ok(())
 }
@@ -261,20 +284,24 @@ fn write_http_headers(w: &mut dyn StyledWriter, req: &HttpRequest) -> io::Result
 fn write_header_row(w: &mut dyn StyledWriter, h: &Header, max_name: usize) -> io::Result<()> {
     w.plain("   ")?;
     let secret = redact::is_secret_header(&h.name);
-    w.write_styled(&format!("{}: ", h.name), Style::HeaderName)?;
+    let safe_name = sanitize_for_display(&h.name);
+    w.write_styled(&format!("{safe_name}: "), Style::HeaderName)?;
     let pad = max_name.saturating_sub(h.name.len());
     if pad > 0 {
         w.plain(&" ".repeat(pad))?;
     }
     if secret {
+        // Sanitise the *redacted* form too: the last-4 tail can
+        // legitimately be a control byte and we want to scrub before
+        // it reaches the writer.
         let redacted = redact::redact_value(&h.value);
-        w.write_styled(&redacted, Style::RedactedHeader)?;
+        w.write_styled(&sanitize_for_display(&redacted), Style::RedactedHeader)?;
         w.write_styled(
             &format!("    ← redacted, len {}", h.value.len()),
             Style::BodyMeta,
         )?;
     } else {
-        w.write_styled(&h.value, Style::HeaderValue)?;
+        w.write_styled(&sanitize_for_display(&h.value), Style::HeaderValue)?;
     }
     w.newline()
 }
@@ -285,13 +312,26 @@ fn write_http_body(w: &mut dyn StyledWriter, req: &HttpRequest) -> io::Result<()
         Body::Inline { bytes } => {
             let ct = content_type(&req.headers).unwrap_or("(no content-type)");
             (
-                format!("Body  ({ct}, {} B)", bytes.len()),
+                format!(
+                    "Body  ({ct_safe}, {} B)",
+                    bytes.len(),
+                    ct_safe = sanitize_for_display(ct)
+                ),
                 String::from_utf8(bytes.clone()).ok(),
             )
         }
-        Body::FromFile { path } => (format!("Body  (from file: {})", path.display()), None),
+        Body::FromFile { path } => (
+            format!(
+                "Body  (from file: {})",
+                sanitize_for_display(&path.display().to_string())
+            ),
+            None,
+        ),
         Body::FromStdin { digest, len } => (
-            format!("Body  (from stdin, {len} B, sha256 {})", digest.as_str()),
+            format!(
+                "Body  (from stdin, {len} B, sha256 {})",
+                sanitize_for_display(digest.as_str())
+            ),
             None,
         ),
         Body::Form { fields } => (
@@ -307,7 +347,7 @@ fn write_http_body(w: &mut dyn StyledWriter, req: &HttpRequest) -> io::Result<()
     w.newline()?;
     if let Some(content) = content {
         w.plain("   ")?;
-        w.write_styled(&content, Style::BodyContent)?;
+        w.write_styled(&sanitize_for_display(&content), Style::BodyContent)?;
         w.newline()?;
     }
     Ok(())
@@ -323,9 +363,18 @@ fn content_type(headers: &[Header]) -> Option<&str> {
 fn write_auth(w: &mut dyn StyledWriter, auth: &Auth) -> io::Result<()> {
     w.plain("   ")?;
     let (label, redacted) = match auth {
-        Auth::Basic { user, .. } => (format!("Auth: Basic user={user}, password ••••"), true),
+        Auth::Basic { user, .. } => (
+            format!(
+                "Auth: Basic user={}, password ••••",
+                sanitize_for_display(user)
+            ),
+            true,
+        ),
         Auth::Bearer { .. } => ("Auth: Bearer ••••".to_string(), true),
-        Auth::Header { name } => (format!("Auth: via header {name}"), true),
+        Auth::Header { name } => (
+            format!("Auth: via header {}", sanitize_for_display(name)),
+            true,
+        ),
         Auth::Netrc => ("Auth: via ~/.netrc".to_string(), false),
     };
     let style = if redacted {
@@ -340,7 +389,10 @@ fn write_auth(w: &mut dyn StyledWriter, auth: &Auth) -> io::Result<()> {
 fn write_file_write(w: &mut dyn StyledWriter, fw: &FileWrite) -> io::Result<()> {
     w.plain("   ")?;
     w.write_styled(
-        &format!("File write → {}", fw.path.display()),
+        &format!(
+            "File write → {}",
+            sanitize_for_display(&fw.path.display().to_string())
+        ),
         Style::HeaderName,
     )?;
     w.newline()
@@ -349,7 +401,10 @@ fn write_file_write(w: &mut dyn StyledWriter, fw: &FileWrite) -> io::Result<()> 
 fn write_file_read(w: &mut dyn StyledWriter, fr: &FileRead) -> io::Result<()> {
     w.plain("   ")?;
     w.write_styled(
-        &format!("File read ← {}", fr.path.display()),
+        &format!(
+            "File read ← {}",
+            sanitize_for_display(&fr.path.display().to_string())
+        ),
         Style::HeaderName,
     )?;
     w.newline()
@@ -358,7 +413,7 @@ fn write_file_read(w: &mut dyn StyledWriter, fr: &FileRead) -> io::Result<()> {
 fn write_process_spawn(w: &mut dyn StyledWriter, ps: &ProcessSpawn) -> io::Result<()> {
     w.plain("   ")?;
     w.write_styled(
-        &format!("Process spawn: `{}`", ps.command),
+        &format!("Process spawn: `{}`", sanitize_for_display(&ps.command)),
         Style::HeaderName,
     )?;
     w.newline()
@@ -382,13 +437,21 @@ fn write_match_line(w: &mut dyn StyledWriter, outcome: Option<&Decision>) -> io:
     match outcome {
         Some(Decision::Allow { rule_id, scope }) => {
             w.write_styled(
-                &format!("matched rule {rule_id} ({})", scope_label(scope)),
+                &format!(
+                    "matched rule {} ({})",
+                    sanitize_for_display(rule_id),
+                    scope_label(scope)
+                ),
                 Style::MatchOk,
             )?;
         }
         Some(Decision::Deny { rule_id, scope }) => {
             w.write_styled(
-                &format!("denylist {rule_id} ({})", scope_label(scope)),
+                &format!(
+                    "denylist {} ({})",
+                    sanitize_for_display(rule_id),
+                    scope_label(scope)
+                ),
                 Style::MatchDeny,
             )?;
         }

@@ -766,11 +766,32 @@ Argv-controlled bytes (URLs, header values, paths) must not be able
 to inject control sequences that hide or fake content, and the
 parser/wire layers must not panic on malformed input.
 
-- [ ] Sanitise ANSI / C0 control bytes in renderer output (header
+- [x] Sanitise ANSI / C0 control bytes in renderer output (header
       values, URLs, paths, argv echo) before any TTY or popover
       write. Corpus test with embedded ANSI cursor moves, RTLO
       (U+202E), zero-width chars, and bare CR / BS so a malicious
       argv can't repaint the screen or hide a path segment.
+      `vetter_core::render::sanitize_for_display` replaces every
+      C0 / DEL / C1 / bidi-override / zero-width / BOM byte with a
+      visible `<U+XXXX>` placeholder; called at every untrusted-
+      chunk site in the §8.5 renderer
+      ([vetter-core/src/render/mod.rs](vetter-core/src/render/mod.rs))
+      and in the macOS popover's parallel render surfaces
+      ([vetterd/src/runloop/popover_url.rs](vetterd/src/runloop/popover_url.rs),
+      [vetterd/src/runloop/popover_effects.rs](vetterd/src/runloop/popover_effects.rs),
+      [vetterd/src/runloop/mod.rs](vetterd/src/runloop/mod.rs)
+      `post_notification` for the banner body). Coverage:
+      per-class unit tests in
+      [vetter-core/src/tests/render_escape.rs](vetter-core/src/tests/render_escape.rs),
+      property tests in
+      [vetter-core/src/tests/render.rs](vetter-core/src/tests/render.rs)
+      (header ANSI / RTLO / zero-width / forged-newline), the
+      [embedded_ansi_header](vetter-core/tests/corpus/curl/embedded_ansi_header.argv)
+      corpus fixture with both `_plain.snap` and `_ansi.snap`, and a
+      popover-side regression in
+      [vetterd/src/tests/popover_attr.rs](vetterd/src/tests/popover_attr.rs)
+      that confirms an argv-injected `\x1b[31m` no longer opens a
+      spurious red span past the popover's SGR scanner
 - [ ] `cargo-fuzz` target for `parsers::curl` over random argv;
       remove `expect("Value flag has value")` from
       `vetter-core/src/parsers/curl/state.rs` by encoding

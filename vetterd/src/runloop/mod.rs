@@ -192,11 +192,19 @@ pub(crate) fn post_notification(
         let _ = mtm; // silence unused warning if no MTM-only API ends up needed below.
         let center = UNUserNotificationCenter::currentNotificationCenter();
         let content = UNMutableNotificationContent::new();
-        let title = format!("vet {command}");
+        // Sanitise every argv-derived string before it reaches
+        // `NSString::from_str`: a hostile path or URL with embedded
+        // RTLO / zero-width / control bytes would otherwise be
+        // rendered verbatim by Notification Center, hiding the real
+        // target from the human about to click Approve.
+        let safe_command = vetter_core::render::sanitize_for_display(&command);
+        let safe_verb = vetter_core::render::sanitize_for_display(&primary_verb);
+        let safe_target = vetter_core::render::sanitize_for_display(&primary_target);
+        let title = format!("vet {safe_command}");
         let body = if primary_verb.is_empty() {
-            primary_target.clone()
+            safe_target.into_owned()
         } else {
-            format!("{primary_verb} {primary_target}")
+            format!("{safe_verb} {safe_target}")
         };
         let category_id = if has_unknown_host {
             CATEGORY_ID_WITH_UNKNOWN_HOST

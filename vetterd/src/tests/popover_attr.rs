@@ -229,3 +229,78 @@ fn empty_input_yields_empty_attributed_string() {
     let attr = parse_ansi_to_attributed("");
     assert_eq!(attr.length(), 0);
 }
+
+// -- Hardening §H2: render-time sanitisation closes the popover hole --
+
+/// Round-trip a `ParsedCommand` whose header value carries an
+/// argv-injected `\x1b[31m` (red) SGR through the full renderer
+/// (`AnsiWriter`) into the popover's ANSI parser. With H2's
+/// sanitisation in place, the only red span the parser sees is one
+/// the *renderer* legitimately emitted (the `[insecure: -k]` badge
+/// when present, or none in this minimal fixture); the malicious
+/// `\x1b[31m` from the header value must show up as a `<U+001B>`
+/// placeholder inside an unstyled span, never as its own bold-red
+/// run.
+///
+/// This is the popover-side regression check for the H2 bug: prior
+/// to sanitisation, an attacker-controlled header value could open
+/// a fake colour span that visually impersonated the renderer's own
+/// colouring (e.g. fake the green "matched rule" line).
+#[test]
+fn argv_injected_sgr_in_header_does_not_open_popover_style_span() {
+    use vetter_core::parsers::{
+        Body, DisplayHints, Effect, Header, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy,
+    };
+    use vetter_core::{AnsiWriter, DefaultRenderer, Renderer};
+
+    let p = ParsedCommand {
+        command: "noop".into(),
+        argv: vec!["noop".into()],
+        cwd: None,
+        stdin_digest: None,
+        effects: vec![Effect::HttpRequest(HttpRequest {
+            method: HttpMethod::Get,
+            url: url::Url::parse("https://example.test/").unwrap(),
+            headers: vec![Header {
+                name: "X-Evil".into(),
+                value: "before\x1b[31mfake-red\x1b[0mafter".into(),
+            }],
+            body: Body::None,
+            auth: None,
+            tls: TlsPolicy::Strict,
+            follow_redirects: false,
+            proxy: None,
+        })],
+        signals: vec![],
+        display_hints: DisplayHints::default(),
+        extras: serde_json::Value::Null,
+    };
+
+    let mut buf = Vec::<u8>::new();
+    DefaultRenderer
+        .render(&p, None, &mut AnsiWriter(&mut buf))
+        .expect("render");
+    let rendered = String::from_utf8(buf).expect("utf-8");
+
+    let spans = parse_ansi_spans(&rendered);
+    let visible: String = spans.iter().map(|s| s.text.as_str()).collect();
+    // The malicious "fake-red" text is still visible (we don't drop
+    // it), but the SGR bytes around it are placeholders.
+    assert!(visible.contains("fake-red"), "{visible}");
+    assert!(visible.contains("<U+001B>"), "{visible}");
+
+    // The crucial property: no span carries `AnsiColor::Red` whose
+    // text is the attacker's "fake-red" payload. The renderer
+    // itself emits exactly one bold-red run today only for the
+    // `MatchDeny` decision (absent here) and the `Badge(Danger)`
+    // severity (absent here too — no signals), so any `Red` span at
+    // all in this fixture is a smuggled-in-from-argv hit.
+    let red_spans: Vec<&AnsiSpan> = spans
+        .iter()
+        .filter(|s| s.style.color == Some(AnsiColor::Red))
+        .collect();
+    assert!(
+        red_spans.is_empty(),
+        "argv-injected red span survived sanitisation: {red_spans:#?}"
+    );
+}

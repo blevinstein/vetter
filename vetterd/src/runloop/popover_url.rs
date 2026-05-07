@@ -25,6 +25,7 @@ use objc2_app_kit::{
     NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSString};
+use vetter_core::render::sanitize_for_display;
 use vetter_core::{HttpMethod, HttpRequest};
 
 use super::popover_pills;
@@ -96,7 +97,7 @@ pub fn build_url_row(
     top.setDistribution(NSStackViewDistribution::Fill);
 
     // 1. Method badge — bold, colored per `HttpMethodColour`.
-    let method_str = req.method.as_str();
+    let method_str = sanitize_for_display(req.method.as_str());
     let method_label =
         NSTextField::labelWithString(&NSString::from_str(&format!("[{method_str}]")), mtm);
     let semibold = unsafe { NSFontWeightSemibold };
@@ -108,7 +109,7 @@ pub fn build_url_row(
     top.addArrangedSubview(&method_label);
 
     // 2. Scheme — `https://` etc. Dim so the eye lands on the host.
-    let scheme = format!("{}://", req.url.scheme());
+    let scheme = format!("{}://", sanitize_for_display(req.url.scheme()));
     let scheme_label = NSTextField::labelWithString(&NSString::from_str(&scheme), mtm);
     scheme_label.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
         URL_FONT_SIZE,
@@ -121,8 +122,10 @@ pub fn build_url_row(
     //    ("trusted local"); known/unknown otherwise. We carry the
     //    trust class into the tooltip so hover explains the colour.
     let host = req.url.host_str().unwrap_or("");
+    let safe_host = sanitize_for_display(host);
     let trust = host_trust(host, host_known);
-    let host_pill = popover_pills::build_pill(host, &trust.fg(), &trust.bg(), trust.tooltip(), mtm);
+    let host_pill =
+        popover_pills::build_pill(&safe_host, &trust.fg(), &trust.bg(), trust.tooltip(), mtm);
     top.addArrangedSubview(&host_pill);
 
     // 4. `:port` if present and non-quiet.
@@ -178,7 +181,10 @@ pub fn build_url_row(
     };
 
     if !path_query.is_empty() {
-        let tail = NSTextField::wrappingLabelWithString(&NSString::from_str(&path_query), mtm);
+        let tail = NSTextField::wrappingLabelWithString(
+            &NSString::from_str(&sanitize_for_display(&path_query)),
+            mtm,
+        );
         tail.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
             URL_FONT_SIZE,
             0.0,
@@ -217,10 +223,13 @@ pub fn build_fallback_row(
     primary_target: &str,
     mtm: MainThreadMarker,
 ) -> Retained<NSView> {
+    let safe_command = sanitize_for_display(command);
+    let safe_verb = sanitize_for_display(primary_verb);
+    let safe_target = sanitize_for_display(primary_target);
     let text = if primary_verb.is_empty() {
-        format!("{command}  {primary_target}")
+        format!("{safe_command}  {safe_target}")
     } else {
-        format!("{command}  {primary_verb} {primary_target}")
+        format!("{safe_command}  {safe_verb} {safe_target}")
     };
     let label = NSTextField::wrappingLabelWithString(&NSString::from_str(&text), mtm);
     let semibold = unsafe { NSFontWeightSemibold };

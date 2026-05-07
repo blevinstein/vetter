@@ -1,0 +1,10 @@
+# Hardening §H2 fixture: an attacker-controlled `-H` header value
+# carries embedded ANSI escape bytes (clear-screen + cursor-home + SGR),
+# a bare CR, and a Unicode RTLO override (U+202E). The renderer
+# must scrub all of these into `<U+XXXX>` placeholders before the
+# popover or TTY ever sees them — see render::escape.
+-H
+X-Evil: before[2J[Hmid[31mafterrtail
+-H
+X-Bidi: path/‮gpj.exe
+https://example.test/

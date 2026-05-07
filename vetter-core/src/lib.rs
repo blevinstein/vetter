@@ -39,7 +39,8 @@ pub use paths::{
     default_admin_socket_path, default_audit_path, default_pidfile_path, default_socket_path,
 };
 pub use render::{
-    signal_kind_label, AnsiWriter, DefaultRenderer, PlainWriter, Renderer, Style, StyledWriter,
+    sanitize_for_display, signal_kind_label, AnsiWriter, DefaultRenderer, PlainWriter, Renderer,
+    Style, StyledWriter,
 };
 pub use settings::{
     load as load_settings, settings_path, store as store_settings, Settings, SettingsError,

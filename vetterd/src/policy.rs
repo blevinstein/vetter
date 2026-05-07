@@ -15,7 +15,7 @@
 //! T2 for why the daemon owns the parse step the matcher consumes.
 
 use vetter_core::known_hosts::KnownHostsStore;
-use vetter_core::matcher::{decide, AllowlistStore, Decision};
+use vetter_core::matcher::{decide, AllowlistStore, Decision, Scope};
 use vetter_core::parsers::Effect;
 use vetter_core::wire::WireDecision;
 use vetter_core::ParsedCommand;
@@ -36,10 +36,15 @@ use crate::pending::PromptSummary;
 #[derive(Debug, Clone, PartialEq)]
 pub enum PolicyOutcome {
     /// Final decision the daemon can ship to the wire without
-    /// asking the user.
+    /// asking the user. `rule_id` / `scope` are populated whenever
+    /// the matcher attributed the decision to a specific rule (every
+    /// `Decision::Allow` / `Decision::Deny` path) and `None` for
+    /// routes that bypass the matcher (today: parse failures elsewhere).
     Auto {
         decision: WireDecision,
         reason: String,
+        rule_id: Option<String>,
+        scope: Option<Scope>,
     },
     /// Prompt-class request: the matcher found no automatic
     /// resolution (or the caller asked for `force_prompt`). The
@@ -64,7 +69,7 @@ pub fn evaluate(
     known_hosts: &KnownHostsStore,
 ) -> PolicyOutcome {
     if force_prompt {
-        return PolicyOutcome::Prompt(Box::new(prompt_summary(
+        return PolicyOutcome::Prompt(Box::new(build_summary(
             request_id,
             parsed,
             true,
@@ -75,12 +80,16 @@ pub fn evaluate(
         Decision::Allow { rule_id, scope } => PolicyOutcome::Auto {
             decision: WireDecision::Allow,
             reason: format!("matched rule `{rule_id}` in {}", scope.as_str()),
+            rule_id: Some(rule_id),
+            scope: Some(scope),
         },
         Decision::Deny { rule_id, scope } => PolicyOutcome::Auto {
             decision: WireDecision::Deny,
             reason: format!("denylist rule `{rule_id}` in {}", scope.as_str()),
+            rule_id: Some(rule_id),
+            scope: Some(scope),
         },
-        Decision::Prompt => PolicyOutcome::Prompt(Box::new(prompt_summary(
+        Decision::Prompt => PolicyOutcome::Prompt(Box::new(build_summary(
             request_id,
             parsed,
             false,
@@ -89,7 +98,15 @@ pub fn evaluate(
     }
 }
 
-fn prompt_summary(
+/// Build a [`PromptSummary`] for `parsed` regardless of outcome.
+///
+/// Phase 4 used this only on the prompt-class branch of
+/// [`evaluate`]. Phase 5.1 also calls it from the daemon's auto-
+/// decision path so the resolved-history ring carries the same rich
+/// per-effect info for auto-allows as it does for human-resolved
+/// prompts. `force_prompt` is `true` for `vet --dry-run` requests
+/// and always `false` for matcher-driven auto decisions.
+pub(crate) fn build_summary(
     id: &str,
     parsed: &ParsedCommand,
     force_prompt: bool,

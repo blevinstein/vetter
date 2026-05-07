@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+use vetter_core::matcher::Scope;
 use vetter_core::wire::WireDecision;
 
 /// Compact one-line UI summary of a prompt-class request. Built by
@@ -105,21 +106,32 @@ pub struct PromptSummary {
 /// A resolved request kept in the recent-history ring. Carries the
 /// original summary and rendered detail (so the popover can display
 /// the same card body as when the request was pending) plus the
-/// decision that was made.
+/// decision that was made. After Phase 5.1 auto-allowed entries also
+/// land here, attributed via [`Self::rule_id`] / [`Self::rule_scope`]
+/// so the popover's "See approval reason" disclosure can name the
+/// rule and offer a Revoke button.
 #[derive(Debug, Clone)]
 pub struct ResolvedEntry {
     pub summary: PromptSummary,
     /// Pre-rendered §8.5 detail (same string shown while pending).
     pub rendered: String,
     pub decision: WireDecision,
+    /// Allowlist rule id that auto-resolved this request, when the
+    /// matcher attributed the decision to a specific rule. `None`
+    /// for human-resolved prompt entries (no rule was involved) and
+    /// for parse-failure / shutdown decisions.
+    pub rule_id: Option<String>,
+    /// Allowlist layer that produced [`Self::rule_id`]. Always
+    /// populated together with `rule_id`.
+    pub rule_scope: Option<Scope>,
 }
 
 impl ResolvedEntry {
     /// Reconstruct a ring-entry from an [`crate::audit::AuditEntry`]
     /// tailed off disk at daemon startup. Returns `None` when the
-    /// entry lacks the rich prompt-class payload (`parsed` / non-
-    /// empty `rendered`) — auto-decision rows don't belong in the
-    /// popover's "Recent" section.
+    /// entry lacks the rich popover-card payload (`parsed` / non-
+    /// empty `rendered`) — parse-failure rows and other no-card
+    /// audit lines don't belong in the popover's "Recent" section.
     ///
     /// This is the only bridge from the durable audit log back into
     /// the in-memory ring; tests lean on it heavily.
@@ -141,6 +153,8 @@ impl ResolvedEntry {
             summary,
             rendered: entry.rendered,
             decision: entry.decision,
+            rule_id: entry.rule_id,
+            rule_scope: entry.rule_scope,
         })
     }
 }
@@ -306,6 +320,8 @@ impl PendingQueue {
                     summary: e.summary.clone(),
                     rendered: e.rendered.clone(),
                     decision: decision.decision,
+                    rule_id: None,
+                    rule_scope: None,
                 });
                 if g.resolved.len() > RESOLVED_CAP {
                     g.resolved.pop_back();
@@ -325,9 +341,47 @@ impl PendingQueue {
         }
     }
 
+    /// Push an auto-decision (one the matcher resolved without a
+    /// human prompt) directly onto the resolved-history ring. The
+    /// request was never in the pending map; this method skips the
+    /// `entries.remove(...)` step that [`Self::resolve`] performs.
+    ///
+    /// `rule_id` / `rule_scope` carry the matcher's attribution and
+    /// drive the popover's "See approval reason" disclosure + Revoke
+    /// button. Both are `Some` for matcher-driven auto decisions and
+    /// `None` only on edge paths (e.g. parse failures upstream).
+    ///
+    /// Fires the change listener so the popover repaints.
+    pub fn record_auto(
+        &self,
+        summary: PromptSummary,
+        rendered: String,
+        decision: WireDecision,
+        rule_id: Option<String>,
+        rule_scope: Option<Scope>,
+    ) {
+        let listener = {
+            let mut g = self.inner.lock().expect("pending mutex poisoned");
+            g.resolved.push_front(ResolvedEntry {
+                summary,
+                rendered,
+                decision,
+                rule_id,
+                rule_scope,
+            });
+            if g.resolved.len() > RESOLVED_CAP {
+                g.resolved.pop_back();
+            }
+            g.listener.clone()
+        };
+        if let Some(cb) = listener {
+            cb();
+        }
+    }
+
     /// Preload the resolved-history ring with entries tailed off disk
     /// at daemon startup. `entries` is expected **newest-first** (the
-    /// order [`crate::audit::AuditLog::tail_prompt_entries`] returns)
+    /// order [`crate::audit::AuditLog::tail_resolved_entries`] returns)
     /// so we can push straight onto the deque without reversing.
     ///
     /// The ring is capped at [`RESOLVED_CAP`]; we truncate silently

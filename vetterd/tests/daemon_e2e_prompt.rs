@@ -285,7 +285,7 @@ fn coalescing_does_not_drop_mock_observations() {
 }
 
 /// Prompt-class audit rows carry the richer `PromptSummary`-derived
-/// fields so `AuditLog::tail_prompt_entries` + `ResolvedEntry::try_from_audit`
+/// fields so `AuditLog::tail_resolved_entries` + `ResolvedEntry::try_from_audit`
 /// can rebuild the popover's resolved-history ring on a fresh
 /// daemon start. This test stands in for "restart the daemon and
 /// observe Recent history" — we can't reach into the daemon subprocess's
@@ -348,8 +348,8 @@ fn resolved_history_survives_a_daemon_restart_via_audit_log_warm_up() {
     // audit file the way `run()` does.
     let log = AuditLog::open(&audit_path).unwrap();
     let tailed = log
-        .tail_prompt_entries(vetterd::pending::RESOLVED_CAP)
-        .expect("tail prompt entries");
+        .tail_resolved_entries(vetterd::pending::RESOLVED_CAP)
+        .expect("tail resolved entries");
     assert_eq!(tailed.len(), 2);
 
     let queue = PendingQueue::new();

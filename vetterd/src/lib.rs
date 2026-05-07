@@ -213,7 +213,7 @@ pub fn run(
     // the notifier's change listener is registered by
     // `build_from_env` so the seeded entries don't fire a spurious
     // UI refresh on an already-empty popover.
-    match audit.tail_prompt_entries(pending::RESOLVED_CAP) {
+    match audit.tail_resolved_entries(pending::RESOLVED_CAP) {
         Ok(rows) => {
             pending.warm_resolved(rows.into_iter().filter_map(ResolvedEntry::try_from_audit));
         }
@@ -718,13 +718,26 @@ pub fn handle_connection(
                 .extend(check_known_hosts(&parsed, &known_hosts));
             let command_for_audit = parsed.command.clone();
             let outcome = evaluate(&parsed, &req.id, req.force_prompt, &allowlist, &known_hosts);
+            // Build the per-effect popover summary while the
+            // known_hosts read lock is still held — it powers the
+            // host-trust pills and we want the same one for both
+            // prompt-class and matcher-attributed auto-decision
+            // paths. `force_prompt` mirrors what `evaluate` would
+            // record on its own Prompt summary.
+            let auto_summary = policy::build_summary(
+                &req.id,
+                &parsed,
+                req.force_prompt,
+                &known_hosts,
+            );
             // Drop the read locks before resolve_outcome, which can
             // block the worker on the pending queue waiting for a
             // human decision; holding either lock across that wait
             // would deadlock against admin AddRule / AddKnownHost.
             drop(allowlist);
             drop(known_hosts);
-            let (decision, reason, prompt_ctx) = resolve_outcome(outcome, &parsed, &req, ctx);
+            let (decision, reason, prompt_ctx) =
+                resolve_outcome(outcome, &parsed, auto_summary, ctx);
             (decision, reason, command_for_audit, prompt_ctx)
         }
         Err(e) => {
@@ -748,14 +761,17 @@ pub fn handle_connection(
     // client crashes mid-write. We only need `sync_data`, not the
     // whole-tree fsync; see audit::AuditLog::append.
     //
-    // For prompt-class resolutions the `prompt_ctx` carries the full
-    // `PromptSummary` + pre-rendered §8.5 detail. Those feed the
+    // After Phase 5.1 every successful matcher run (prompt-class **or**
+    // auto-decision) ships a `PromptContext` carrying the full
+    // `PromptSummary`, pre-rendered §8.5 detail, and — for auto rows —
+    // the matcher's `rule_id` / `scope` attribution. Those feed the
     // audit log's optional rich fields so the popover's Recent
-    // section survives a daemon restart (see
-    // `AuditLog::tail_prompt_entries` / `PendingQueue::warm_resolved`).
-    // Auto-decision rows leave those fields empty and
+    // section surfaces auto-allows alongside human prompts and
+    // survives a daemon restart (see
+    // `AuditLog::tail_resolved_entries` / `PendingQueue::warm_resolved`).
+    // Parse-failure rows still leave those fields empty and
     // `skip_serializing_if` keeps them compact on disk.
-    let (primary_verb, primary_target, signals, parsed_payload, host_known, rendered) =
+    let (primary_verb, primary_target, signals, parsed_payload, host_known, rendered, rule_id, rule_scope) =
         match prompt_ctx {
             Some(pc) => (
                 pc.summary.primary_verb,
@@ -764,6 +780,8 @@ pub fn handle_connection(
                 pc.summary.parsed,
                 pc.summary.host_known,
                 pc.rendered,
+                pc.rule_id,
+                pc.rule_scope,
             ),
             None => (
                 String::new(),
@@ -772,6 +790,8 @@ pub fn handle_connection(
                 None,
                 Vec::new(),
                 String::new(),
+                None,
+                None,
             ),
         };
 
@@ -782,7 +802,8 @@ pub fn handle_connection(
         argv: req.argv.clone(),
         decision,
         reason,
-        rule_id: None,
+        rule_id,
+        rule_scope,
         force_prompt: req.force_prompt,
         primary_verb,
         primary_target,
@@ -799,28 +820,62 @@ pub fn handle_connection(
     Ok(())
 }
 
-/// Context captured on the prompt-class branch of [`resolve_outcome`]
-/// and threaded back to the audit-write site so prompt-class rows
-/// on disk carry everything the popover needs to repaint a card.
-/// `None` for auto-decision rows.
+/// Context captured on every successful matcher run by
+/// [`resolve_outcome`] and threaded back to the audit-write site so
+/// every UI-bearing row on disk carries the full popover-card
+/// payload. After Phase 5.1 this includes auto-decision rows whose
+/// matcher attributed the decision to a specific rule (`rule_id` /
+/// `rule_scope`); prompt-class rows leave the attribution `None`.
+/// Only parse-failure paths return `None` for the entire context.
 struct PromptContext {
     summary: PromptSummary,
     rendered: String,
+    rule_id: Option<String>,
+    rule_scope: Option<vetter_core::matcher::Scope>,
 }
 
 /// Map a [`PolicyOutcome`] onto the final wire `(decision, reason)`.
 /// For [`PolicyOutcome::Prompt`] this blocks the worker on the
 /// pending queue until the notifier delivers a decision (or the
 /// queue is cancelled on shutdown, in which case the worker falls
-/// back to deny so the agent never hangs forever).
+/// back to deny so the agent never hangs forever). For
+/// [`PolicyOutcome::Auto`] this also pre-renders the §8.5 detail
+/// and pushes the entry onto the resolved-history ring with rule
+/// attribution so the popover Recent section surfaces it.
 fn resolve_outcome(
     outcome: PolicyOutcome,
     parsed: &ParsedCommand,
-    _req: &VetRequest,
+    auto_summary: PromptSummary,
     ctx: &Context,
 ) -> (WireDecision, String, Option<PromptContext>) {
     match outcome {
-        PolicyOutcome::Auto { decision, reason } => (decision, reason, None),
+        PolicyOutcome::Auto {
+            decision,
+            reason,
+            rule_id,
+            scope,
+        } => {
+            // Pre-render the §8.5 detail and push this onto the
+            // resolved ring so the popover's Recent section can show
+            // the auto-decision alongside human-resolved prompts.
+            // Mirrors what the prompt branch does on `submit_with_render`,
+            // minus the notifier hop (no human in the loop).
+            let rendered = render_detail(parsed);
+            ctx.pending.record_auto(
+                auto_summary.clone(),
+                rendered.clone(),
+                decision,
+                rule_id.clone(),
+                scope,
+            );
+            let prompt_ctx = PromptContext {
+                summary: auto_summary,
+                rendered,
+                rule_id,
+                rule_scope: scope,
+            };
+            (decision, reason, Some(prompt_ctx))
+        }
         PolicyOutcome::Prompt(summary) => {
             // Unbox once: the pending queue and notifier both want
             // `PromptSummary` / `&PromptSummary`, not `Box<…>`.
@@ -840,7 +895,12 @@ fn resolve_outcome(
                 .pending
                 .submit_with_render(summary.clone(), rendered.clone());
             ctx.notifier.notify(&summary, hint);
-            let prompt_ctx = PromptContext { summary, rendered };
+            let prompt_ctx = PromptContext {
+                summary,
+                rendered,
+                rule_id: None,
+                rule_scope: None,
+            };
             match rx.recv() {
                 Ok(dec) => (dec.decision, dec.reason, Some(prompt_ctx)),
                 Err(_) => {

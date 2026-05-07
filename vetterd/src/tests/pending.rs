@@ -338,6 +338,8 @@ fn resolved(id: &str, decision: WireDecision) -> ResolvedEntry {
         summary: summary(id, "https://example.test/"),
         rendered: format!("rendered-{id}"),
         decision,
+        rule_id: None,
+        rule_scope: None,
     }
 }
 
@@ -421,6 +423,7 @@ fn try_from_audit_accepts_rich_prompt_row() {
         decision: WireDecision::Allow,
         reason: "approved".into(),
         rule_id: None,
+        rule_scope: None,
         force_prompt: false,
         primary_verb: "GET".into(),
         primary_target: "https://example.test/".into(),
@@ -434,18 +437,21 @@ fn try_from_audit_accepts_rich_prompt_row() {
     assert_eq!(entry.summary.primary_verb, "GET");
     assert_eq!(entry.decision, WireDecision::Allow);
     assert_eq!(entry.rendered, "rendered");
+    assert!(entry.rule_id.is_none());
+    assert!(entry.rule_scope.is_none());
 }
 
 #[test]
-fn try_from_audit_rejects_auto_decision_row() {
+fn try_from_audit_rejects_no_card_row() {
     let audit = crate::audit::AuditEntry {
-        id: "auto".into(),
+        id: "nocard".into(),
         timestamp: "epoch:0.0".into(),
         command: "curl".into(),
         argv: vec!["curl".into(), "https://example.test/".into()],
         decision: WireDecision::Allow,
         reason: "rule allow".into(),
         rule_id: None,
+        rule_scope: None,
         force_prompt: false,
         primary_verb: String::new(),
         primary_target: String::new(),

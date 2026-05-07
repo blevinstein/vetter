@@ -4,6 +4,7 @@
 use super::*;
 use vetter_core::known_hosts::KnownHostsStore;
 use vetter_core::matcher::rule::{HostPattern, HttpClause, Rule, RuleWhen, UrlClause};
+use vetter_core::matcher::Scope;
 use vetter_core::{
     Body, DisplayHints, Effect, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy, WireDecision,
 };
@@ -85,10 +86,17 @@ fn allow_rule_in_user_scope_returns_auto_allow_with_reason() {
         &empty_known_hosts(),
     );
     match outcome {
-        PolicyOutcome::Auto { decision, reason } => {
+        PolicyOutcome::Auto {
+            decision,
+            reason,
+            rule_id,
+            scope,
+        } => {
             assert_eq!(decision, WireDecision::Allow);
             assert!(reason.contains("yes"), "{reason}");
             assert!(reason.contains("user"), "{reason}");
+            assert_eq!(rule_id.as_deref(), Some("yes"));
+            assert_eq!(scope, Some(Scope::User));
         }
         other => panic!("expected auto-allow, got {other:?}"),
     }
@@ -111,10 +119,17 @@ fn denylist_rule_returns_auto_deny_with_reason() {
         &empty_known_hosts(),
     );
     match outcome {
-        PolicyOutcome::Auto { decision, reason } => {
+        PolicyOutcome::Auto {
+            decision,
+            reason,
+            rule_id,
+            scope,
+        } => {
             assert_eq!(decision, WireDecision::Deny);
             assert!(reason.contains("blocked"), "{reason}");
             assert!(reason.contains("denylist"), "{reason}");
+            assert_eq!(rule_id.as_deref(), Some("blocked"));
+            assert_eq!(scope, Some(Scope::Denylist));
         }
         other => panic!("expected auto-deny, got {other:?}"),
     }

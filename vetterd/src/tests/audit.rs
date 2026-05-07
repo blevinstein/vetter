@@ -15,6 +15,7 @@ fn entry(id: &str, dec: WireDecision) -> AuditEntry {
         decision: dec,
         reason: "matched test".into(),
         rule_id: None,
+        rule_scope: None,
         force_prompt: false,
         primary_verb: String::new(),
         primary_target: String::new(),
@@ -140,6 +141,7 @@ fn prompt_entry(id: &str, target: &str, dec: WireDecision) -> AuditEntry {
         decision: dec,
         reason: "user responded".into(),
         rule_id: None,
+        rule_scope: None,
         force_prompt: false,
         primary_verb: "GET".into(),
         primary_target: target.into(),
@@ -190,33 +192,35 @@ fn slim_rows_do_not_serialise_empty_rich_fields() {
 }
 
 #[test]
-fn tail_prompt_entries_returns_newest_first_and_skips_auto_rows() {
+fn tail_resolved_entries_returns_newest_first_and_skips_no_card_rows() {
     let dir = tmpdir("vetterd-audit-tail-");
     let path = dir.path().join("audit.log");
     let log = AuditLog::open(&path).unwrap();
 
-    log.append(&entry("auto-1", WireDecision::Allow)).unwrap();
+    // No-card rows: lack `rendered` (e.g. parse failures), should be
+    // filtered out by `tail_resolved_entries`.
+    log.append(&entry("nocard-1", WireDecision::Allow)).unwrap();
     log.append(&prompt_entry(
         "prompt-a",
         "https://a.test/",
         WireDecision::Allow,
     ))
     .unwrap();
-    log.append(&entry("auto-2", WireDecision::Deny)).unwrap();
+    log.append(&entry("nocard-2", WireDecision::Deny)).unwrap();
     log.append(&prompt_entry(
         "prompt-b",
         "https://b.test/",
         WireDecision::Deny,
     ))
     .unwrap();
-    log.append(&entry("auto-3", WireDecision::Allow)).unwrap();
+    log.append(&entry("nocard-3", WireDecision::Allow)).unwrap();
 
-    let got = log.tail_prompt_entries(10).unwrap();
+    let got = log.tail_resolved_entries(10).unwrap();
     let ids: Vec<&str> = got.iter().map(|e| e.id.as_str()).collect();
     assert_eq!(
         ids,
         vec!["prompt-b", "prompt-a"],
-        "auto rows must be filtered out and prompt rows returned newest-first"
+        "no-card rows must be filtered out and UI rows returned newest-first"
     );
     assert_eq!(got[0].decision, WireDecision::Deny);
     assert_eq!(got[1].decision, WireDecision::Allow);
@@ -227,7 +231,36 @@ fn tail_prompt_entries_returns_newest_first_and_skips_auto_rows() {
 }
 
 #[test]
-fn tail_prompt_entries_honours_cap() {
+fn tail_resolved_entries_includes_auto_rows_with_attribution() {
+    // After Phase 5.1 the daemon writes a `rendered` body for every
+    // matcher-attributed auto-decision so the popover Recent ring
+    // surfaces it. The tail should pick those rows up alongside
+    // human prompt rows.
+    let dir = tmpdir("vetterd-audit-tail-auto-");
+    let path = dir.path().join("audit.log");
+    let log = AuditLog::open(&path).unwrap();
+
+    let mut auto_row = prompt_entry("auto-row", "https://api.test/", WireDecision::Allow);
+    auto_row.rule_id = Some("trust-api".into());
+    auto_row.rule_scope = Some(vetter_core::matcher::Scope::User);
+    log.append(&auto_row).unwrap();
+    log.append(&prompt_entry(
+        "prompt-row",
+        "https://a.test/",
+        WireDecision::Allow,
+    ))
+    .unwrap();
+
+    let got = log.tail_resolved_entries(10).unwrap();
+    let ids: Vec<&str> = got.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(ids, vec!["prompt-row", "auto-row"]);
+    let auto = &got[1];
+    assert_eq!(auto.rule_id.as_deref(), Some("trust-api"));
+    assert_eq!(auto.rule_scope, Some(vetter_core::matcher::Scope::User));
+}
+
+#[test]
+fn tail_resolved_entries_honours_cap() {
     let dir = tmpdir("vetterd-audit-tail-cap-");
     let path = dir.path().join("audit.log");
     let log = AuditLog::open(&path).unwrap();
@@ -239,23 +272,23 @@ fn tail_prompt_entries_honours_cap() {
         ))
         .unwrap();
     }
-    let got = log.tail_prompt_entries(3).unwrap();
+    let got = log.tail_resolved_entries(3).unwrap();
     let ids: Vec<&str> = got.iter().map(|e| e.id.as_str()).collect();
     assert_eq!(ids, vec!["p-6", "p-5", "p-4"]);
 }
 
 #[test]
-fn tail_prompt_entries_empty_file_is_empty() {
+fn tail_resolved_entries_empty_file_is_empty() {
     let dir = tmpdir("vetterd-audit-tail-empty-");
     let path = dir.path().join("audit.log");
     let _log = AuditLog::open(&path).unwrap();
     let log = AuditLog::open(&path).unwrap();
-    let got = log.tail_prompt_entries(5).unwrap();
+    let got = log.tail_resolved_entries(5).unwrap();
     assert!(got.is_empty());
 }
 
 #[test]
-fn tail_prompt_entries_handles_torn_trailing_line() {
+fn tail_resolved_entries_handles_torn_trailing_line() {
     // A crash mid-write could leave the final line un-terminated and
     // un-parseable. Earlier, complete lines must still come back.
     let dir = tmpdir("vetterd-audit-tail-torn-");
@@ -278,19 +311,19 @@ fn tail_prompt_entries_handles_torn_trailing_line() {
     drop(f);
 
     let log = AuditLog::open(&path).unwrap();
-    let got = log.tail_prompt_entries(5).unwrap();
+    let got = log.tail_resolved_entries(5).unwrap();
     let ids: Vec<&str> = got.iter().map(|e| e.id.as_str()).collect();
     assert_eq!(ids, vec!["good"]);
 }
 
 #[test]
-fn tail_prompt_entries_cap_zero_returns_empty() {
+fn tail_resolved_entries_cap_zero_returns_empty() {
     let dir = tmpdir("vetterd-audit-tail-zero-");
     let path = dir.path().join("audit.log");
     let log = AuditLog::open(&path).unwrap();
     log.append(&prompt_entry("p", "https://ok.test/", WireDecision::Allow))
         .unwrap();
-    let got = log.tail_prompt_entries(0).unwrap();
+    let got = log.tail_resolved_entries(0).unwrap();
     assert!(got.is_empty());
 }
 

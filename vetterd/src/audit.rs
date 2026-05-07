@@ -10,7 +10,7 @@
 //! Prompt-class entries additionally carry the `PromptSummary`-
 //! derived fields (`primary_verb`, `primary_target`, `signals`,
 //! `parsed`, `host_known`) plus the pre-rendered §8.5 detail string.
-//! On daemon startup [`AuditLog::tail_prompt_entries`] tails those
+//! On daemon startup [`AuditLog::tail_resolved_entries`] tails those
 //! entries from the file's end to rehydrate the
 //! [`crate::pending::PendingQueue`]'s resolved-history ring so the
 //! popover "Recent" section survives a restart.
@@ -23,6 +23,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use vetter_core::fs_secure::create_dir_secure;
+use vetter_core::matcher::Scope;
 use vetter_core::wire::WireDecision;
 use vetter_core::{ParsedCommand, RiskSignal};
 
@@ -30,15 +31,21 @@ use vetter_core::{ParsedCommand, RiskSignal};
 /// `\n`). Fields chosen per `plans/TestingPlan.md` §5.4 — `id`,
 /// `timestamp`, `command`, `argv`, `decision`, `reason`, `rule_id`.
 /// Phase 3a adds `force_prompt` so a `--dry-run`-driven entry is
-/// distinguishable from a real prompt-class miss.
+/// distinguishable from a real prompt-class miss. Phase 5.1 adds
+/// `rule_scope` alongside the long-existing `rule_id` so the popover's
+/// "See approval reason" disclosure can spell out which allowlist
+/// scope produced the auto-allow.
 ///
 /// The trailing optional block (`primary_verb` … `rendered`) carries
 /// everything the popover's resolved-history ring needs to repaint a
-/// card. These fields are populated only for prompt-class rows —
-/// auto-allow / auto-deny rows leave them empty (and `skip_serializing_if`
-/// keeps those rows compact on disk). A non-empty `rendered` is the
-/// marker [`AuditLog::tail_prompt_entries`] uses to distinguish a
-/// prompt row from an auto-decision row.
+/// card. After Phase 5.1 these fields are populated for **both**
+/// prompt-class rows and auto-decision rows whose matcher attributed
+/// the decision to a specific rule, so the popover Recent section
+/// surfaces auto-allows alongside human prompts. A non-empty
+/// `rendered` continues to be the marker
+/// [`AuditLog::tail_resolved_entries`] uses to distinguish UI-bearing
+/// rows from auto rows that we deliberately skipped (today: parse
+/// failures).
 ///
 /// `PartialEq` (not `Eq`): `ParsedCommand` carries `serde_json::Value`
 /// in `extras`, which has no `Eq` impl. Same reason `PromptSummary`
@@ -53,34 +60,43 @@ pub struct AuditEntry {
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule_id: Option<String>,
+    /// Allowlist layer that produced [`Self::rule_id`]. `None` on
+    /// rows where the decision was not attributable to a specific
+    /// rule (parse failures, prompt-class rows). Companion to
+    /// `rule_id`; the two are populated together by the Phase-5.1
+    /// auto-allow surfacing in
+    /// [`crate::lib::handle_request`](crate::handle_request).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_scope: Option<Scope>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub force_prompt: bool,
     /// Mirrors [`crate::pending::PromptSummary::primary_verb`].
-    /// Empty on auto-decision rows.
+    /// Empty on rows that didn't render a popover card.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub primary_verb: String,
     /// Mirrors [`crate::pending::PromptSummary::primary_target`].
-    /// Empty on auto-decision rows.
+    /// Empty on rows that didn't render a popover card.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub primary_target: String,
     /// Mirrors [`crate::pending::PromptSummary::signals`]. Empty on
-    /// auto-decision rows (and on prompt rows that produced no
-    /// signals — which is fine, the popover just skips the pills row).
+    /// rows that didn't render a popover card (and on rows that
+    /// produced no signals — which is fine, the popover just skips
+    /// the pills row).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<RiskSignal>,
     /// Mirrors [`crate::pending::PromptSummary::parsed`]. `None` on
-    /// auto-decision rows.
+    /// rows that didn't render a popover card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parsed: Option<ParsedCommand>,
     /// Mirrors [`crate::pending::PromptSummary::host_known`]. Empty
-    /// on auto-decision rows.
+    /// on rows that didn't render a popover card.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub host_known: Vec<bool>,
     /// Pre-rendered §8.5 detail string (ANSI-escaped) — same string
-    /// the popover displayed while the request was pending. Empty
-    /// on auto-decision rows; presence of a non-empty value is what
-    /// `tail_prompt_entries` keys on to tell prompt rows apart from
-    /// auto rows.
+    /// the popover displayed while the request was pending or auto-
+    /// resolved. Empty on rows that didn't render a popover card;
+    /// presence of a non-empty value is what `tail_resolved_entries`
+    /// keys on to tell UI-bearing rows apart from skipped ones.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub rendered: String,
 }
@@ -145,26 +161,31 @@ impl AuditLog {
         &self.path
     }
 
-    /// Tail up to `cap` prompt-class entries from the audit log,
+    /// Tail up to `cap` UI-bearing entries from the audit log,
     /// newest first. Used at daemon startup to rehydrate the
     /// popover's resolved-history ring without reading the whole
     /// file.
+    ///
+    /// "UI-bearing" means rows whose serialised form carries a
+    /// non-empty `rendered` field — i.e. rows the daemon produced
+    /// alongside a popover-renderable §8.5 detail. After Phase 5.1
+    /// this includes both prompt-class rows **and** auto-decision
+    /// rows whose matcher attributed the decision to a specific rule;
+    /// rows from parse failures (no parse, no render) are skipped.
     ///
     /// Implementation: read a window of `TAIL_WINDOW_START` bytes
     /// from the end of the file, discard the first (possibly
     /// partial) line if we didn't start at byte 0, then split on
     /// `\n` and parse each line with `serde_json::from_slice`.
-    /// Prompt rows are distinguished by a non-empty `rendered`
-    /// field; auto-decision rows and lines that fail to parse are
-    /// silently skipped. If we collected fewer than `cap` prompt
-    /// rows and the window wasn't the whole file yet, we double
-    /// and retry.
+    /// Lines that fail to parse are silently skipped. If we
+    /// collected fewer than `cap` rows and the window wasn't the
+    /// whole file yet, we double and retry.
     ///
     /// Returns up to `cap` entries in newest-first order (the
     /// order [`crate::pending::PendingQueue::warm_resolved`]
     /// consumes). IO errors bubble up; the daemon treats them as
     /// non-fatal and starts with an empty ring.
-    pub fn tail_prompt_entries(&self, cap: usize) -> std::io::Result<Vec<AuditEntry>> {
+    pub fn tail_resolved_entries(&self, cap: usize) -> std::io::Result<Vec<AuditEntry>> {
         if cap == 0 {
             return Ok(Vec::new());
         }
@@ -189,23 +210,23 @@ impl AuditLog {
                 splits.next();
             }
 
-            // Walk oldest → newest in the window, parse prompt rows.
-            let prompt_rows: Vec<AuditEntry> = splits
-                .filter(|l| !l.is_empty() && looks_like_prompt_row(l))
+            // Walk oldest → newest in the window, parse UI-bearing rows.
+            let ui_rows: Vec<AuditEntry> = splits
+                .filter(|l| !l.is_empty() && looks_like_ui_row(l))
                 .filter_map(|l| serde_json::from_slice::<AuditEntry>(l).ok())
                 .filter(|e| !e.rendered.is_empty())
                 .collect();
 
-            if prompt_rows.len() >= cap || pos == 0 {
-                let start = prompt_rows.len().saturating_sub(cap);
+            if ui_rows.len() >= cap || pos == 0 {
+                let start = ui_rows.len().saturating_sub(cap);
                 // Newest-first for the caller.
-                let out: Vec<AuditEntry> = prompt_rows[start..].iter().rev().cloned().collect();
+                let out: Vec<AuditEntry> = ui_rows[start..].iter().rev().cloned().collect();
                 return Ok(out);
             }
 
-            // Not enough prompt rows yet; expand the window and
-            // retry. `end` is the hard upper bound so we terminate
-            // on the next iteration if we haven't already.
+            // Not enough rows yet; expand the window and retry. `end`
+            // is the hard upper bound so we terminate on the next
+            // iteration if we haven't already.
             window = window.saturating_mul(2);
             if window >= end {
                 window = end;
@@ -214,11 +235,12 @@ impl AuditLog {
     }
 }
 
-/// Cheap pre-filter: prompt rows always serialise with a non-empty
-/// `"rendered":"…"` field (the §8.5 detail string), while auto-
-/// decision rows skip it. Testing for the literal needle short-
-/// circuits the expensive serde parse on the common case.
-fn looks_like_prompt_row(line: &[u8]) -> bool {
+/// Cheap pre-filter: UI-bearing rows always serialise with a non-empty
+/// `"rendered":"…"` field (the §8.5 detail string), while
+/// no-popover-card rows (parse failures, etc.) skip it. Testing for the
+/// literal needle short-circuits the expensive serde parse on the
+/// common case.
+fn looks_like_ui_row(line: &[u8]) -> bool {
     const NEEDLE: &[u8] = br#""rendered":""#;
     if line.len() < NEEDLE.len() {
         return false;
@@ -226,7 +248,7 @@ fn looks_like_prompt_row(line: &[u8]) -> bool {
     line.windows(NEEDLE.len()).any(|w| w == NEEDLE)
 }
 
-/// Initial read-window size for [`AuditLog::tail_prompt_entries`].
+/// Initial read-window size for [`AuditLog::tail_resolved_entries`].
 /// 64 KiB is enough to cover ~20 prompt rows in the common case
 /// (one parsed curl with a few headers serialises to ~1–3 KiB);
 /// the caller doubles the window on miss until either `cap` rows

@@ -203,12 +203,35 @@ launch the bundle and hit the missing-class panic from
   → Vetter is enabled (Allow Notifications on, Banners or Alerts
   selected). Re-`open Vetter.app` to re-trigger the
   `requestAuthorizationWithOptions` call, which surfaces the
-  permission dialog if it was previously denied.
+  permission dialog if it was previously denied. If Vetter entries
+  are landing in Notification Center but never appearing as banners,
+  the usual culprits are macOS delivery policy rather than a daemon
+  bug:
+  - verify **Alert Style** is set to **Banners** or **Alerts**
+    (not **None**)
+  - disable **Scheduled Summary**, or at least remove Vetter from it
+  - disable **Focus** entirely while testing, or explicitly allow
+    **Vetter** inside the active Focus mode; a Focus rule can suppress
+    banners while still allowing the notification to be delivered
+    quietly into Notification Center
+  - check Notification Center manually (clock / date in the menu bar)
+    to distinguish "banner suppressed" from "notification never posted"
+  - if you are screen-sharing, presenting, or mirroring displays,
+    temporarily stop that session; macOS often suppresses banners in
+    those modes even when the app is authorised
+  When debugging, `log show --last 2m --predicate 'process ==
+  "vetterd"' --style compact` is the fastest truth source: a healthy
+  delivery attempt looks like `Adding notification request ...`
+  followed by `Added notification request: [ hasError: 0 ... ]`.
 - **Status item missing from menu bar.** macOS hides extra status
   items behind the system clock or notch when the bar is full;
   click the clock or use [Bartender] to verify Vetter is registered.
   The icon is template-tinted (light/dark adaptive) — it shouldn't
-  be invisible against either menu-bar appearance.
+  be invisible against either menu-bar appearance. In practice the
+  most common failure is simple crowding: quit or hide a few status
+  items, then relaunch Vetter and confirm the shield icon appears.
+  If a third-party menu-bar manager (Bartender, Hidden Bar, Ice, ...)
+  is installed, make sure Vetter is not explicitly hidden there.
 - **Popover never opens.** Make sure the bundle was launched via
   `open target/Vetter.app`; running `target/Vetter.app/Contents/MacOS/vetterd`
   directly skips Launch Services, so AppKit's NSStatusBar is up but
@@ -228,12 +251,22 @@ launch the bundle and hit the missing-class panic from
   AND the popover wasn't open) sits in the pending queue until the
   user opens the popover and clicks Approve / Reject. Running
   `vet curl …` while the popover is open is the easiest way to
-  confirm the queue plumbing is healthy.
+  confirm the queue plumbing is healthy. Also remember the notifier
+  intentionally coalesces bursts: only the first request submitted to
+  an empty queue raises a banner; later requests while one is already
+  pending only update the menu-bar badge + popover. If "nothing
+  appears" after a previous prompt got stranded, inspect the live
+  queue with `vet daemon list`, clear the stale entry via the popover,
+  then retry with one fresh request on an empty queue.
 - **`vet` hangs forever.** The notifier delegate isn't resolving the
   pending entry; the audit log will eventually receive a
   `daemon shutting down` reason when the daemon is killed. Capture
   Console.app logs filtered on `vetterd` for the
-  `addNotificationRequest failed` message.
+  `addNotificationRequest failed` message. If the logs instead show
+  `Added notification request: [ hasError: 0 ... ]` while the user
+  saw no banner, the problem is almost certainly macOS notification
+  policy (Focus, Scheduled Summary, alert style, presentation mode)
+  rather than Vetter's posting path.
 
 [Bartender]: https://www.macbartender.com/
 

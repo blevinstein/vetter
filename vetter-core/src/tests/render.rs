@@ -24,7 +24,6 @@ fn pc_get_with_headers(headers: Vec<(&str, &str)>) -> ParsedCommand {
         command: "noop".into(),
         argv: vec!["noop".into()],
         cwd: None,
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(HttpRequest {
             method: HttpMethod::Get,
             url: Url::parse("https://example.test/").unwrap(),
@@ -106,7 +105,6 @@ fn long_url_is_not_truncated() {
         command: "noop".into(),
         argv: vec![],
         cwd: None,
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(HttpRequest {
             method: HttpMethod::Get,
             url: Url::parse(&url).unwrap(),
@@ -166,7 +164,6 @@ fn primary_target_with_rtlo_is_sanitised() {
         command: "noop".into(),
         argv: vec![],
         cwd: None,
-        stdin_digest: None,
         effects: vec![],
         signals: vec![],
         display_hints: DisplayHints {
@@ -189,7 +186,6 @@ fn file_path_with_zero_width_chars_is_sanitised() {
         command: "noop".into(),
         argv: vec![],
         cwd: None,
-        stdin_digest: None,
         effects: vec![Effect::FileWrite(FileWrite {
             path: path.into(),
             source: WriteSource::Stdin,

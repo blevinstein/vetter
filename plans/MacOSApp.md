@@ -133,12 +133,14 @@ driven by [`vetterd/tests/daemon_e2e_prompt.rs`].
     row both show the path with a small **↗** glyph button to its
     right. Click either button — the JSON should open in your
     default app for `.json` (TextEdit / VS Code / Quick Look).
-    Sanity-check: `Body::FromStdin` cards (`vet curl -d @- …` with
-    a piped payload) and `FileWrite` rows (`vet curl -o /tmp/out
-    https://prompt-test.example/`) intentionally do **not** show
-    the button this round — write paths may not exist yet, and
-    "Reveal in Finder" is a follow-up. Approve the request to
-    finish.
+    Sanity-check: stdin-sourced curl invocations (`vet curl -d @- …`
+    with a piped payload) are rejected by the parser — `vet` exits
+    78 with `StreamingUnsupported` and never reaches the popover at
+    all (ThreatModel T9 close). `FileWrite` rows (`vet curl -o
+    /tmp/out https://prompt-test.example/`) intentionally do **not**
+    show the open-file button this round — write paths may not exist
+    yet, and "Reveal in Finder" is a follow-up. Approve the request
+    to finish.
 
 ## Autostart on login
 

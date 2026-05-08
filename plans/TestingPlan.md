@@ -46,7 +46,11 @@ Test categories used throughout this document:
   are added with `#[serde(default)]`).
 - `HttpRequest` field coverage: verify `method`, `url`, `headers`, `body`,
   `auth`, `tls`, `follow_redirects`, `proxy` all survive a roundtrip.
-- `Body` variant coverage: `None`, `Inline`, `FromFile`, `FromStdin`, `Form`.
+- `Body` variant coverage: `None`, `Inline`, `FromFile`, `Form`. (The
+  former `FromStdin` variant was scrubbed when ThreatModel T9 closed —
+  the curl parser now rejects every stdin-sourced body shape outright.
+  A regression test pins that the old `"kind": "from_stdin"` JSON tag
+  no longer deserialises.)
 - `TlsPolicy` distinguishes `Strict` / `InsecureSkipVerify` / `Plaintext`.
 
 **Negative**
@@ -290,8 +294,13 @@ hand-crafted edge cases. Minimum fixture set:
 
 - `-d 'literal'` → `Body::Inline`, size ≤ 1 MiB.
 - `-d @file` → `Body::FromFile`, `FileRead` effect emitted.
-- `-d @-` with bounded stdin ≤ 1 MiB → `Body::FromStdin(digest, len)`.
-- `-d @-` with stdin > 1 MiB → `ParseError::StreamingUnsupported`.
+- `-d @-` (and `--data @-`, `--data-binary @-`, `--data-ascii @-`,
+  `--data-urlencode @-`) → `ParseError::StreamingUnsupported`,
+  independent of stdin contents (ThreatModel T9 close). Sister to
+  the existing `-T -` / `-b @-` / `-w @-` / `-K -` rejections;
+  agents must materialise the body to a temp file and use
+  `-d @file`. `--data-raw @-` is *not* rejected because curl
+  treats `@` as a literal byte under `--data-raw`.
 - Multiple `-d` flags → values concatenated per curl behavior.
 - `--data-urlencode` values → `Body::Form` with url-encoded fields.
 - Content-Type automatically inferred as `application/x-www-form-urlencoded`

@@ -257,7 +257,6 @@ fn argv_injected_sgr_in_header_does_not_open_popover_style_span() {
         command: "noop".into(),
         argv: vec!["noop".into()],
         cwd: None,
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(HttpRequest {
             method: HttpMethod::Get,
             url: url::Url::parse("https://example.test/").unwrap(),

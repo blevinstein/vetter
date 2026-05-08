@@ -825,18 +825,23 @@ parser/wire layers must not panic on malformed input.
       [vetter-core/src/matcher/rule.rs](vetter-core/src/matcher/rule.rs),
       [vetter-core/src/matcher/decide.rs](vetter-core/src/matcher/decide.rs),
       [vetter-core/tests/corpus/curl/follow_redirects.argv](vetter-core/tests/corpus/curl/follow_redirects.argv))
-- [ ] Stdin body drift — ThreatModel T9, promoted from the
-      post-launch follow-ups below because the popover and audit
-      log materially misrepresent what `vet` execs when the agent
-      pipes bytes into `curl -d @-`. Either (a) forward
-      `stdin_digest` + `stdin_len` on the v3 wire frame (client
-      hashes before the daemon round-trip and re-injects on
-      `execvp`), or (b) emit a `StdinBody` signal whenever
-      `Body::FromStdin` appears so the auto-allow path closes for
-      stdin-bearing calls until the human has confirmed the
-      payload shape. Either close is fine; (b) is a one-line
-      change that immediately removes the "approve 0 B, exfil N MB"
-      gap even before the stdin forwarding lands.
+- [x] Stdin body drift — ThreatModel T9. Closed by rejecting
+      `-d @-` (and its `--data` / `--data-binary` / `--data-ascii` /
+      `--data-urlencode` aliases) outright in the curl parser with
+      `ParseError::StreamingUnsupported`, sister to the existing
+      `-T -` / `-b @-` / `-w @-` / `-K -` rejections. Agents must
+      materialise the body to a temp file and use `-d @file`, which
+      round-trips through `Body::FromFile` + `FileRead` and stays
+      auditable end-to-end. The unused `Body::FromStdin` variant,
+      `ParsedCommand::stdin_digest` field, and `Sha256` newtype
+      were scrubbed from `vetter-core` in the same change since
+      no production code path can emit them anymore. The wire-v3
+      stdin-forwarding work that option (a) once tracked is no
+      longer required for curl; future parsers that genuinely need
+      stdin payloads will revisit it.
+      ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/src/parsers/types.rs](vetter-core/src/parsers/types.rs),
+      [vetter-core/tests/corpus/curl/data_at_stdin.argv](vetter-core/tests/corpus/curl/data_at_stdin.argv))
 
 ### H3 — Supply chain  `[ ] not started`
 
@@ -932,16 +937,17 @@ quickly after v0.1.
       dir is unwritable (warn loudly, don't silently drop)
 - [ ] Hash the loaded ruleset; record digest in each audit row so
       decisions remain replayable after `allowlist.yaml` edits
-- [ ] Forward stdin bytes for parsers that read stdin (curl `-d @-`)
-      and re-inject on exec; today daemon parses with empty stdin
-      so `-d @-` round-trips as `Body::FromStdin{len: 0}`. Audit
-      logs and policy decisions for those calls reflect the empty
-      body, not the bytes curl actually sees. The **approval-
-      surface drift** slice of this has been elevated to H2 as
-      ThreatModel T9 (popover / audit misrepresent what `vet`
-      execs when the pipe carries secrets); what remains here is
-      the full "forward + re-inject" implementation once the
-      interim `StdinBody` signal / wire-v3 digest work lands.
+- [ ] Forward stdin bytes for parsers that read stdin and re-inject
+      on exec. Curl no longer needs this: H2 / ThreatModel T9 closed
+      the gap by rejecting `-d @-` (and aliases) outright, so the
+      daemon never sees a body sourced from a client-side pipe and
+      the popover / audit log can no longer drift from what `vet`
+      execs. This bullet stays open as a forward-looking concern
+      for any future parser (`gh`, `aws`, `wget`) that genuinely
+      needs to consume agent stdin: when one lands, the wire-v3
+      stdin-digest forwarding (and exec-time re-injection) becomes
+      the prerequisite for that parser to safely accept `-`-style
+      stdin invocations.
 - [ ] Decide symlink semantics for `Effect::FileWrite` /
       `Effect::FileRead` (canonicalise vs. reject vs.
       accept-and-document); add tests

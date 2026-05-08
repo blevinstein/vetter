@@ -72,7 +72,6 @@ fn build_parsed(req: HttpRequest) -> ParsedCommand {
         command: "curl".into(),
         argv: vec!["curl".into()],
         cwd: None,
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(req)],
         signals: vec![],
         display_hints: DisplayHints::default(),

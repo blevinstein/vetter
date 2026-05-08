@@ -8,13 +8,11 @@
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::json;
-use sha2::{Digest, Sha256 as Sha256Hasher};
 use url::Url;
 
 use crate::parsers::{
     Auth, Badge, BadgeSeverity, Body, DisplayHints, Effect, FileRead, FileWrite, Header,
-    HttpMethod, HttpRequest, ParseError, ParsedCommand, Sha256, StdinHandle, TlsPolicy,
-    WriteSource,
+    HttpMethod, HttpRequest, ParseError, ParsedCommand, StdinHandle, TlsPolicy, WriteSource,
 };
 use crate::signals::{RiskSignal, SignalKind};
 
@@ -27,7 +25,11 @@ use super::flags::{tokenise, FlagId, Token};
 enum DataChunk {
     Inline(String),
     File(PathBuf),
-    /// `-d @-`: body sourced from stdin. Resolved during finalisation.
+    /// `-d @-`: body would be sourced from stdin. Curl invocations that
+    /// pipe their body in this way are rejected outright in
+    /// [`build_body`] with [`ParseError::StreamingUnsupported`]: agents
+    /// must materialise the bytes to a temp file and use `-d @file` so
+    /// the daemon's audit log faithfully records what `vet` execs.
     Stdin,
 }
 
@@ -423,11 +425,10 @@ fn classify_data(raw: &str, id: FlagId) -> DataChunk {
 /// Split a `-b` / `--cookie` value into its `Inline` / `File` form.
 ///
 /// Curl treats a leading `@` as "load this Netscape cookie file". A
-/// bare `-` after the `@` would mean "load from stdin" — we don't
-/// stream stdin into the parser today (see `Body::FromStdin` /
-/// `StreamingUnsupported` for the existing precedent), and the
-/// approver UI cannot represent a credential file that doesn't exist
-/// yet, so we fail closed there.
+/// bare `-` after the `@` would mean "load from stdin" — we never
+/// stream stdin bytes through the parser (see `build_body` for the
+/// matching `-d @-` rejection), so this fails closed with
+/// `ParseError::StreamingUnsupported`.
 fn classify_cookie(raw: &str) -> Result<CookieChunk, ParseError> {
     if let Some(rest) = raw.strip_prefix('@') {
         if rest == "-" {
@@ -483,7 +484,7 @@ fn finalise(
 
     let method = infer_method(&state);
 
-    let (body, file_read_effect, stdin_digest) = build_body(&state, stdin, cwd)?;
+    let (body, file_read_effect) = build_body(&state, stdin, cwd)?;
 
     let tls = if state.insecure {
         TlsPolicy::InsecureSkipVerify
@@ -590,7 +591,6 @@ fn finalise(
         command: "curl".into(),
         argv: argv.to_vec(),
         cwd: cwd.map(Path::to_path_buf),
-        stdin_digest,
         effects,
         signals,
         display_hints,
@@ -658,34 +658,25 @@ fn infer_method(state: &CurlState) -> HttpMethod {
 
 fn build_body(
     state: &CurlState,
-    stdin: &StdinHandle<'_>,
+    _stdin: &StdinHandle<'_>,
     cwd: Option<&Path>,
-) -> Result<(Body, Option<FileRead>, Option<Sha256>), ParseError> {
+) -> Result<(Body, Option<FileRead>), ParseError> {
     if state.data.is_empty() {
-        return Ok((Body::None, None, None));
+        return Ok((Body::None, None));
     }
 
-    // Multiple chunks with mixed sources are unusual; we only specially
-    // handle the common cases. If any chunk is Stdin, the body becomes
-    // FromStdin (and other chunks are dropped — curl semantics here are
-    // unclear and we'd rather under-allow than mis-vet).
+    // `-d @-` (and its `--data-binary @-` / `--data-raw @-` /
+    // `--data-ascii @-` / `--data-urlencode @-` aliases) sources the
+    // request body from stdin. The daemon re-parses argv with an
+    // empty stdin (see `vetterd::parse_request`), so any bytes the
+    // agent pipes never reach the approver — the popover and audit
+    // log would record an empty body while `vet` execs the real
+    // pipe. Rather than ship that drift we fail closed: agents must
+    // materialise the bytes to a temp file and use `-d @file`, which
+    // round-trips through `Body::FromFile` + `FileRead` and stays
+    // auditable end-to-end. Closes ThreatModel T9.
     if state.data.iter().any(|c| matches!(c, DataChunk::Stdin)) {
-        let buf = stdin.buf.unwrap_or_default();
-        if buf.len() > stdin.cap_bytes {
-            return Err(ParseError::StreamingUnsupported);
-        }
-        let mut hasher = Sha256Hasher::new();
-        hasher.update(buf);
-        let digest = format!("{:x}", hasher.finalize());
-        let len = buf.len() as u64;
-        return Ok((
-            Body::FromStdin {
-                digest: Sha256::new(digest.clone()),
-                len,
-            },
-            None,
-            Some(Sha256::new(digest)),
-        ));
+        return Err(ParseError::StreamingUnsupported);
     }
 
     // Single file chunk → FromFile + FileRead. Resolve once and reuse
@@ -698,7 +689,6 @@ fn build_body(
                     path: resolved.clone(),
                 },
                 Some(FileRead { path: resolved }),
-                None,
             ));
         }
     }
@@ -726,7 +716,7 @@ fn build_body(
     // -d 'literal' + -d @file is a rare combination; keeping it simple
     // is fine for MVP.
     let fr = file_reads.into_iter().next();
-    Ok((body, fr, None))
+    Ok((body, fr))
 }
 
 fn derive_auth(state: &CurlState) -> Option<Auth> {

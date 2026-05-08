@@ -32,8 +32,8 @@ pub use known_hosts::{load_default as load_known_hosts_default, KnownHostsStore}
 pub use parsers::{
     register_builtins, Auth, Badge, BadgeSeverity, Body, CommandParser, CredentialUse,
     DisplayHints, Effect, EnvSnapshot, FileRead, FileWrite, FormField, Header, HttpMethod,
-    HttpRequest, NetworkOpen, ParseError, ParsedCommand, ProcessSpawn, Sha256, StdinHandle,
-    TlsPolicy, WriteSource,
+    HttpRequest, NetworkOpen, ParseError, ParsedCommand, ProcessSpawn, StdinHandle, TlsPolicy,
+    WriteSource,
 };
 pub use paths::{
     default_admin_socket_path, default_audit_path, default_pidfile_path, default_socket_path,

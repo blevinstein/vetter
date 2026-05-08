@@ -155,17 +155,26 @@ The daemon re-parses `argv` (T2) but does so with
 `StdinHandle::empty()` and its own `std::env::vars()` rather than
 the client's. Two drift sources follow:
 
-1. **Stdin** — `curl -d @-` with a multi-megabyte pipe on the
-   client side is seen by `vetterd::parse_request` as
-   `Body::FromStdin{len: 0, digest: ""}`. The popover, the audit
-   log's rendered block, and the primary_target summary all show
-   "from stdin, 0 B" while `vet` is about to `execvp(curl)` with
-   the real pipe intact. A human who approves based on "empty POST
-   body to an allowlisted host" has, in fact, approved an arbitrary
-   exfil payload. Currently tracked in TODO's post-launch-follow-
-   ups as a fidelity issue; it's a trust-boundary bug — the
-   popover is not faithful to the side effect the user is
-   authorising.
+1. **Stdin** — *closed.* The original gap was `curl -d @-` with a
+   multi-megabyte pipe on the client side being seen by
+   `vetterd::parse_request` as a 0-byte body, so the popover and
+   audit log diverged from what `vet` was about to `execvp`. The
+   curl parser now refuses every stdin-sourced body shape outright
+   ([`vetter-core/src/parsers/curl/state.rs`](../vetter-core/src/parsers/curl/state.rs)
+   `build_body`): `-d @-`, `--data @-`, `--data-binary @-`,
+   `--data-ascii @-`, `--data-urlencode @-` all surface as
+   `ParseError::StreamingUnsupported`, sister to the existing
+   `-T -` / `-b @-` / `-w @-` / `-K -` rejections. Agents must
+   write the body to a temp file and use `-d @file`, which
+   round-trips through `Body::FromFile` + `FileRead` and stays
+   auditable end-to-end. The unused `Body::FromStdin` variant,
+   `ParsedCommand::stdin_digest` field, and `Sha256` newtype were
+   scrubbed in the same change since no production code path can
+   emit them anymore. Future parsers (`gh`, `aws`, `wget`) that
+   genuinely need stdin payloads will reopen this question — see
+   TODO's post-launch follow-up for the wire-v3 stdin-digest
+   forwarding work that becomes the prerequisite for those
+   parsers to safely accept `-`-style stdin invocations.
 
 2. **Env** — `EnvSnapshot::from_process()` on the daemon side means
    a parser that consults env (today: none; tomorrow: `aws`
@@ -176,25 +185,21 @@ the client's. Two drift sources follow:
    is latent today (the curl parser ignores env) but will bite the
    first parser that doesn't.
 
-Close options: (a) forward `stdin_digest` + `stdin_len` on the v3
-wire frame (client hashes, then re-injects on exec — see TODO's
-post-launch follow-up) so the popover can truthfully display
-"from stdin, N B, sha256 …"; (b) forward the subset of env the
-client parser consulted alongside `argv` on the wire, so the
-daemon's re-parse sees the same snapshot; (c) emit a risk signal
-`StdinBody` whenever `Body::FromStdin` appears so even under
-fidelity loss the approver is prompted to scrutinise the call.
+Close option for the env half: forward the subset of env the client
+parser consulted alongside `argv` on the wire, so the daemon's
+re-parse sees the same snapshot.
 
 ---
 
 ## Sequencing
 
 T5 (homograph detection) is partial-mitigation only and tracks the
-open detection work. T6–T9 are unshipped threats discovered in
+open detection work. T6–T8 are unshipped threats discovered in
 review; sequencing lives in TODO.md's Hardening sections (H1 covers
-T6/T8's filesystem checks, H2 covers T9's stdin digest, H5 adds the
-workspace-trust gate for T7). Everything below this line is the
-closed list.
+T6/T8's filesystem checks, H5 adds the workspace-trust gate for T7).
+T9's stdin half is closed (parser-side rejection of stdin-sourced
+bodies); the env half remains open for future parsers. Everything
+below this line is the closed list.
 
 Already shipped:
 

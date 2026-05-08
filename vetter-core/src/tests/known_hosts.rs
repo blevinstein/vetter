@@ -35,7 +35,6 @@ fn pc_with_url(url: &str) -> ParsedCommand {
         command: "curl".into(),
         argv: vec!["curl".into(), url.into()],
         cwd: Some("/work".into()),
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(HttpRequest {
             method: HttpMethod::Get,
             url: Url::parse(url).unwrap(),
@@ -231,7 +230,6 @@ fn empty_effects_produces_no_signals() {
         command: "curl".into(),
         argv: vec![],
         cwd: None,
-        stdin_digest: None,
         effects: vec![],
         signals: vec![],
         display_hints: DisplayHints::default(),

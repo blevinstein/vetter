@@ -37,7 +37,6 @@ fn parsed_command_roundtrip_with_one_http_effect() {
         command: "noop".to_string(),
         argv: vec!["noop".to_string()],
         cwd: None,
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(min_http(HttpMethod::Get))],
         signals: vec![],
         display_hints: DisplayHints {
@@ -56,7 +55,6 @@ fn json_contains_command_and_effects_keys() {
         command: "noop".to_string(),
         argv: vec![],
         cwd: None,
-        stdin_digest: None,
         effects: vec![],
         signals: vec![],
         display_hints: DisplayHints::default(),
@@ -98,10 +96,6 @@ fn body_variants_roundtrip() {
         Body::FromFile {
             path: "/tmp/x".into(),
         },
-        Body::FromStdin {
-            digest: Sha256::new("abc"),
-            len: 42,
-        },
         Body::Form {
             fields: vec![FormField {
                 name: "k".into(),
@@ -111,6 +105,18 @@ fn body_variants_roundtrip() {
     ] {
         roundtrip(b);
     }
+}
+
+#[test]
+fn body_from_stdin_kind_is_rejected_as_unknown_variant() {
+    let bad = json!({"kind": "from_stdin", "digest": "abc", "len": 42});
+    let r: Result<Body, _> = serde_json::from_value(bad);
+    assert!(
+        r.is_err(),
+        "Body::FromStdin was scrubbed in the stdin-rejection PR; ThreatModel T9 close - \
+         curl invocations that pipe their body must use a temp file instead. Old audit rows \
+         that pre-date the rename will fail to deserialise, which is acceptable for pre-launch."
+    );
 }
 
 #[test]
@@ -175,7 +181,6 @@ fn all_effect_variants_roundtrip_inside_parsed_command() {
         command: "noop".into(),
         argv: vec!["noop".into()],
         cwd: Some("/work".into()),
-        stdin_digest: Some(Sha256::new("deadbeef")),
         effects,
         signals: vec![RiskSignal {
             kind: SignalKind::WriteMethod,

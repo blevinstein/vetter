@@ -255,23 +255,67 @@ fn next_short_in_cluster_rejected() {
 }
 
 #[test]
-fn data_at_stdin_within_cap_yields_from_stdin() {
-    let p = parse_stdin(&["-d", "@-", "https://example.test/"], b"hello", 1024).expect("parse");
-    match &http_of(&p).body {
-        Body::FromStdin { len, digest } => {
-            assert_eq!(*len, 5);
-            assert!(!digest.as_str().is_empty());
-        }
-        other => panic!("expected FromStdin, got {other:?}"),
+fn data_at_stdin_rejected_as_streaming_unsupported() {
+    // ThreatModel T9 close: `-d @-` would source the body from the
+    // client-side pipe, but the daemon re-parses argv with an empty
+    // stdin handle (see `vetterd::parse_request`) so the popover and
+    // audit log would record a 0-byte body while `vet` execs the real
+    // pipe. Fail closed in the parser; agents must materialise the
+    // bytes to a temp file and use `-d @file` instead. The rejection
+    // is independent of stdin contents (stdin is intentionally
+    // ignored), so empty / small / oversize all surface the same
+    // `StreamingUnsupported` error.
+    for stdin in [&b""[..], &b"hello"[..], &[b'a'; 4096][..]] {
+        let r = parse_stdin(&["-d", "@-", "https://example.test/"], stdin, 1024);
+        assert!(
+            matches!(r, Err(ParseError::StreamingUnsupported)),
+            "stdin len {} should be rejected, got {r:?}",
+            stdin.len()
+        );
     }
-    assert!(p.stdin_digest.is_some());
 }
 
 #[test]
-fn data_at_stdin_over_cap_errors() {
-    let stdin = vec![b'a'; 16];
-    let r = parse_stdin(&["-d", "@-", "https://example.test/"], &stdin, 8);
-    assert!(matches!(r, Err(ParseError::StreamingUnsupported)));
+fn data_alias_at_stdin_rejected() {
+    // The `@-` rejection must apply to every `-d` alias that honours
+    // the `@` prefix: `--data` (long form), `--data-binary`,
+    // `--data-ascii`, `--data-urlencode`. All four funnel through
+    // `state.data` as a `DataChunk::Stdin`, so one `build_body`
+    // branch handles them — these assertions pin the rejection
+    // across the alias surface so a future flag-table edit can't
+    // silently re-enable the gap. `--data-raw` is intentionally
+    // excluded: per curl, it never interprets `@`, so `@-` is the
+    // literal string `@-`. See `data_raw_at_dash_is_inline_literal`.
+    for flag in [
+        "--data",
+        "--data-binary",
+        "--data-ascii",
+        "--data-urlencode",
+    ] {
+        let r = parse_stdin(&[flag, "@-", "https://example.test/"], b"hi", 1024);
+        assert!(
+            matches!(r, Err(ParseError::StreamingUnsupported)),
+            "{flag} @- should be rejected, got {r:?}",
+        );
+    }
+}
+
+#[test]
+fn data_raw_at_dash_is_inline_literal() {
+    // `--data-raw` deliberately ignores the `@` prefix per curl, so
+    // `--data-raw @-` is a two-byte inline body, not a stdin
+    // reference — and stays outside the `data_at_stdin_*` rejection
+    // surface above.
+    let p = parse_stdin(
+        &["--data-raw", "@-", "https://example.test/"],
+        b"ignored",
+        1024,
+    )
+    .expect("parse");
+    match &http_of(&p).body {
+        Body::Inline { bytes } => assert_eq!(bytes, b"@-"),
+        other => panic!("expected Body::Inline(@-), got {other:?}"),
+    }
 }
 
 #[test]

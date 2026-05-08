@@ -22,7 +22,6 @@ fn parsed_get(host: &str) -> ParsedCommand {
         command: "curl".into(),
         argv: vec!["curl".into(), format!("https://{host}/")],
         cwd: None,
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(HttpRequest {
             method: HttpMethod::Get,
             url: url::Url::parse(&format!("https://{host}/")).unwrap(),

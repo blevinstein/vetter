@@ -145,10 +145,9 @@ pub fn build_effect_views(
                 if let Some(view) = build_body_section(&req.body, mtm, file_button_factory) {
                     // `Body::FromFile` is the only file-input
                     // variant of the body section. Other body
-                    // shapes (Inline / Form / FromStdin) live in
-                    // `others` so they fall behind the resolved-
-                    // card disclosure with the rest of the request
-                    // metadata.
+                    // shapes (Inline / Form) live in `others` so
+                    // they fall behind the resolved-card disclosure
+                    // with the rest of the request metadata.
                     if matches!(req.body, Body::FromFile { .. }) {
                         out.file_inputs.push(view);
                     } else {
@@ -275,13 +274,6 @@ fn build_body_section(
                 mtm,
                 file_button_factory,
             )),
-        ),
-        Body::FromStdin { digest, len } => (
-            format!(
-                "from stdin, {len} B, sha256 {}",
-                sanitize_for_display(digest.as_str())
-            ),
-            None,
         ),
         Body::Form { fields } => {
             let stack = NSStackView::new(mtm);

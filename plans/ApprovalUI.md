@@ -200,8 +200,6 @@ Per `Effect`:
       in a monospaced label.
     - `Body::FromFile { path }` → file glyph (SF Symbol `doc.text`) +
       path label.
-    - `Body::FromStdin { digest, len }` → "from stdin, N B, sha256
-      <digest>" in dim.
     - `Body::Form { fields }` → "x-www-form-urlencoded, N fields" +
       a vertical sub-stack of `key=value` rows (values currently
       shown in plain; future work could redact known sensitive keys).

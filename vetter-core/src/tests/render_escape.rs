@@ -41,25 +41,29 @@ fn esc_byte_is_replaced() {
 #[test]
 fn newline_and_tab_are_replaced_in_untrusted_text() {
     // Newlines in untrusted chunks could forge an entire renderer
-    // line, so they're explicitly inside the deny set.
+    // line, so they're explicitly inside the deny set — but they map
+    // to the compact Control Pictures glyphs rather than the noisy
+    // `<U+XXXX>` form.
     let out = sanitize_for_display("line1\nline2\tafter");
     assert!(matches!(out, Cow::Owned(_)));
     assert!(!out.contains('\n'));
     assert!(!out.contains('\t'));
-    assert!(out.contains("<U+000A>"));
-    assert!(out.contains("<U+0009>"));
+    assert!(out.contains('\u{240A}'));
+    assert!(out.contains('\u{2409}'));
 }
 
 #[test]
 fn cr_bs_bel_are_replaced() {
+    // CR shares the whitespace carve-out (compact glyph); BS and BEL
+    // stay in the verbatim `<U+XXXX>` form.
     for (raw, label) in [
-        ("a\rb", "<U+000D>"),
+        ("a\rb", "\u{240D}"),
         ("a\x08b", "<U+0008>"),
         ("a\x07b", "<U+0007>"),
     ] {
         let out = sanitize_for_display(raw);
         assert!(out.contains(label), "expected `{label}` in `{out}`");
-        assert!(!out.contains('\r') || label == "<U+000D>");
+        assert!(!out.contains('\r'));
     }
 }
 

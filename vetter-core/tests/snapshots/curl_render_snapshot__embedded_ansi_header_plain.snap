@@ -5,7 +5,7 @@ expression: out
  vet  curl
  ─────────────────────────────────────────────────────────────────
  GET  https://example.test/
-   X-Evil: before<U+001B>[2J<U+001B>[Hmid<U+001B>[31mafter<U+000D>rtail
+   X-Evil: before<U+001B>[2J<U+001B>[Hmid<U+001B>[31mafter␍rtail
    X-Bidi: path/<U+202E>gpj.exe
  ─────────────────────────────────────────────────────────────────
    Risk signals: none

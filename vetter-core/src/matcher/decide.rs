@@ -159,6 +159,9 @@ fn matches_http(req: &HttpRequest, clause: &HttpClause) -> bool {
             return false;
         }
     }
+    if clause.no_redirects.unwrap_or(true) && req.follow_redirects {
+        return false;
+    }
     true
 }
 

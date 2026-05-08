@@ -1379,3 +1379,44 @@ fn create_dirs_signal_absent_without_flag() {
     let p = parse(&["-o", "/tmp/sub/dir/x", "https://example.test/y"]);
     assert!(!p.signals.iter().any(|s| s.kind == SignalKind::CreateDirs));
 }
+
+// -- -L / --location follow-redirects -------------------------------
+//
+// Closes the H2 / ThreatModel T10 item: `-L` flips
+// `HttpRequest.follow_redirects` and pushes a `FollowRedirects` signal
+// so the matcher's `no_redirects` predicate (default-deny) can refuse
+// to auto-allow rules that don't explicitly opt into redirect-
+// following trust.
+
+#[test]
+fn location_short_flag_pushes_follow_redirects_signal() {
+    let p = parse(&["-L", "https://example.test/redir"]);
+    assert!(http_of(&p).follow_redirects);
+    assert_eq!(
+        p.signals
+            .iter()
+            .filter(|s| s.kind == SignalKind::FollowRedirects)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn location_long_flag_pushes_follow_redirects_signal() {
+    let p = parse(&["--location", "https://example.test/redir"]);
+    assert!(http_of(&p).follow_redirects);
+    assert!(p
+        .signals
+        .iter()
+        .any(|s| s.kind == SignalKind::FollowRedirects));
+}
+
+#[test]
+fn follow_redirects_signal_absent_without_flag() {
+    let p = parse(&["https://example.test/"]);
+    assert!(!http_of(&p).follow_redirects);
+    assert!(!p
+        .signals
+        .iter()
+        .any(|s| s.kind == SignalKind::FollowRedirects));
+}

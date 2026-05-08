@@ -32,6 +32,17 @@ fn build_request(
     headers: &[(String, String)],
     inline_body: bool,
 ) -> HttpRequest {
+    build_request_full(method, host, path, headers, inline_body, false)
+}
+
+fn build_request_full(
+    method: HttpMethod,
+    host: &str,
+    path: &str,
+    headers: &[(String, String)],
+    inline_body: bool,
+    follow_redirects: bool,
+) -> HttpRequest {
     let url_str = format!("https://{host}{path}");
     let url = Url::parse(&url_str).expect("test url");
     HttpRequest {
@@ -51,7 +62,7 @@ fn build_request(
         },
         auth: None,
         tls: TlsPolicy::Strict,
-        follow_redirects: false,
+        follow_redirects,
         proxy: None,
     }
 }
@@ -97,6 +108,7 @@ fn build_pair(
                 headers_allow: Some(header_allow),
                 no_body: Some(true),
                 query: None,
+                no_redirects: Some(false),
             }),
             file_write: None,
             file_read: None,
@@ -223,5 +235,51 @@ proptest! {
     #[test]
     fn matches_rule_never_panics(pair in arb_pair()) {
         let _ = matches_rule(&pair.parsed, &pair.rule);
+    }
+
+    /// Closes ThreatModel T10. With `no_redirects: Some(false)` (the
+    /// `arb_pair` builder's choice — it explicitly opts into
+    /// redirect-following trust so the existing match invariants
+    /// hold uniformly), the rule must accept a request regardless of
+    /// the `follow_redirects` axis.
+    #[test]
+    fn no_redirects_false_admits_any_follow_redirects(pair in arb_pair(), follow in any::<bool>()) {
+        let req = build_request_full(
+            pair.method.clone(),
+            &pair.host,
+            &pair.path,
+            &pair.headers,
+            false,
+            follow,
+        );
+        let parsed = build_parsed(req);
+        prop_assert!(
+            matches_rule(&parsed, &pair.rule),
+            "no_redirects=false rule should not reject on follow_redirects={follow}: {pair:?}",
+        );
+    }
+
+    /// Default-deny: stripping the explicit `no_redirects: false`
+    /// opt-in must cause the rule to reject any request with
+    /// `follow_redirects = true`, regardless of every other axis.
+    #[test]
+    fn no_redirects_omitted_blocks_follow_redirects_request(pair in arb_pair()) {
+        let req = build_request_full(
+            pair.method.clone(),
+            &pair.host,
+            &pair.path,
+            &pair.headers,
+            false,
+            true,
+        );
+        let parsed = build_parsed(req);
+        let mut rule = pair.rule.clone();
+        if let Some(http) = rule.when.http.as_mut() {
+            http.no_redirects = None;
+        }
+        prop_assert!(
+            !matches_rule(&parsed, &rule),
+            "no_redirects=None rule should reject follow_redirects=true: {pair:?}",
+        );
     }
 }

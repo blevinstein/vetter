@@ -315,6 +315,7 @@ fn ui_severity_classifies_each_signal_kind() {
         (SignalKind::UnknownHost, Warn),
         (SignalKind::RemoteHeaderName, Warn),
         (SignalKind::CreateDirs, Warn),
+        (SignalKind::FollowRedirects, Warn),
     ];
     for (kind, expected) in cases {
         assert_eq!(
@@ -349,6 +350,7 @@ fn no_current_signal_is_info_tier() {
         SignalKind::ClientCertificate,
         SignalKind::RemoteHeaderName,
         SignalKind::CreateDirs,
+        SignalKind::FollowRedirects,
     ];
     for k in all {
         assert_ne!(

@@ -67,6 +67,7 @@ fn allow_clause() -> HttpClause {
         headers_allow: Some(vec!["*".into()]),
         no_body: Some(true),
         query: None,
+        no_redirects: None,
     }
 }
 
@@ -218,6 +219,57 @@ fn query_required_when_set_true() {
         "https://example.test/v1/foo?x=1",
     ))]);
     assert!(matches_rule(&parsed2, &http_rule("ok", clause)));
+}
+
+#[test]
+fn no_redirects_default_deny_blocks_follow_redirects_request() {
+    // Closes ThreatModel T10. Omitting `no_redirects` selects the
+    // strict / fail-safe interpretation: a rule must explicitly opt
+    // into redirect-following trust to auto-allow such a request.
+    let mut req = http(HttpMethod::Get, "https://example.test/v1/foo");
+    req.follow_redirects = true;
+    let parsed = parsed_with(vec![Effect::HttpRequest(req)]);
+    assert!(!matches_rule(&parsed, &http_rule("ok", allow_clause())));
+}
+
+#[test]
+fn no_redirects_default_deny_admits_non_redirect_request() {
+    // Default-deny only bites when the request itself is set to
+    // follow redirects; unaffected requests still match.
+    let parsed = parsed_with(vec![Effect::HttpRequest(http(
+        HttpMethod::Get,
+        "https://example.test/v1/foo",
+    ))]);
+    assert!(matches_rule(&parsed, &http_rule("ok", allow_clause())));
+}
+
+#[test]
+fn no_redirects_explicit_true_blocks_follow_redirects_request() {
+    let mut req = http(HttpMethod::Get, "https://example.test/v1/foo");
+    req.follow_redirects = true;
+    let parsed = parsed_with(vec![Effect::HttpRequest(req)]);
+    let mut clause = allow_clause();
+    clause.no_redirects = Some(true);
+    assert!(!matches_rule(&parsed, &http_rule("ok", clause)));
+}
+
+#[test]
+fn no_redirects_false_admits_follow_redirects_request() {
+    // Opt-in: rules that genuinely need redirect-following trust
+    // signal it explicitly via `no_redirects: false`.
+    let mut req = http(HttpMethod::Get, "https://example.test/v1/foo");
+    req.follow_redirects = true;
+    let parsed = parsed_with(vec![Effect::HttpRequest(req)]);
+    let mut clause = allow_clause();
+    clause.no_redirects = Some(false);
+    assert!(matches_rule(&parsed, &http_rule("ok", clause.clone())));
+
+    // And still admits the non-redirect case.
+    let parsed_non_redir = parsed_with(vec![Effect::HttpRequest(http(
+        HttpMethod::Get,
+        "https://example.test/v1/foo",
+    ))]);
+    assert!(matches_rule(&parsed_non_redir, &http_rule("ok", clause)));
 }
 
 #[test]

@@ -1,0 +1,37 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "-L",
+    "https://example.test/redir"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "url": "https://example.test/redir",
+      "headers": [],
+      "body": {
+        "kind": "none"
+      },
+      "tls": "strict",
+      "follow_redirects": true
+    }
+  ],
+  "signals": [
+    {
+      "kind": "follow_redirects",
+      "detail": "-L follows HTTP redirects",
+      "effect_idx": 0
+    }
+  ],
+  "display_hints": {
+    "primary_verb": "GET",
+    "primary_target": "https://example.test/redir",
+    "badges": []
+  }
+}

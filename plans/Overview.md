@@ -634,6 +634,11 @@ Generic (over `Effect::HttpRequest`):
   known-hosts list (§5 "Known-hosts list"), signalling that the agent is
   reaching somewhere the user has not explicitly recognised as familiar;
   loopback addresses are always exempt
+- follow-redirects: `-L`/`--location` enabled; auto-allow rules must
+  explicitly opt in via `http: { no_redirects: false }` to permit
+  redirect-following requests (default-deny so an allowlisted host that
+  open-redirects, or is compromised, cannot pivot the request to an
+  arbitrary origin under the original auto-allow)
 
 Generic (over `Effect::FileWrite` / `FileRead`):
 - file outside the allowlist's known-safe directories (`UnknownWritePath` /

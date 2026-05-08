@@ -132,6 +132,7 @@ fn remove_allowlist_rule_drops_persisted_rule_and_reloads_store() {
                 headers_allow: Some(vec!["*".into()]),
                 no_body: None,
                 query: None,
+                no_redirects: None,
             }),
             file_write: None,
             file_read: None,

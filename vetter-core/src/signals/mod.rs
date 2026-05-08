@@ -71,6 +71,11 @@ pub enum SignalKind {
     /// missing parents of the `FileWrite` path, so the write may land
     /// arbitrarily deep below `--output-dir` / `-o`'s parent.
     CreateDirs,
+    /// `-L` / `--location` was supplied: the request will follow HTTP
+    /// redirects to whatever origin the server names. Allowlist rules
+    /// must explicitly opt in via `http: { no_redirects: false }` to
+    /// auto-allow such requests.
+    FollowRedirects,
 }
 
 impl SignalKind {
@@ -112,7 +117,8 @@ impl SignalKind {
             | SignalKind::FileReadOutsideCwd
             | SignalKind::UnknownHost
             | SignalKind::RemoteHeaderName
-            | SignalKind::CreateDirs => BadgeSeverity::Warn,
+            | SignalKind::CreateDirs
+            | SignalKind::FollowRedirects => BadgeSeverity::Warn,
         }
     }
 }

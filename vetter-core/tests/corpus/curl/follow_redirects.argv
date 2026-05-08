@@ -1,0 +1,8 @@
+# -L tells curl to follow HTTP redirects. The parser flips
+# HttpRequest.follow_redirects to true and pushes a
+# SignalKind::FollowRedirects so the matcher's no_redirects
+# predicate (default-deny) refuses to auto-allow rules that
+# don't explicitly opt into redirect-following trust.
+# ThreatModel T10.
+-L
+https://example.test/redir

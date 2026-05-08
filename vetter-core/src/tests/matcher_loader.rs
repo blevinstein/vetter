@@ -19,6 +19,7 @@ fn rule(id: &str, methods: Vec<HttpMethod>) -> Rule {
                 headers_allow: Some(vec!["*".into()]),
                 no_body: None,
                 query: None,
+                no_redirects: None,
             }),
             file_write: None,
             file_read: None,

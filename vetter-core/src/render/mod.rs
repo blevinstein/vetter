@@ -488,6 +488,7 @@ pub fn signal_kind_label(k: SignalKind) -> &'static str {
         SignalKind::ClientCertificate => "client-certificate",
         SignalKind::RemoteHeaderName => "remote-header-name",
         SignalKind::CreateDirs => "create-dirs",
+        SignalKind::FollowRedirects => "follow-redirects",
     }
 }
 

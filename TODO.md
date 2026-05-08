@@ -812,18 +812,19 @@ parser/wire layers must not panic on malformed input.
 - [ ] Wire-protocol fuzzing entry — was Phase 3 §6.3; promoted out
       of "Phase 3b polish" because peer-cred narrows but doesn't
       eliminate the local-attacker surface
-- [ ] `SignalKind::FollowRedirects` + `http: { no_redirects: true }`
-      allowlist predicate — ThreatModel T10. Today
-      `HttpRequest.follow_redirects` is tracked on the effect but
-      produces no signal and no predicate, so an allowlisted host
-      that open-redirects (or is compromised) can bounce the
-      request to any origin while the auto-allow fires on the
-      initial URL. Fix: push a `FollowRedirects` signal from the
-      curl parser whenever `-L` / `--location` is present, extend
-      the generic analyzer / signals §9 catalogue to mention it,
-      and add a `no_redirects: true` (default) / explicit opt-in
-      predicate on the `http:` rule clause so rules that genuinely
-      need redirect-following trust have to say so in YAML.
+- [x] `SignalKind::FollowRedirects` + `http: { no_redirects: true }`
+      allowlist predicate — ThreatModel T10. Curl parser pushes a
+      `FollowRedirects` (Warn) signal whenever `-L` / `--location`
+      is present, the §9 generic catalogue lists the new bullet, and
+      `HttpClause.no_redirects` defaults to `Some(true)` semantics so
+      rules that genuinely need redirect-following trust must opt in
+      via `no_redirects: false` in YAML — mirroring the
+      `headers_allow` default-deny pattern.
+      ([vetter-core/src/signals/mod.rs](vetter-core/src/signals/mod.rs),
+      [vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/src/matcher/rule.rs](vetter-core/src/matcher/rule.rs),
+      [vetter-core/src/matcher/decide.rs](vetter-core/src/matcher/decide.rs),
+      [vetter-core/tests/corpus/curl/follow_redirects.argv](vetter-core/tests/corpus/curl/follow_redirects.argv))
 - [ ] Stdin body drift — ThreatModel T9, promoted from the
       post-launch follow-ups below because the popover and audit
       log materially misrepresent what `vet` execs when the agent

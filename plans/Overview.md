@@ -210,14 +210,20 @@ rules:
       http: { method: [GET] }
 ```
 
-`when` clauses are keyed by effect kind (`http:`, `file_write:`,
-`file_read:`, `process_spawn:`, …). A rule matches iff *every*
-populated effect-clause finds *at least one* matching effect in the
-parsed command, and any populated `command:` filter agrees.
-Anything not listed in `headers_allow` (or set to `*`) is a mismatch
-— i.e. **default-
-deny on header surface**, because Authorization, Cookie, X-Api-Key, etc.
-are exactly what we want to scrutinise.
+`when` clauses are keyed by effect kind that's specific to the
+parser that produced it (`http:` for curl / wget / gh; future
+parsers will add `process_spawn:`, `network:`, etc.). A rule
+matches iff *every* populated effect-clause finds *at least one*
+matching effect in the parsed command, and any populated `command:`
+filter agrees. Anything not listed in `headers_allow` (or set to
+`*`) is a mismatch — i.e. **default-deny on header surface**,
+because Authorization, Cookie, X-Api-Key, etc. are exactly what we
+want to scrutinise.
+
+File paths (`Effect::FileRead` / `Effect::FileWrite`) are evaluated
+through a separate cross-cutting layer — see [File-path
+safe-paths layer](#file-path-safe-paths-layer) below. Rules in
+`allowlist.yaml` do not carry file-path clauses.
 
 ### Known-hosts list
 
@@ -293,13 +299,38 @@ to the user scope (`~/.config/vet/allowlist.yaml`,
 `~/.vet/known-hosts.yaml`) in v1; project-scope writes still work
 through the existing `vet allow add --scope project` CLI.
 
-### File-path allowlist
+### File-path safe-paths layer
 
-`file_write:` and `file_read:` clauses in the allowlist follow the same
-layered model. A built-in baseline auto-allows common scratch and cache
-directories while a built-in denylist blocks writes to sensitive credential
-paths (`~/.ssh/**`, `~/.aws/credentials`, etc.) at every scope. See
-[FilePaths.md](FilePaths.md) for the full strategy.
+File policy lives in a separate, command-agnostic layer alongside
+the rule allowlist and the known-hosts list. The on-disk file is
+`safe-paths.yaml`, layered identically (built-in / user / project
+/ session) and discovered by walking up from `cwd` to a `.git`
+boundary just like `allowlist.yaml`:
+
+```yaml
+allow:
+  read:
+    - path: "${HOME}/Downloads/**"
+    - path: "/etc/ssl/**"
+  write:
+    - path: "/tmp/**"
+deny:
+  write:
+    - path: "${HOME}/.ssh/**"
+```
+
+Every `Effect::FileRead` / `Effect::FileWrite` on a parsed command
+is checked against this store independently of which command parser
+produced the effect, then combined with the rule allowlist's
+verdict: a deny on either side wins; an unknown path on the file
+side downgrades a rule allow to a prompt; otherwise the rule
+verdict carries. A built-in baseline auto-allows common scratch
+and cache directories so routine writes to `${TMPDIR}` /
+`~/.cache/**` don't prompt; a built-in deny list blocks writes to
+sensitive credential paths (`~/.ssh/**`, `~/.aws/credentials`,
+etc.) at every scope. See [FilePaths.md](FilePaths.md) for the
+full strategy, the decision combinator, and the suggestion engine
+that backs the popover's `Allow path…` button.
 
 ---
 

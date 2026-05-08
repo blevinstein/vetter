@@ -1,0 +1,31 @@
+name: audit-weekly
+
+# Weekly RustSec advisory check against `main` so a fresh advisory between
+# PRs does not sit on us. The same `audit` job runs per-PR via `ci.yml`;
+# this scheduled run picks up new advisories without anyone opening a PR.
+#
+# `audit-check` will open or update an issue automatically when it finds a
+# new advisory, using `secrets.GITHUB_TOKEN`.
+
+on:
+  schedule:
+    # 07:17 UTC every Monday; off-the-hour to dodge GitHub's :00 cron pile-up.
+    - cron: '17 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  checks: write
+
+jobs:
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

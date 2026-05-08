@@ -871,17 +871,38 @@ parser/wire layers must not panic on malformed input.
       [vetter-core/src/parsers/types.rs](vetter-core/src/parsers/types.rs),
       [vetter-core/tests/corpus/curl/data_at_stdin.argv](vetter-core/tests/corpus/curl/data_at_stdin.argv))
 
-### H3 — Supply chain  `[ ] not started`
+### H3 — Supply chain  `[x] done`
 
 Cheap, high-value, expected for a security tool.
 
-- [ ] CI: `cargo-deny check` (advisories, bans, sources, licenses)
-      on every PR; treat advisory hits as build failures by default
-- [ ] CI: `cargo-audit` on every PR + a daily scheduled run on
-      `main` so we don't sit on a fresh advisory between PRs
-- [ ] Pin MSRV in CI matrix to match `rust-toolchain.toml` (1.95);
+- [x] CI: `cargo-deny check` (advisories, bans, sources, licenses)
+      on every PR; treat advisory hits as build failures by default.
+      `deny` job in [.github/workflows/ci.yml](.github/workflows/ci.yml)
+      runs `EmbarkStudios/cargo-deny-action@v2` against the repo-root
+      [deny.toml](deny.toml): advisories `yanked = "deny"` with no
+      ignores, sources locked to crates.io (no git, no alternate
+      registries), permissive-only license allowlist derived from the
+      current `Cargo.lock` (LGPL/GPL/AGPL deliberately omitted),
+      `multiple-versions = "warn"` and `wildcards = "deny"` on the
+      bans block
+- [x] CI: `cargo-audit` on every PR + a weekly scheduled run on
+      `main` so we don't sit on a fresh advisory between PRs.
+      `audit` job in [.github/workflows/ci.yml](.github/workflows/ci.yml)
+      handles the per-PR coverage; the weekly cron lives in its own
+      workflow at [.github/workflows/audit-weekly.yml](.github/workflows/audit-weekly.yml)
+      (`07:17 UTC` Mondays + `workflow_dispatch`) so the scheduled
+      run shows up as its own status check and can re-open RustSec
+      advisory issues via `secrets.GITHUB_TOKEN`
+- [x] Pin MSRV in CI matrix to match `rust-toolchain.toml` (1.95);
       add a "MSRV bump" PR template so toolchain changes are
-      explicit, not silent
+      explicit, not silent. New `msrv` job in
+      [.github/workflows/ci.yml](.github/workflows/ci.yml) pins
+      `dtolnay/rust-toolchain@1.95` and runs the same
+      `build --all-targets --all-features` + `test --all-features`
+      block as the stable matrix on `ubuntu-latest`. The MSRV-bump
+      checklist lives at
+      [.github/PULL_REQUEST_TEMPLATE/msrv.md](.github/PULL_REQUEST_TEMPLATE/msrv.md)
+      and is referenced via `?template=msrv.md` on the PR-create URL
 
 ### H4 — Public-release hygiene  `[ ] not started`
 

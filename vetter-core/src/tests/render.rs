@@ -224,7 +224,7 @@ fn header_value_with_newline_cannot_forge_render_line() {
         "raw injected newline+text survived: {out:?}"
     );
     assert!(
-        out.contains("<U+000A>"),
+        out.contains('\u{240A}'),
         "missing newline placeholder: {out}"
     );
 }

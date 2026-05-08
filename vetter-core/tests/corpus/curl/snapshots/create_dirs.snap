@@ -1,0 +1,50 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "--create-dirs",
+    "--output-dir",
+    "new/sub/dir",
+    "-o",
+    "file.json",
+    "https://example.test/x"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "url": "https://example.test/x",
+      "headers": [],
+      "body": {
+        "kind": "none"
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    },
+    {
+      "kind": "file_write",
+      "path": "new/sub/dir/file.json",
+      "source": {
+        "kind": "remote_http",
+        "url": "https://example.test/x"
+      },
+      "overwrite": true
+    }
+  ],
+  "signals": [
+    {
+      "kind": "create_dirs",
+      "detail": "--create-dirs: writes may land in newly-created subdirectories",
+      "effect_idx": 0
+    }
+  ],
+  "display_hints": {
+    "primary_verb": "GET",
+    "primary_target": "https://example.test/x",
+    "badges": []
+  }
+}

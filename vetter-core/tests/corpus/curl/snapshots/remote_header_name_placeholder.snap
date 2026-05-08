@@ -1,0 +1,47 @@
+---
+source: vetter-core/tests/curl_corpus.rs
+expression: parsed
+---
+{
+  "command": "curl",
+  "argv": [
+    "curl",
+    "-J",
+    "-O",
+    "https://example.test/dir/thing.tgz"
+  ],
+  "effects": [
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "url": "https://example.test/dir/thing.tgz",
+      "headers": [],
+      "body": {
+        "kind": "none"
+      },
+      "tls": "strict",
+      "follow_redirects": false
+    },
+    {
+      "kind": "file_write",
+      "path": "thing.tgz",
+      "source": {
+        "kind": "remote_http",
+        "url": "https://example.test/dir/thing.tgz"
+      },
+      "overwrite": true
+    }
+  ],
+  "signals": [
+    {
+      "kind": "remote_header_name",
+      "detail": "filename from response Content-Disposition (placeholder path)",
+      "effect_idx": 0
+    }
+  ],
+  "display_hints": {
+    "primary_verb": "GET",
+    "primary_target": "https://example.test/dir/thing.tgz",
+    "badges": []
+  }
+}

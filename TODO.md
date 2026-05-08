@@ -409,18 +409,31 @@ unit test in
       `--etag-compare <file>`
       ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
       [vetter-core/tests/corpus/curl/etag_roundtrip.argv](vetter-core/tests/corpus/curl/etag_roundtrip.argv))
-- [ ] Honour `--output-dir <dir>` when constructing the
-      `FileWrite.path` for `-o` / `-O` / `-J`; today the dir is
-      silently dropped
-- [ ] Honour `--no-clobber` by flipping `FileWrite.overwrite` to
-      `false` (currently hard-coded `true` in `build_file_write`)
-- [ ] Add a parser-pushed signal for `-J` / `--remote-header-name`
-      noting the on-disk filename comes from `Content-Disposition`
-      and the surfaced path is a placeholder (new `SignalKind`, e.g.
-      `RemoteHeaderName`)
-- [ ] Surface `--create-dirs` as either a signal or
-      `WriteSource`-metadata flag so the approver sees that writes
-      can land arbitrarily deep below `--output-dir`
+- [x] Honour `--output-dir <dir>` when constructing the
+      `FileWrite.path` for `-o` / `-O` / `-J`; absolute `-o /abs/...`
+      paths still ignore the prefix (matching curl's real behaviour),
+      relative paths get joined onto the `output-dir` value before
+      `cwd` resolution
+      ([vetter-core/src/parsers/curl/flags.rs](vetter-core/src/parsers/curl/flags.rs),
+      [vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/output_dir.argv](vetter-core/tests/corpus/curl/output_dir.argv))
+- [x] Honour `--no-clobber` by flipping `FileWrite.overwrite` to
+      `false` (was hard-coded `true` in `build_file_write`)
+      ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/no_clobber.argv](vetter-core/tests/corpus/curl/no_clobber.argv))
+- [x] Parser-pushed signal `SignalKind::RemoteHeaderName` (Warn) for
+      `-J` / `--remote-header-name`, recording that the on-disk
+      filename comes from `Content-Disposition` and the surfaced
+      path is a URL-basename placeholder
+      ([vetter-core/src/signals/mod.rs](vetter-core/src/signals/mod.rs),
+      [vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/remote_header_name_placeholder.argv](vetter-core/tests/corpus/curl/remote_header_name_placeholder.argv))
+- [x] Surface `--create-dirs` as `SignalKind::CreateDirs` (Warn) so
+      the approver sees that writes can land arbitrarily deep below
+      `--output-dir` / `-o`'s parent
+      ([vetter-core/src/signals/mod.rs](vetter-core/src/signals/mod.rs),
+      [vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/create_dirs.argv](vetter-core/tests/corpus/curl/create_dirs.argv))
 - [ ] Emit one `FileRead` per `-d @file` chunk when mixed with inline
       `-d` chunks (today only the first survives — the
       `file_reads.into_iter().next()` in `build_body`); decide whether

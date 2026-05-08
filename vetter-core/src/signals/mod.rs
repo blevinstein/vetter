@@ -62,6 +62,15 @@ pub enum SignalKind {
     /// material. Treated as Danger because client identity overrides
     /// alter authentication.
     ClientCertificate,
+    /// `-J` / `--remote-header-name` was supplied to curl. The on-disk
+    /// filename is taken from the response's `Content-Disposition`
+    /// header, so the `FileWrite.path` we surface is a placeholder
+    /// (URL basename) rather than the path curl will actually use.
+    RemoteHeaderName,
+    /// `--create-dirs` was supplied to curl. Curl will mkdir-p any
+    /// missing parents of the `FileWrite` path, so the write may land
+    /// arbitrarily deep below `--output-dir` / `-o`'s parent.
+    CreateDirs,
 }
 
 impl SignalKind {
@@ -101,7 +110,9 @@ impl SignalKind {
             | SignalKind::IdnHost
             | SignalKind::FileOutsideCwd
             | SignalKind::FileReadOutsideCwd
-            | SignalKind::UnknownHost => BadgeSeverity::Warn,
+            | SignalKind::UnknownHost
+            | SignalKind::RemoteHeaderName
+            | SignalKind::CreateDirs => BadgeSeverity::Warn,
         }
     }
 }

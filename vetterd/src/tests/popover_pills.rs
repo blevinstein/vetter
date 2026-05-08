@@ -57,6 +57,8 @@ fn info_tier_kinds_return_no_pill() {
         SignalKind::FileOutsideCwd,
         SignalKind::FileReadOutsideCwd,
         SignalKind::UnknownHost,
+        SignalKind::RemoteHeaderName,
+        SignalKind::CreateDirs,
     ] {
         assert!(
             pill_for(k).is_some(),
@@ -111,6 +113,8 @@ fn signal_priority_groups_match_ui_severity_buckets() {
         SignalKind::FileOutsideCwd,
         SignalKind::FileReadOutsideCwd,
         SignalKind::UnknownHost,
+        SignalKind::RemoteHeaderName,
+        SignalKind::CreateDirs,
     ] {
         let want = if k == SignalKind::AuthHeader {
             2

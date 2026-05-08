@@ -39,6 +39,9 @@ pub enum FlagId {
     User,
     Insecure,
     Output,
+    OutputDir,
+    NoClobber,
+    CreateDirs,
     RemoteName,
     RemoteHeaderName,
     UploadFile,
@@ -147,6 +150,31 @@ pub const FLAG_SPECS: &[FlagSpec] = &[
         short: Some('o'),
         long: Some("output"),
         kind: FlagKind::Value,
+    },
+    // `--output-dir <dir>` is curl 7.73+; last-occurrence-wins, so
+    // FlagKind::Value (mirrors `--cookie-jar`).
+    FlagSpec {
+        id: FlagId::OutputDir,
+        short: None,
+        long: Some("output-dir"),
+        kind: FlagKind::Value,
+    },
+    // `--no-clobber` flips `FileWrite.overwrite` to `false`. Bool —
+    // curl has no positive `--clobber` form (presence only).
+    FlagSpec {
+        id: FlagId::NoClobber,
+        short: None,
+        long: Some("no-clobber"),
+        kind: FlagKind::Bool,
+    },
+    // `--create-dirs` lets the FileWrite path land arbitrarily deep
+    // below `--output-dir` (or under `-o`'s parent) by creating any
+    // missing components. Pushed as a signal in state.rs.
+    FlagSpec {
+        id: FlagId::CreateDirs,
+        short: None,
+        long: Some("create-dirs"),
+        kind: FlagKind::Bool,
     },
     FlagSpec {
         id: FlagId::RemoteName,

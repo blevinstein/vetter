@@ -1,0 +1,10 @@
+# --create-dirs lets curl mkdir-p any missing parents of the write
+# path. Combined with --output-dir, the write can land arbitrarily
+# deep below cwd. The parser pushes a SignalKind::CreateDirs and
+# applies the output-dir prefix to the relative -o path.
+--create-dirs
+--output-dir
+new/sub/dir
+-o
+file.json
+https://example.test/x

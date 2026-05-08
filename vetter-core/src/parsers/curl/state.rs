@@ -656,6 +656,32 @@ fn infer_method(state: &CurlState) -> HttpMethod {
     HttpMethod::Get
 }
 
+/// Materialise the request body and (optionally) the matching
+/// `FileRead` effect from the collected `-d` / `--data*` chunks.
+///
+/// Curl `&`-joins every `-d` argument — inline literals and the
+/// contents of `@file` payloads alike — into one URL-encoded body.
+/// We deliberately handle only the four cases we can represent
+/// faithfully:
+///
+/// 1. No data chunks → `Body::None`, no `FileRead`.
+/// 2. Exactly one chunk and it's `@file` → `Body::FromFile { path }`
+///    plus a single `FileRead { path }` (paths resolved against
+///    `cwd` so they stay in lockstep).
+/// 3. One-or-more `Inline` chunks with no `@file` → `Body::Inline`
+///    of the `&`-joined bytes; no `FileRead`.
+/// 4. Anything else (≥ 1 `@file` chunk that does not stand alone —
+///    i.e. mixed `Inline` + `@file`, or two-or-more `@file`
+///    occurrences) → `ParseError::Other`. Curl would concatenate
+///    all chunk contents into the wire body, which we can't
+///    represent without widening `Body` to a multi-source variant;
+///    matches the existing fail-closed convention used for
+///    `--config` / `-K`, `--next` / `-:`, and `-F` / `--form`.
+///    Agents that need this should pre-concatenate into one file
+///    and pass `-d @combined`.
+///
+/// `DataChunk::Stdin` is rejected up front (closes ThreatModel T9)
+/// before any of the above runs.
 fn build_body(
     state: &CurlState,
     _stdin: &StdinHandle<'_>,
@@ -679,9 +705,21 @@ fn build_body(
         return Err(ParseError::StreamingUnsupported);
     }
 
-    // Single file chunk → FromFile + FileRead. Resolve once and reuse
-    // so Body::FromFile.path and the FileRead.path stay in lockstep.
-    if state.data.len() == 1 {
+    let inline_count = state
+        .data
+        .iter()
+        .filter(|c| matches!(c, DataChunk::Inline(_)))
+        .count();
+    let file_count = state
+        .data
+        .iter()
+        .filter(|c| matches!(c, DataChunk::File(_)))
+        .count();
+
+    // Case 2: exactly one `@file` chunk and nothing else. Resolve
+    // once so `Body::FromFile.path` and the `FileRead.path` stay
+    // in lockstep.
+    if file_count == 1 && inline_count == 0 {
         if let DataChunk::File(path) = &state.data[0] {
             let resolved = resolve_path(path, cwd);
             return Ok((
@@ -693,30 +731,41 @@ fn build_body(
         }
     }
 
-    // Otherwise we have one-or-more inline chunks (and possibly file
-    // chunks; the latter are emitted as FileRead effects but the body
-    // is the inline-concatenation per curl's `&`-join rule).
+    // Case 4: any `@file` chunk that doesn't stand alone. Curl
+    // concatenates inline literals and file contents into one body,
+    // which we can't faithfully represent today — surfacing only
+    // the inline bytes (and the first FileRead) silently mis-vets
+    // both the body the approver sees and the file reads the audit
+    // log records. Fail closed.
+    if file_count > 0 {
+        return Err(ParseError::Other(
+            "mixing inline `-d`/`--data*` with `-d @file`, or supplying \
+             multiple `-d @file` chunks in one curl invocation, is not \
+             supported; vet refuses to run rather than mis-vet a body \
+             that curl would concatenate from multiple sources \
+             (pre-concatenate the payloads into a single file and pass \
+             `-d @combined` instead)"
+                .into(),
+        ));
+    }
+
+    // Case 3: one-or-more inline chunks, no `@file`. Curl joins them
+    // with `&`.
     let mut inline_parts: Vec<String> = Vec::new();
-    let mut file_reads: Vec<FileRead> = Vec::new();
     for c in &state.data {
         match c {
             DataChunk::Inline(s) => inline_parts.push(s.clone()),
-            DataChunk::File(p) => file_reads.push(FileRead {
-                path: resolve_path(p, cwd),
-            }),
+            DataChunk::File(_) => unreachable!("handled above"),
             DataChunk::Stdin => unreachable!("handled above"),
         }
     }
     let joined = inline_parts.join("&");
-    let body = Body::Inline {
-        bytes: joined.into_bytes(),
-    };
-    // We can only emit one FileRead per build_body return; for multiple
-    // -d @file chunks we surface the first and lose the rest. Mixed
-    // -d 'literal' + -d @file is a rare combination; keeping it simple
-    // is fine for MVP.
-    let fr = file_reads.into_iter().next();
-    Ok((body, fr))
+    Ok((
+        Body::Inline {
+            bytes: joined.into_bytes(),
+        },
+        None,
+    ))
 }
 
 fn derive_auth(state: &CurlState) -> Option<Auth> {

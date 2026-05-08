@@ -434,11 +434,20 @@ unit test in
       ([vetter-core/src/signals/mod.rs](vetter-core/src/signals/mod.rs),
       [vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
       [vetter-core/tests/corpus/curl/create_dirs.argv](vetter-core/tests/corpus/curl/create_dirs.argv))
-- [ ] Emit one `FileRead` per `-d @file` chunk when mixed with inline
-      `-d` chunks (today only the first survives — the
-      `file_reads.into_iter().next()` in `build_body`); decide whether
-      to widen `Body` to a `Composite` variant or fail-closed when a
-      single invocation mixes inline + `@file`
+- [x] Resolved by failing closed: `build_body` now rejects any `-d` /
+      `--data*` invocation that mixes inline literals with `@file`
+      chunks, or supplies multiple `@file` chunks, with
+      `ParseError::Other` (matching the existing `--config` / `--next`
+      / `-F` convention). Curl `&`-joins file contents into the wire
+      body, so silently surfacing only the inline bytes + the first
+      `FileRead` mis-vetted both the body the approver saw and the
+      file reads the audit log recorded. Agents that genuinely need
+      multi-source bodies should pre-concatenate into one file and
+      pass `-d @combined`. Widening `Body` to a multi-source variant
+      stays available if a future parser (`wget`, `gh`) needs it.
+      ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/data_mixed_inline_and_file.argv](vetter-core/tests/corpus/curl/data_mixed_inline_and_file.argv),
+      [vetter-core/tests/corpus/curl/data_multi_at_file.argv](vetter-core/tests/corpus/curl/data_multi_at_file.argv))
 - [ ] Decide multi-URL handling (`curl URL1 URL2` with multiple `-o`
       slots): either keep the current `ParseError::Other` rejection
       and document, or emit one `HttpRequest` per URL with `-o` slots

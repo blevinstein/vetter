@@ -1,0 +1,9 @@
+# Mixing an inline `-d` literal with a `-d @file` chunk forces curl to
+# `&`-join the inline bytes and the file contents into one body. We
+# can't represent that without widening Body to a multi-source variant,
+# so we fail closed (matching --form / --config / --next).
+-d
+foo=bar
+-d
+@./payload.json
+https://example.test/submit

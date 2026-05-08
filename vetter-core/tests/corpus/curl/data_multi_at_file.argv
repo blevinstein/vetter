@@ -1,0 +1,9 @@
+# Two `-d @file` chunks in one curl invocation: curl concatenates the
+# file contents with `&` into the wire body. We can only represent a
+# single-source body today, and silently keeping just the first FileRead
+# would mis-vet the second file read entirely. Fail closed.
+-d
+@./first.json
+-d
+@./second.json
+https://example.test/submit

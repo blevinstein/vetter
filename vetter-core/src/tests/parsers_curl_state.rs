@@ -341,6 +341,54 @@ fn data_at_file_emits_file_read() {
 }
 
 #[test]
+fn mixing_inline_and_file_data_is_rejected() {
+    // Curl `&`-joins inline literals and `@file` contents into one
+    // body. We can't represent that without widening `Body`, so we
+    // fail closed (matches the `--config` / `--next` / `-F`
+    // convention).
+    let r = parse_argv(
+        &argv(&[
+            "-d",
+            "foo=bar",
+            "-d",
+            "@./payload.json",
+            "https://example.test/submit",
+        ]),
+        &StdinHandle::empty(),
+        None,
+    );
+    let err = r.expect_err("mixing inline + @file should be rejected");
+    assert!(
+        matches!(err, ParseError::Other(_)),
+        "expected ParseError::Other, got {err:?}"
+    );
+}
+
+#[test]
+fn multiple_at_file_data_chunks_are_rejected() {
+    // Two `-d @file` chunks would have curl concatenate the file
+    // contents into a single wire body. No single `Body::FromFile`
+    // can describe that, so we fail closed rather than silently
+    // surface only the first `FileRead`.
+    let r = parse_argv(
+        &argv(&[
+            "-d",
+            "@./first.json",
+            "-d",
+            "@./second.json",
+            "https://example.test/submit",
+        ]),
+        &StdinHandle::empty(),
+        None,
+    );
+    let err = r.expect_err("multiple @file data chunks should be rejected");
+    assert!(
+        matches!(err, ParseError::Other(_)),
+        "expected ParseError::Other, got {err:?}"
+    );
+}
+
+#[test]
 fn upload_file_emits_file_read_and_implies_put() {
     let p = parse(&["-T", "/tmp/x", "https://example.test/"]);
     assert_eq!(http_of(&p).method, HttpMethod::Put);

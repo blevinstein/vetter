@@ -1,0 +1,9 @@
+# --output-dir <dir> is curl's documented prefix for relative `-o` /
+# `-O` / `-J` paths. The FileWrite.path here should be
+# downloads/report.json (cwd is unset in the corpus driver, so the
+# path is left relative).
+--output-dir
+downloads
+-o
+report.json
+https://example.test/x

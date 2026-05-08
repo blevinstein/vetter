@@ -1,0 +1,8 @@
+# -J / --remote-header-name takes the on-disk filename from the
+# response's Content-Disposition header. The parser surfaces the
+# URL basename as a placeholder path and pushes a
+# SignalKind::RemoteHeaderName so the approver knows the real
+# filename is response-determined.
+-J
+-O
+https://example.test/dir/thing.tgz

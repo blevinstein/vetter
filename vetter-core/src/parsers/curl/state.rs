@@ -52,6 +52,18 @@ struct CurlState {
     upload: Option<PathBuf>,
     /// `-o <path>`.
     output: Option<PathBuf>,
+    /// `--output-dir <dir>`: prefix applied to relative `-o`/`-O`/`-J`
+    /// paths before `cwd` resolution. Absolute `-o` paths ignore it.
+    /// Last-occurrence-wins per curl.
+    output_dir: Option<PathBuf>,
+    /// `--no-clobber`: flip `FileWrite.overwrite` to `false`. Bool;
+    /// curl has no positive form.
+    no_clobber: bool,
+    /// `--create-dirs`: curl will mkdir-p any missing components of
+    /// the `FileWrite` path. We don't change the path itself; we
+    /// just push a signal so the approver sees that writes can land
+    /// arbitrarily deep below `--output-dir` / `-o`'s parent.
+    create_dirs: bool,
     /// `-O` short flag; output filename derived from URL basename.
     remote_name: bool,
     /// `-J` short flag; output filename from Content-Disposition. We
@@ -193,6 +205,15 @@ fn absorb(state: &mut CurlState, tok: Token) -> Result<(), ParseError> {
             }
             FlagId::Output => {
                 state.output = Some(PathBuf::from(value.expect("Value flag has value")));
+            }
+            FlagId::OutputDir => {
+                state.output_dir = Some(PathBuf::from(value.expect("Value flag has value")));
+            }
+            FlagId::NoClobber => {
+                state.no_clobber = true;
+            }
+            FlagId::CreateDirs => {
+                state.create_dirs = true;
             }
             FlagId::RemoteName => {
                 state.remote_name = true;
@@ -750,26 +771,30 @@ fn derive_auth(state: &CurlState) -> Option<Auth> {
 }
 
 fn build_file_write(state: &CurlState, url: &Url, cwd: Option<&Path>) -> Option<FileWrite> {
-    if let Some(path) = &state.output {
-        return Some(FileWrite {
-            path: resolve_path(path, cwd),
-            source: WriteSource::RemoteHttp { url: url.clone() },
-            overwrite: true,
-        });
-    }
-    if state.remote_name || state.remote_header_name {
+    let raw: PathBuf = if let Some(path) = &state.output {
+        path.clone()
+    } else if state.remote_name || state.remote_header_name {
         let basename = url
             .path_segments()
             .and_then(|mut s| s.next_back())
             .filter(|s| !s.is_empty())
             .unwrap_or("download");
-        return Some(FileWrite {
-            path: resolve_path(Path::new(basename), cwd),
-            source: WriteSource::RemoteHttp { url: url.clone() },
-            overwrite: true,
-        });
-    }
-    None
+        PathBuf::from(basename)
+    } else {
+        return None;
+    };
+    // `--output-dir` is curl's documented prefix for relative output
+    // paths (including `-O`/`-J` basenames). Absolute `-o /abs/...`
+    // ignores it, matching real curl semantics.
+    let combined = match &state.output_dir {
+        Some(dir) if !raw.is_absolute() => dir.join(&raw),
+        _ => raw,
+    };
+    Some(FileWrite {
+        path: resolve_path(&combined, cwd),
+        source: WriteSource::RemoteHttp { url: url.clone() },
+        overwrite: !state.no_clobber,
+    })
 }
 
 fn build_signals(state: &CurlState) -> Vec<RiskSignal> {
@@ -813,6 +838,20 @@ fn build_signals(state: &CurlState) -> Vec<RiskSignal> {
         out.push(RiskSignal {
             kind: SignalKind::ClientCertificate,
             detail: format!("--key {}", p.display()),
+            effect_idx: Some(0),
+        });
+    }
+    if state.remote_header_name {
+        out.push(RiskSignal {
+            kind: SignalKind::RemoteHeaderName,
+            detail: "filename from response Content-Disposition (placeholder path)".into(),
+            effect_idx: Some(0),
+        });
+    }
+    if state.create_dirs {
+        out.push(RiskSignal {
+            kind: SignalKind::CreateDirs,
+            detail: "--create-dirs: writes may land in newly-created subdirectories".into(),
             effect_idx: Some(0),
         });
     }

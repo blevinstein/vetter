@@ -486,6 +486,8 @@ pub fn signal_kind_label(k: SignalKind) -> &'static str {
         SignalKind::CacertOverride => "cacert-override",
         SignalKind::UnixSocket => "unix-socket",
         SignalKind::ClientCertificate => "client-certificate",
+        SignalKind::RemoteHeaderName => "remote-header-name",
+        SignalKind::CreateDirs => "create-dirs",
     }
 }
 

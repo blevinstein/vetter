@@ -313,6 +313,8 @@ fn ui_severity_classifies_each_signal_kind() {
         (SignalKind::FileOutsideCwd, Warn),
         (SignalKind::FileReadOutsideCwd, Warn),
         (SignalKind::UnknownHost, Warn),
+        (SignalKind::RemoteHeaderName, Warn),
+        (SignalKind::CreateDirs, Warn),
     ];
     for (kind, expected) in cases {
         assert_eq!(
@@ -345,6 +347,8 @@ fn no_current_signal_is_info_tier() {
         SignalKind::CacertOverride,
         SignalKind::UnixSocket,
         SignalKind::ClientCertificate,
+        SignalKind::RemoteHeaderName,
+        SignalKind::CreateDirs,
     ];
     for k in all {
         assert_ne!(

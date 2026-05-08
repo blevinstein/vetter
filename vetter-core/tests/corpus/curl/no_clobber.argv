@@ -1,0 +1,6 @@
+# --no-clobber flips FileWrite.overwrite to false; without it the
+# parser hard-codes overwrite=true.
+--no-clobber
+-o
+/tmp/out.json
+https://example.test/x

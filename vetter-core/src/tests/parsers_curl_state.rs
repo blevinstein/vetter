@@ -625,6 +625,9 @@ fn _exhaustive_flag_id_match_compiles() {
             | FlagId::User
             | FlagId::Insecure
             | FlagId::Output
+            | FlagId::OutputDir
+            | FlagId::NoClobber
+            | FlagId::CreateDirs
             | FlagId::RemoteName
             | FlagId::RemoteHeaderName
             | FlagId::UploadFile
@@ -1264,4 +1267,115 @@ fn dump_header_etag_save_and_output_emit_three_writes() {
     assert!(paths.contains(&std::path::Path::new("/tmp/headers.txt")));
     assert!(paths.contains(&std::path::Path::new("/tmp/etag")));
     assert!(paths.contains(&std::path::Path::new("/tmp/body.json")));
+}
+
+// -- --output-dir / --no-clobber / --create-dirs / -J coverage ------
+//
+// Closes four Phase 5.2 boxes that converge on `build_file_write`:
+// the FileWrite the parser emits for `-o` / `-O` / `-J`.
+
+#[test]
+fn output_dir_prefix_applies_to_dash_o() {
+    let p = parse(&[
+        "--output-dir",
+        "downloads",
+        "-o",
+        "report.json",
+        "https://example.test/x",
+    ]);
+    assert_eq!(
+        first_file_write(&p).path,
+        PathBuf::from("downloads/report.json")
+    );
+}
+
+#[test]
+fn output_dir_prefix_ignored_for_absolute_dash_o() {
+    let p = parse(&[
+        "--output-dir",
+        "downloads",
+        "-o",
+        "/tmp/report.json",
+        "https://example.test/x",
+    ]);
+    assert_eq!(first_file_write(&p).path, PathBuf::from("/tmp/report.json"));
+}
+
+#[test]
+fn output_dir_prefix_applies_to_dash_o_basename() {
+    let p = parse(&[
+        "--output-dir",
+        "downloads",
+        "-O",
+        "https://example.test/dir/thing.tgz",
+    ]);
+    assert_eq!(
+        first_file_write(&p).path,
+        PathBuf::from("downloads/thing.tgz")
+    );
+}
+
+#[test]
+fn output_dir_resolves_with_cwd_when_dir_is_relative() {
+    let p = parse_with_cwd(
+        &[
+            "--output-dir",
+            "downloads",
+            "-o",
+            "report.json",
+            "https://example.test/x",
+        ],
+        "/work",
+    );
+    assert_eq!(
+        first_file_write(&p).path,
+        PathBuf::from("/work/downloads/report.json")
+    );
+}
+
+#[test]
+fn no_clobber_flips_overwrite_false() {
+    let p = parse(&["--no-clobber", "-o", "/tmp/x", "https://example.test/y"]);
+    assert!(!first_file_write(&p).overwrite);
+}
+
+#[test]
+fn default_overwrite_remains_true_when_no_clobber_absent() {
+    let p = parse(&["-o", "/tmp/x", "https://example.test/y"]);
+    assert!(first_file_write(&p).overwrite);
+}
+
+#[test]
+fn remote_header_name_pushes_signal() {
+    let p = parse(&["-J", "-O", "https://example.test/dir/thing.tgz"]);
+    assert!(p
+        .signals
+        .iter()
+        .any(|s| s.kind == SignalKind::RemoteHeaderName));
+}
+
+#[test]
+fn remote_header_name_signal_absent_without_dash_j() {
+    let p = parse(&["-O", "https://example.test/dir/thing.tgz"]);
+    assert!(!p
+        .signals
+        .iter()
+        .any(|s| s.kind == SignalKind::RemoteHeaderName));
+}
+
+#[test]
+fn create_dirs_pushes_signal() {
+    let p = parse(&[
+        "--create-dirs",
+        "-o",
+        "/tmp/sub/dir/x",
+        "https://example.test/y",
+    ]);
+    assert!(p.signals.iter().any(|s| s.kind == SignalKind::CreateDirs));
+}
+
+#[test]
+fn create_dirs_signal_absent_without_flag() {
+    let p = parse(&["-o", "/tmp/sub/dir/x", "https://example.test/y"]);
+    assert!(!p.signals.iter().any(|s| s.kind == SignalKind::CreateDirs));
 }

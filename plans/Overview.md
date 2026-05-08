@@ -104,10 +104,14 @@ JSON over the Unix socket, length-prefixed. Versioned. Sketch:
   "cwd": "/Users/me/proj",
   "agent_hint": "claude-code", // best-effort, from env (CLAUDE_CODE=1, etc.)
   "command": "curl",
-  "argv": ["-X", "POST", "https://…", "-d", "@-"],
-  "stdin_digest": "sha256:…", // if stdin is being piped, we hash it
+  "argv": ["-X", "POST", "https://…", "-d", "@/tmp/payload.json"],
   "parsed": { /* normalised command-specific struct, see §8 */ }
 }
+// Stdin-sourced bodies (`-d @-`, `-T -`, etc.) are rejected by the
+// curl parser before the wire frame is built (ThreatModel T9), so
+// the daemon never sees a request whose body depends on the
+// agent-side pipe. v2 of the wire dropped `parsed` entirely; the
+// daemon re-parses `argv` itself.
 
 // VetDecision
 {
@@ -462,7 +466,6 @@ metadata for display and a small command-specific escape hatch.
 pub struct ParsedCommand {
     pub command: &'static str,            // parser.name()
     pub argv: Vec<String>,                // raw, preserved for display
-    pub stdin_digest: Option<Sha256>,
     pub effects: Vec<Effect>,             // the heart of the model
     pub signals: Vec<RiskSignal>,         // pre-computed by the parser
     pub display_hints: DisplayHints,      // method/target/etc. for the
@@ -494,8 +497,10 @@ pub struct HttpRequest {
                               //   implicit Content-Type from -d)
     pub body: Body,           // None / Inline(bytes) /
                               //   FromFile(PathBuf) /
-                              //   FromStdin(Sha256, len) /
                               //   Form(Vec<FormField>)
+                              // Stdin-sourced bodies are rejected
+                              // in the parser (ThreatModel T9):
+                              // agents must use a temp file.
     pub auth: Option<Auth>,   // Basic / Bearer / Header(name) / Netrc
     pub tls: TlsPolicy,       // Strict / InsecureSkipVerify / Plaintext
     pub follow_redirects: bool,

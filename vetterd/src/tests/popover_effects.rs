@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use super::*;
 use vetter_core::{
     Auth, Body, Effect, FileRead, FileWrite, FormField, Header, HttpMethod, HttpRequest,
-    ParsedCommand, ProcessSpawn, Sha256, TlsPolicy,
+    ParsedCommand, ProcessSpawn, TlsPolicy,
 };
 
 /// No-op factory: returns `None` for every path. Use when a test
@@ -37,7 +37,6 @@ fn parsed(effects: Vec<Effect>) -> ParsedCommand {
         command: "curl".into(),
         argv: vec!["curl".into()],
         cwd: None,
-        stdin_digest: None,
         effects,
         signals: vec![],
         display_hints: Default::default(),
@@ -185,27 +184,6 @@ fn body_form_renders_one_meta_section_with_field_rows() {
     );
 }
 
-#[test]
-fn body_from_stdin_renders_meta_only() {
-    let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
-        return;
-    };
-    let p = parsed(vec![http(
-        vec![],
-        Body::FromStdin {
-            digest: Sha256::new("deadbeef"),
-            len: 12,
-        },
-        None,
-    )]);
-    let rows = build_effect_views(&p, mtm, &no_button);
-    assert_eq!(rows.total(), 1);
-    assert!(
-        rows.file_inputs.is_empty(),
-        "Body::FromStdin is not a file input; the body row belongs in `others`"
-    );
-}
-
 // --- Phase 5.1: file-input "Open" button factory wiring ------------
 
 #[test]
@@ -318,9 +296,9 @@ fn file_read_row_dedupes_against_matching_body_from_file() {
 fn file_button_factory_not_called_for_file_write_or_process_spawn() {
     // FileWrite paths may not exist yet (Phase 5.1 explicitly
     // skips them this round) and ProcessSpawn isn't a file at all.
-    // Both must leave the factory untouched so we don't accidentally
-    // start surfacing buttons on outputs / spawns later through a
-    // forgotten match arm.
+    // `Body::Inline` carries no on-disk path. None of the three
+    // should ever reach the open-file factory or produce a
+    // file-input row.
     let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
         return;
     };
@@ -341,9 +319,8 @@ fn file_button_factory_not_called_for_file_write_or_process_spawn() {
         }),
         http(
             vec![],
-            Body::FromStdin {
-                digest: Sha256::new("deadbeef"),
-                len: 4,
+            Body::Inline {
+                bytes: b"hi".to_vec(),
             },
             None,
         ),
@@ -352,7 +329,7 @@ fn file_button_factory_not_called_for_file_write_or_process_spawn() {
     assert_eq!(
         calls.get(),
         0,
-        "FileWrite, ProcessSpawn, and Body::FromStdin must not invoke the open-file factory"
+        "FileWrite, ProcessSpawn, and Body::Inline must not invoke the open-file factory"
     );
     assert!(
         rows.file_inputs.is_empty(),
@@ -361,7 +338,7 @@ fn file_button_factory_not_called_for_file_write_or_process_spawn() {
     assert_eq!(
         rows.others.len(),
         3,
-        "FileWrite, ProcessSpawn, and Body::FromStdin all sit in `others`"
+        "FileWrite, ProcessSpawn, and Body::Inline all sit in `others`"
     );
 }
 

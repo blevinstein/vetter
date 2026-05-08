@@ -6,7 +6,7 @@ use crate::matcher::loader::AllowlistStore;
 use crate::matcher::rule::{HostPattern, RuleWhen, UrlClause};
 use crate::{
     Auth, DisplayHints, FileRead, FileWrite, Header, HttpMethod, HttpRequest, ParsedCommand,
-    Sha256, TlsPolicy, WriteSource,
+    TlsPolicy, WriteSource,
 };
 use url::Url;
 
@@ -32,7 +32,6 @@ fn parsed_with(effects: Vec<Effect>) -> ParsedCommand {
         command: "curl".into(),
         argv: vec!["curl".into()],
         cwd: None,
-        stdin_digest: None,
         effects,
         signals: vec![],
         display_hints: DisplayHints::default(),
@@ -464,8 +463,3 @@ fn no_match_returns_prompt() {
     };
     assert_eq!(decide(&parsed, &store), Decision::Prompt);
 }
-
-// exhaust unused-import warnings while keeping the imports that
-// tests actually use elsewhere
-#[allow(dead_code)]
-fn _ensure_sha256(_: Sha256) {}

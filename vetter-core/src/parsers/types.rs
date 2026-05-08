@@ -12,22 +12,6 @@ use url::Url;
 
 use crate::signals::RiskSignal;
 
-/// Hex-encoded SHA-256 digest. Phase 1a does not actually hash anything;
-/// the curl parser (Phase 1b) starts populating these for stdin bodies.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Sha256(pub String);
-
-impl Sha256 {
-    pub fn new(hex: impl Into<String>) -> Self {
-        Sha256(hex.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 /// Top-level structured surface produced by every `CommandParser`.
 ///
 /// This is purely an internal type now. Phase 3a sent it on the wire as
@@ -47,9 +31,6 @@ pub struct ParsedCommand {
     /// "outside cwd" file checks (§9). `None` skips that check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
-    /// Hex SHA-256 of any stdin the parser consumed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stdin_digest: Option<Sha256>,
     /// Concrete normalized things the command will do. The point of this
     /// field is that policy / risk analysis / rendering all iterate it,
     /// never branching on `command`.
@@ -201,10 +182,6 @@ pub enum Body {
     },
     FromFile {
         path: PathBuf,
-    },
-    FromStdin {
-        digest: Sha256,
-        len: u64,
     },
     Form {
         fields: Vec<FormField>,

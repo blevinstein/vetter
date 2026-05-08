@@ -13,7 +13,6 @@ fn pc_with(effects: Vec<Effect>) -> ParsedCommand {
         command: "noop".into(),
         argv: vec!["noop".into()],
         cwd: Some("/work".into()),
-        stdin_digest: None,
         effects,
         signals: vec![],
         display_hints: DisplayHints::default(),

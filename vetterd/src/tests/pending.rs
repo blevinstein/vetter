@@ -400,7 +400,6 @@ fn try_from_audit_accepts_rich_prompt_row() {
         command: "curl".into(),
         argv: vec!["curl".into(), "https://example.test/".into()],
         cwd: None,
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(HttpRequest {
             method: HttpMethod::Get,
             url: url::Url::parse("https://example.test/").unwrap(),
@@ -482,7 +481,6 @@ fn prompt_summary_round_trips_through_serde_with_new_fields() {
         command: "curl".into(),
         argv: vec!["curl".into(), "https://example.test/".into()],
         cwd: Some("/work".into()),
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(HttpRequest {
             method: HttpMethod::Get,
             url: url::Url::parse("https://example.test/").unwrap(),
@@ -550,7 +548,6 @@ fn unknown_host_summary(id: &str, host: &str) -> PromptSummary {
         command: "curl".into(),
         argv: vec!["curl".into(), url.as_str().into()],
         cwd: None,
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(HttpRequest {
             method: HttpMethod::Get,
             url: url.clone(),

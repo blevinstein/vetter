@@ -327,13 +327,6 @@ fn write_http_body(w: &mut dyn StyledWriter, req: &HttpRequest) -> io::Result<()
             ),
             None,
         ),
-        Body::FromStdin { digest, len } => (
-            format!(
-                "Body  (from stdin, {len} B, sha256 {})",
-                sanitize_for_display(digest.as_str())
-            ),
-            None,
-        ),
         Body::Form { fields } => (
             format!(
                 "Body  (application/x-www-form-urlencoded, {} fields)",

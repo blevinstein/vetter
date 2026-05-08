@@ -1,0 +1,9 @@
+# `-d @-` would source the request body from stdin. The daemon
+# re-parses argv with an empty stdin handle, so the popover and
+# audit log would record a 0-byte body while `vet` execs the real
+# pipe. Reject in the parser; agents must materialise to a temp
+# file and use `-d @file` instead. Sister to `upload_stdin.argv`
+# (which closes the same gap for `-T -`). ThreatModel T9 close.
+-d
+@-
+https://example.test/post

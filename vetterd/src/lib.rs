@@ -1009,10 +1009,12 @@ fn shell_quote(arg: &str) -> String {
 ///
 /// Stdin is intentionally empty here: the v2 wire protocol does not
 /// forward stdin bytes, so the daemon parses with [`StdinHandle::empty`].
-/// For curl's `-d @-` form this means `Body::FromStdin{len: 0}` —
-/// matching what the client's local parser sees and what today's
-/// renderer shows. Forwarding stdin (and re-injecting it on exec) is
-/// tracked separately; see `TODO.md`.
+/// The curl parser closes the resulting drift by rejecting `-d @-`
+/// (and its `--data-*` aliases) outright with
+/// `ParseError::StreamingUnsupported` (ThreatModel T9), so the
+/// daemon never sees a body sourced from a client-side pipe. Future
+/// parsers that genuinely need stdin payloads will require the
+/// stdin-forwarding wire bump tracked in `TODO.md`.
 fn parse_request(req: &VetRequest) -> Result<ParsedCommand, ParseError> {
     let argv0 = req
         .argv

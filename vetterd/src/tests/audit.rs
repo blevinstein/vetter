@@ -114,7 +114,6 @@ fn prompt_entry(id: &str, target: &str, dec: WireDecision) -> AuditEntry {
         command: "curl".into(),
         argv: vec!["curl".into(), target.into()],
         cwd: None,
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(HttpRequest {
             method: HttpMethod::Get,
             url: url.clone(),

@@ -56,7 +56,6 @@ impl CommandParser for NoopParser {
             command: "noop".into(),
             argv: argv.to_vec(),
             cwd: None,
-            stdin_digest: None,
             effects: vec![Effect::HttpRequest(req)],
             signals: vec![],
             display_hints: DisplayHints {

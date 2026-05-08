@@ -132,7 +132,6 @@ fn render_detail_emits_bold_command_then_quoted_args() {
             "{\"x\":1}".into(),
         ],
         cwd: None,
-        stdin_digest: None,
         effects: vec![Effect::HttpRequest(HttpRequest {
             method: HttpMethod::Post,
             url: url::Url::parse("https://api.example.test/v1/things").unwrap(),
@@ -161,7 +160,6 @@ fn render_detail_handles_empty_argv() {
         command: "curl".into(),
         argv: vec![],
         cwd: None,
-        stdin_digest: None,
         effects: vec![],
         signals: vec![],
         display_hints: DisplayHints::default(),

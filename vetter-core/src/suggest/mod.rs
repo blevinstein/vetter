@@ -363,6 +363,7 @@ fn make_rule_suggestion(
         headers_allow,
         no_body: None,
         query: None,
+        no_redirects: None,
     };
     let rule_when = RuleWhen {
         http: Some(http),

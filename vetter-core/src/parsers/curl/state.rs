@@ -855,6 +855,13 @@ fn build_signals(state: &CurlState) -> Vec<RiskSignal> {
             effect_idx: Some(0),
         });
     }
+    if state.follow_redirects {
+        out.push(RiskSignal {
+            kind: SignalKind::FollowRedirects,
+            detail: "-L follows HTTP redirects".into(),
+            effect_idx: Some(0),
+        });
+    }
     out
 }
 

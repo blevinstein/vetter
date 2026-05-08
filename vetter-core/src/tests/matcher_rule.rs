@@ -111,3 +111,41 @@ when: {}
     let r: Rule = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(r.when.is_empty());
 }
+
+#[test]
+fn rule_round_trip_no_redirects_opt_in() {
+    // ThreatModel T10: rules that genuinely need redirect-following
+    // trust must say so explicitly. Round-trip the opt-in form so a
+    // future renaming of the field surfaces as a test failure.
+    let yaml = r#"
+id: redirect-friendly
+when:
+  http:
+    method: [GET]
+    no_redirects: false
+"#;
+    let r = roundtrip_yaml(yaml);
+    let http = r.when.http.expect("http clause");
+    assert_eq!(http.no_redirects, Some(false));
+}
+
+#[test]
+fn rule_round_trip_no_redirects_omitted_is_none() {
+    // Default-deny is encoded by the absence of `no_redirects` in
+    // YAML; the field deserialises as `None` and is skipped on
+    // re-serialisation.
+    let yaml = r#"
+id: strict
+when:
+  http:
+    method: [GET]
+"#;
+    let r = roundtrip_yaml(yaml);
+    let http = r.when.http.as_ref().expect("http clause");
+    assert!(http.no_redirects.is_none());
+    let back = serde_yaml_ng::to_string(&r).expect("rule -> yaml");
+    assert!(
+        !back.contains("no_redirects"),
+        "omitted no_redirects should not be serialised: {back}",
+    );
+}

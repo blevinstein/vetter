@@ -69,6 +69,17 @@ pub struct HttpClause {
     /// → request must have a non-empty query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<bool>,
+    /// Redirect-following predicate. **Default-deny**: `None` or
+    /// `Some(true)` → the rule does NOT match a request whose
+    /// [`crate::HttpRequest::follow_redirects`] is `true` (e.g. curl
+    /// `-L` / `--location`). `Some(false)` → the rule matches
+    /// regardless of `follow_redirects`. Mirrors the `headers_allow`
+    /// pattern: omitting the predicate selects the strict / fail-safe
+    /// interpretation, so existing rules don't silently auto-allow a
+    /// host that open-redirects (or is compromised) to an arbitrary
+    /// origin. See ThreatModel T10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_redirects: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

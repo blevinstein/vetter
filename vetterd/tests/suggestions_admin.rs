@@ -186,6 +186,7 @@ fn covering_rule_for(host: &str) -> Rule {
                 headers_allow: None,
                 no_body: None,
                 query: None,
+                no_redirects: None,
             }),
             file_write: None,
             file_read: None,

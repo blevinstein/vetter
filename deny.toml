@@ -1,0 +1,66 @@
+# cargo-deny configuration. See https://embarkstudios.github.io/cargo-deny/
+#
+# Run locally with `cargo install --locked cargo-deny && cargo deny check`.
+# CI runs the same checks via `EmbarkStudios/cargo-deny-action@v2` in
+# `.github/workflows/ci.yml`.
+
+[graph]
+all-features = true
+
+# ---------------------------------------------------------------------------
+# Advisories — RustSec database. Treat any active advisory as a build failure
+# so we cannot silently sit on a known-vulnerable dependency. Yanked crates
+# are also denied.
+# ---------------------------------------------------------------------------
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+# ---------------------------------------------------------------------------
+# Licenses — allowlist of permissive SPDX identifiers we accept in the
+# dependency graph. Derived from `cargo metadata --locked | jq` over the
+# current `Cargo.lock`; copyleft licenses (LGPL, GPL, AGPL) are deliberately
+# omitted so a transitive dep that adds one trips this check rather than
+# silently shipping in the binary.
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+]
+
+# ---------------------------------------------------------------------------
+# Bans — duplicate-version and wildcard-version policy. Today we only `warn`
+# on duplicates; flip to `deny` once the workspace is dupe-free. Wildcards in
+# our own Cargo.toml are denied to keep the lockfile reproducible.
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+# ---------------------------------------------------------------------------
+# Sources — only crates.io is trusted. No git or alternate-registry deps in
+# the workspace today (`cargo metadata` shows zero `git+` sources); deny both
+# so a future PR adding one has to update this file explicitly.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

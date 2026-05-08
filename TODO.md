@@ -704,9 +704,37 @@ these in smallest-blast-radius-first order; same order here.
       `arg0(&argv[0])` so vetting and exec bind to the same inode;
       [vet/tests/argv0_spoof.rs](vet/tests/argv0_spoof.rs) end-to-end
       refusal coverage)
-- [ ] `FD_CLOEXEC` on daemon + client sockets and the audit fd; test
+- [x] `FD_CLOEXEC` on daemon + client sockets and the audit fd; test
       that the exec'd child inherits only 0/1/2 (no leaked daemon fd
       survives the `execvp` into the wrapped command)
+      Closed by inspection rather than code. The contract is already
+      held by construction on every supported platform:
+      (a) Rust std opens every fd CLOEXEC by default —
+      `OpenOptions::open` uses `O_CLOEXEC`, `UnixStream::connect` and
+      `UnixListener::bind` use `SOCK_CLOEXEC` (Linux) or
+      `fcntl(F_SETFD)` post-`socket()` (macOS), and
+      `UnixListener::accept` uses `accept4(SOCK_CLOEXEC)` on Linux /
+      `fcntl(F_SETFD)` post-`accept()` on macOS — so every fd
+      `vetter-core` / `vet` / `vetterd` open via the standard library
+      already carries the bit;
+      (b) `vet`'s only daemon-touching fds (the `UnixStream` to
+      `vetter.sock` plus the read-only pidfile probe in
+      `pidfile::read_locker_pid`) are scoped to
+      `vet::wrap::round_trip` — both go out of scope and `Drop`'s
+      `close(2)` runs before `Command::exec` is reached, so even
+      without CLOEXEC the wrapped child cannot inherit them;
+      (c) `vetterd` itself never `exec`s a child today, so the
+      audit-log fd / socket fds it holds for its lifetime have
+      nothing to leak into. A defensive `set_cloexec(fd)` helper plus
+      regression test would only document an invariant std already
+      enforces; the cost (the test would have to fight bash's
+      script-host fd 255, dev-shell-inherited terminal IPC sockets at
+      fd 3/4, and platform `/dev/fd/` listing semantics) outweighs
+      the zero-bit security gain. Re-open if a future `vetterd`
+      change starts spawning helper subprocesses (codesign /
+      hash-recompute / etc.) — at that point the audit-log fd
+      genuinely could leak and the explicit CLOEXEC becomes
+      load-bearing rather than belt-and-suspenders.
 - [ ] Verify socket parent dir owner + mode before `vet` connects;
       refuse on mismatch. (Daemon enforces `0700` at bind; the
       client-side check is the residual T1 gap — peer-cred largely

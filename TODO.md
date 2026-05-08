@@ -444,62 +444,155 @@ unit test in
       and document, or emit one `HttpRequest` per URL with `-o` slots
       paired in argv order
 
-## Phase 5.3 — File path allowlist  `[ ] not started`
+## Phase 5.3 — Safe-paths layer  `[ ] not started`
 
 Design: [plans/FilePaths.md](plans/FilePaths.md).
 
-Adds a built-in baseline of safe directories (so common scratch
-and cache writes auto-allow) and a built-in denylist of sensitive
-credential paths (so writes to `~/.ssh`, `~/.aws`, etc. are
-denied at every layer). Replaces the coarse `FileOutsideCwd` /
-`FileReadOutsideCwd` signals with `UnknownWritePath` /
-`UnknownReadPath` (analogous to `UnknownHost`) and adds a
-`DeniedPath` signal for built-in denylist hits. Also closes the
-existing backlog item "Allowlist suggestions over `Effect::FileWrite`
-/ `Effect::FileRead`" by wiring the new suggestion engine into the
-popover's `Allowlist path…` picker.
+Models file paths as a **separate, command-agnostic layer** rather
+than as clauses on the rule allowlist. A new `safe-paths.yaml`
+(layered identically to `allowlist.yaml`: built-in / user / project
+/ session) carries `allow.read` / `allow.write` / `deny.read` /
+`deny.write` lists; the daemon evaluates every `Effect::FileRead`
+/ `Effect::FileWrite` against it independently of the rule
+allowlist's `decide()`, then combines the two outcomes per
+[FilePaths.md §5.2](plans/FilePaths.md). The cross-cutting framing
+means a single safe-paths entry covers `~/Downloads/**` for every
+parser (curl, wget, gh, aws, git, ssh, rm, …) without duplicating
+policy on each `http:` / `process:` / etc. rule. The
+`RuleWhen.file_write` / `RuleWhen.file_read` clauses leave the rule
+schema entirely. Adds a built-in baseline of safe directories (so
+common scratch and cache writes auto-allow) plus a built-in deny
+list for sensitive credential paths. Replaces `FileOutsideCwd` /
+`FileReadOutsideCwd` with `UnknownWritePath` / `UnknownReadPath` /
+`DeniedWritePath` / `DeniedReadPath`. Closes the existing backlog
+item "Allowlist suggestions over `Effect::FileWrite` /
+`Effect::FileRead`" by wiring the new suggestion engine into the
+popover's `Allow path…` picker.
 
-### PR A — Baseline + signal rename
+### PR A — `safe_paths` module + decision plumbing
 
-- [ ] `BUILTIN_FILE_RULES` (allow) and `BUILTIN_DENY_FILE_RULES`
-      (deny) constants in
-      [vetter-core/src/matcher/loader.rs](vetter-core/src/matcher/loader.rs);
-      populated into `AllowlistStore::builtin` and denylist after
-      env-var / tilde expansion at load time
-- [ ] Tilde (`~/`) expansion for user-authored rule paths
-- [ ] `SignalKind::UnknownWritePath`, `UnknownReadPath`, `DeniedPath`
-      replacing `FileOutsideCwd` / `FileReadOutsideCwd`
-      ([vetter-core/src/signals/mod.rs](vetter-core/src/signals/mod.rs))
-- [ ] `check_file_paths(p, store)` in `vetter-core::signals`
-      (mirrors `check_known_hosts`); wired from
-      [vet/src/explain.rs](vet/src/explain.rs) and
-      [vetterd/src/policy.rs](vetterd/src/policy.rs)
-- [ ] Retain `FileOutsideCwd` / `FileReadOutsideCwd` as
-      `#[deprecated]` (not emitted, kept for deserialisation compat)
-- [ ] Snapshot updates for renderer + popover pills
-- [ ] `vet doctor` row: built-in file rules loaded N, dropped M
-      (env vars unset)
+- [ ] New `vetter-core::safe_paths` module mirroring
+      [vetter-core/src/known_hosts.rs](vetter-core/src/known_hosts.rs):
+      `SafePathEntry`, `SafePathsFile`, `SafePathsStore`,
+      `BUILTIN_SAFE_PATHS`, `BUILTIN_DENY_SAFE_PATHS`,
+      `load_default`, `write_file`, `add_entry`,
+      `user_safe_paths_path`. Project discovery reuses
+      `matcher::loader::discover_project_root`. `0600` writes via
+      `fs_secure::persist_at_mode` for parity with allowlist /
+      known-hosts.
+- [ ] Minimal built-in entries from
+      [FilePaths.md §7.1 / §7.2](plans/FilePaths.md): mechanical
+      allow list (`${cwd}/**`, `${TMPDIR}/**`, `/tmp/**`,
+      `/private/tmp/**`, `/var/folders/**`, `/dev/{null,stdout,stderr}`),
+      single deny entry (`${HOME}/.vet/**` write). Expand
+      `${cwd}` per-request and `${TMPDIR}` at load time; entries
+      whose env var is unset are silently dropped and reported by
+      `vet doctor`. Deliberately *not* baking in `~/.ssh/**`,
+      `~/.aws/credentials`, `/etc/**`, `~/Downloads/**`, etc. —
+      those live in the starter template (PR C) and are
+      user-authored, not built-in.
+- [ ] Tilde (`~/`) expansion for user-authored entries; reject
+      unexpanded `${...}` templates outside built-in scope so the
+      same `safe-paths.yaml` doesn't evaluate differently per
+      invocation.
+- [ ] Delete `RuleWhen.file_write`, `RuleWhen.file_read`,
+      `FileWriteClause`, `FileReadClause` from
+      [vetter-core/src/matcher/rule.rs](vetter-core/src/matcher/rule.rs);
+      delete the corresponding branches in
+      [vetter-core/src/matcher/decide.rs](vetter-core/src/matcher/decide.rs)
+      `matches_rule`. Update tests + snapshots; surface a clear
+      load-time error if an existing YAML still carries those
+      keys.
+- [ ] Plan-doc touch-ups landing with the same PR:
+      [plans/TestingPlan.md](plans/TestingPlan.md) §3 file-effect
+      fixtures + §2.5 / §2.6 multi-effect rule paragraphs,
+      [plans/RepoMap.md](plans/RepoMap.md) §2 / §3 schema rows,
+      [plans/ThreatModel.md](plans/ThreatModel.md) "File-rule
+      amplifier" → "Safe-paths amplifier" reframe.
+- [ ] `SignalKind::{UnknownWritePath, UnknownReadPath,
+      DeniedWritePath, DeniedReadPath}` in
+      [vetter-core/src/signals/mod.rs](vetter-core/src/signals/mod.rs);
+      retire emission of `FileOutsideCwd` / `FileReadOutsideCwd`
+      and mark them `#[deprecated]`. Signals are descriptive of
+      the safe-paths verdict (so the popover effect-row pill
+      explains why the path is yellow / red); the actual
+      gating happens in the decision combinator below.
+- [ ] `safe_paths::decide_file_paths(parsed, store) ->
+      Vec<(EffectIdx, PathOutcome)>` returning per-effect
+      Allowed / Unknown / Denied. Combine with
+      `matcher::decide()` per the table in
+      [FilePaths.md §5.2](plans/FilePaths.md): file Denied →
+      Deny; file Unknown + rule Allow → Prompt; otherwise rule
+      decision wins.
+- [ ] Wire from [vet/src/explain.rs](vet/src/explain.rs) and
+      [vetterd/src/policy.rs](vetterd/src/policy.rs); plumb the
+      per-effect `Vec<(EffectIdx, PathOutcome)>` attribution into
+      `PolicyOutcome::Auto` and the new `file_paths` field on
+      [vetterd/src/audit.rs](vetterd/src/audit.rs)'s
+      `AuditEntry`.
+- [ ] `vet doctor` rows: `safe-paths (user)`,
+      `safe-paths (project)`, built-in allow / deny entry counts
+      (with `dropped M` when env vars are unset).
 
-### PR B — File suggestion engine + popover picker
+### PR B — Suggestion engine + popover picker
 
-- [ ] `file_write_suggestions` / `file_read_suggestions` in
-      `vetter_core::suggest`
-      ([vetter-core/src/suggest/mod.rs](vetter-core/src/suggest/mod.rs))
-- [ ] Wired into `vetterd::suggestions::suggestions_for`
-      ([vetterd/src/suggestions.rs](vetterd/src/suggestions.rs))
-- [ ] `Allowlist path…` button on `FileRead` / `FileWrite` rows in
+- [ ] `safe_paths::suggest_for(&ParsedCommand) ->
+      Vec<PathSuggestion>` per
+      [FilePaths.md §8.1](plans/FilePaths.md): Exact / Dir /
+      ProjectRoot tiers per uncovered effect, each carrying
+      `op: SafePathOp::{Read, Write}`. Suppress tiers that
+      overlap the built-in deny list.
+- [ ] Wired into
+      [vetterd/src/suggestions.rs](vetterd/src/suggestions.rs)
+      `suggestions_for`.
+- [ ] `MgmtRequest::AddSafePath { scope, op, entry }` /
+      `MgmtResponse::SafePathAdded { auto_approved_ids }` in
+      [vetter-core/src/wire/mod.rs](vetter-core/src/wire/mod.rs);
+      handler in
+      [vetterd/src/lib.rs](vetterd/src/lib.rs) calls
+      `safe_paths::add_entry`, reloads the store, and
+      auto-resolves any pending request whose previously-Unknown
+      effect now resolves to Allowed (mirrors the existing
+      `add_allowlist_rule` auto-approve flow).
+- [ ] `Allow path…` button on `FileRead` / `FileWrite` rows in
       the macOS popover
       ([vetterd/src/runloop/popover_effects.rs](vetterd/src/runloop/popover_effects.rs));
-      button suppressed when path overlaps built-in denylist
-- [ ] Integration tests in `vetterd/tests/` for the file suggestion
-      flow
+      picker sheet reuses
+      [vetterd/src/runloop/popover_picker.rs](vetterd/src/runloop/popover_picker.rs);
+      button suppressed when the path overlaps the built-in
+      deny list.
+- [ ] Integration tests in `vetterd/tests/` for the suggestion
+      flow: `AddSafePath` auto-approves matching pending +
+      writes YAML + audits the auto-approve reason;
+      built-in-deny overlap suppresses the picker; Unknown path
+      stays pending until the operator approves once or adds an
+      entry.
 
-### PR C — CLI ergonomics + denylist polish
+### PR C — Authorship ergonomics (CLI + starter template)
 
-- [ ] `vet allow add --file-write <path>` / `--file-read <path>`
-      shims ([vet/src/allow.rs](vet/src/allow.rs))
-- [ ] `vet doctor` extended row: surface per-path built-in denylist
-      coverage in `vet allow list` output
+- [ ] `vet allow add --safe-read <path>` /
+      `--safe-write <path>` /
+      `--safe-deny-read <path>` / `--safe-deny-write <path>`
+      shims in [vet/src/allow.rs](vet/src/allow.rs) (wraps
+      `safe_paths::add_entry`).
+- [ ] `vet allow list --safe-paths` lists every layer's entries
+      with scope attribution; surface the single built-in deny
+      entry so the operator can see the floor.
+- [ ] Ship `safe-paths.starter.yaml` under
+      `vetter-core/resources/` containing the curated set from
+      [FilePaths.md §7.3](plans/FilePaths.md) — opinionated
+      defaults for `~/Downloads/**`, `~/.cache/**`, `/etc/ssl/**`,
+      and the deny-recommendations for `~/.ssh/**`,
+      `~/.aws/credentials`, `~/.gnupg/**`, `~/.kube/config`,
+      `~/.netrc`, `/etc/**`. Not loaded by the daemon.
+- [ ] `vet allow init-safe-paths` subcommand: copies the starter
+      template to `~/.vet/safe-paths.yaml`, expands `${HOME}` /
+      `${XDG_CACHE_HOME}` once at copy time so the resulting
+      file is portable, refuses to overwrite an existing file
+      without `--force`, supports `--print` for stdout review.
+- [ ] `vet doctor` first-run hint: when `~/.vet/safe-paths.yaml`
+      is missing, surface an `INFO` row pointing at
+      `vet allow init-safe-paths` and the popover picker.
 
 ---
 

@@ -466,10 +466,12 @@ fn finalise(
     cwd: Option<&Path>,
 ) -> Result<ParsedCommand, ParseError> {
     if !state.extra_positionals.is_empty() {
-        return Err(ParseError::Other(format!(
-            "multiple URLs are not supported: extras = {:?}",
-            state.extra_positionals
-        )));
+        return Err(ParseError::Other(
+            "multiple URLs in a single curl invocation are not supported; \
+             vet requires exactly one URL per invocation so every request \
+             gets its own approval"
+                .into(),
+        ));
     }
 
     let mut url = state

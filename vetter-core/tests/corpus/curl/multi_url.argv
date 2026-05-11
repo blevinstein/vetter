@@ -1,0 +1,4 @@
+# Multiple URLs in a single curl invocation. Agents must issue one
+# `vet curl` call per URL so each request gets its own approval.
+https://first.example/api
+https://second.example/api

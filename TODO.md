@@ -448,10 +448,13 @@ unit test in
       ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
       [vetter-core/tests/corpus/curl/data_mixed_inline_and_file.argv](vetter-core/tests/corpus/curl/data_mixed_inline_and_file.argv),
       [vetter-core/tests/corpus/curl/data_multi_at_file.argv](vetter-core/tests/corpus/curl/data_multi_at_file.argv))
-- [ ] Decide multi-URL handling (`curl URL1 URL2` with multiple `-o`
-      slots): either keep the current `ParseError::Other` rejection
-      and document, or emit one `HttpRequest` per URL with `-o` slots
-      paired in argv order
+- [x] Decided multi-URL handling: reject with `ParseError::Other`.
+      Agents must issue one `vet curl` per URL so each request gets
+      its own approval. Corpus fixture `multi_url.argv` + unit tests
+      `multiple_urls_rejected` / `multiple_urls_with_output_rejected`
+      pin the behaviour
+      ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
+      [vetter-core/tests/corpus/curl/multi_url.argv](vetter-core/tests/corpus/curl/multi_url.argv))
 
 ## Phase 5.3 — Safe-paths layer  `[ ] not started`
 

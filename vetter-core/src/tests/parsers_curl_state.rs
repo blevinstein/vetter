@@ -255,6 +255,33 @@ fn next_short_in_cluster_rejected() {
 }
 
 #[test]
+fn multiple_urls_rejected() {
+    let r = parse_argv(
+        &argv(&["https://first.example/", "https://second.example/"]),
+        &StdinHandle::empty(),
+        None,
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
+fn multiple_urls_with_output_rejected() {
+    let r = parse_argv(
+        &argv(&[
+            "-o",
+            "a.json",
+            "https://first.example/",
+            "-o",
+            "b.json",
+            "https://second.example/",
+        ]),
+        &StdinHandle::empty(),
+        None,
+    );
+    assert!(matches!(r, Err(ParseError::Other(_))));
+}
+
+#[test]
 fn data_at_stdin_rejected_as_streaming_unsupported() {
     // ThreatModel T9 close: `-d @-` would source the body from the
     // client-side pipe, but the daemon re-parses argv with an empty

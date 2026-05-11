@@ -5,6 +5,8 @@
 //! assertions are stable text patterns from the §8.5 layout and the
 //! Phase 1b explain-mode policy line.
 
+use std::os::unix::fs::PermissionsExt as _;
+
 use assert_cmd::Command;
 use predicates::str::contains;
 use tempfile::TempDir;
@@ -181,7 +183,10 @@ fn non_explain_wrap_fails_closed_without_daemon() {
     // listening (we point the socket at a guaranteed-missing path),
     // the thin client must fail-closed: exit 78, never exec.
     let (mut cmd, scratch) = vet_nocolor_clean();
-    let socket = scratch.path().join("missing.sock");
+    let sock_dir = scratch.path().join("run");
+    std::fs::create_dir(&sock_dir).unwrap();
+    std::fs::set_permissions(&sock_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = sock_dir.join("missing.sock");
     cmd.env("VETTERD_SOCKET", &socket)
         .args(["curl", "https://example.test/"])
         .assert()
@@ -194,7 +199,10 @@ fn dry_run_without_daemon_also_fails_closed() {
     // --dry-run still has to talk to the daemon (it's the daemon
     // that interprets force_prompt). With no daemon, fail-closed.
     let (mut cmd, scratch) = vet_nocolor_clean();
-    let socket = scratch.path().join("missing.sock");
+    let sock_dir = scratch.path().join("run");
+    std::fs::create_dir(&sock_dir).unwrap();
+    std::fs::set_permissions(&sock_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = sock_dir.join("missing.sock");
     cmd.env("VETTERD_SOCKET", &socket)
         .args(["--dry-run", "curl", "https://example.test/"])
         .assert()
@@ -232,7 +240,10 @@ fn explain_parse_error_emits_nothing_to_stdout() {
 #[test]
 fn non_explain_wrap_no_daemon_emits_nothing_to_stdout() {
     let (mut cmd, scratch) = vet_nocolor_clean();
-    let socket = scratch.path().join("missing.sock");
+    let sock_dir = scratch.path().join("run");
+    std::fs::create_dir(&sock_dir).unwrap();
+    std::fs::set_permissions(&sock_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = sock_dir.join("missing.sock");
     let assertion = cmd
         .env("VETTERD_SOCKET", &socket)
         .args(["curl", "https://example.test/"])

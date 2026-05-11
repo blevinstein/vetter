@@ -182,6 +182,7 @@ fn round_trip(
     socket: &Path,
     req: &VetRequest,
 ) -> Result<vetter_core::wire::VetDecision, WireError> {
+    vetter_core::socket_dir::verify_socket_parent(socket)?;
     let mut s = UnixStream::connect(socket)?;
     // Authenticate the peer BEFORE sending the request. The body
     // carries argv and cwd — both of which leak to a hijacker in the

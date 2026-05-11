@@ -6,6 +6,8 @@
 
 mod common;
 
+use std::os::unix::fs::PermissionsExt as _;
+
 use predicates::str::contains;
 
 use common::{install_fake_curl, vet_cmd};
@@ -13,7 +15,10 @@ use common::{install_fake_curl, vet_cmd};
 #[test]
 fn missing_socket_exits_non_zero_and_does_not_exec() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("missing.sock"); // intentionally absent
+    let sock_dir = dir.path().join("run");
+    std::fs::create_dir(&sock_dir).unwrap();
+    std::fs::set_permissions(&sock_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = sock_dir.join("missing.sock"); // intentionally absent
     let marker = dir.path().join("ran.marker");
     install_fake_curl(dir.path(), &marker);
 
@@ -42,7 +47,10 @@ fn missing_socket_exits_non_zero_and_does_not_exec() {
 #[test]
 fn stale_socket_file_with_no_listener_also_fail_closed() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("orphan.sock");
+    let sock_dir = dir.path().join("run");
+    std::fs::create_dir(&sock_dir).unwrap();
+    std::fs::set_permissions(&sock_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = sock_dir.join("orphan.sock");
     std::fs::write(&socket, b"").unwrap();
     let marker = dir.path().join("ran.marker");
     install_fake_curl(dir.path(), &marker);

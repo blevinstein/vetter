@@ -25,6 +25,7 @@ pub mod pidfile;
 pub mod render;
 pub mod settings;
 pub mod signals;
+pub mod socket_dir;
 pub mod suggest;
 pub mod wire;
 

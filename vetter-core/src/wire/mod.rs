@@ -185,6 +185,13 @@ pub enum WireError {
          pidfile lock holder {locker:?}"
     )]
     PeerPidMismatch { peer: u32, locker: Option<u32> },
+    /// Pre-connect safety check failed: the socket's parent directory
+    /// is either owned by a different UID or has group/other permission
+    /// bits set. The daemon forces `0700` at bind time, so this
+    /// indicates the directory was created or modified by something
+    /// other than the legitimate `vetterd`. ThreatModel T1 residual.
+    #[error("socket parent directory is insecure: {path}: {reason}")]
+    SocketDirInsecure { path: String, reason: String },
 }
 
 /// Serialise `msg` to JSON, write a 4-byte big-endian length prefix,

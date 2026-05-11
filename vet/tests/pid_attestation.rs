@@ -16,6 +16,7 @@
 mod common;
 
 use std::io::Read;
+use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixListener;
 use std::time::{Duration, Instant};
 
@@ -51,6 +52,7 @@ fn drain_one_connection(listener: UnixListener) -> std::thread::JoinHandle<()> {
 #[test]
 fn unlocked_pidfile_hijack_is_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let socket = dir.path().join("vetter.sock");
     let pidfile = dir.path().join("vetter.pid");
     let marker = dir.path().join("ran.marker");
@@ -81,6 +83,7 @@ fn unlocked_pidfile_hijack_is_rejected() {
 #[test]
 fn forged_unlocked_pidfile_body_is_still_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let socket = dir.path().join("vetter.sock");
     let pidfile = dir.path().join("vetter.pid");
     let marker = dir.path().join("ran.marker");

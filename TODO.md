@@ -837,10 +837,16 @@ these in smallest-blast-radius-first order; same order here.
       hash-recompute / etc.) — at that point the audit-log fd
       genuinely could leak and the explicit CLOEXEC becomes
       load-bearing rather than belt-and-suspenders.
-- [ ] Verify socket parent dir owner + mode before `vet` connects;
+- [x] Verify socket parent dir owner + mode before `vet` connects;
       refuse on mismatch. (Daemon enforces `0700` at bind; the
       client-side check is the residual T1 gap — peer-cred largely
       neutralises it but the check is cheap.)
+      `vetter_core::socket_dir::verify_socket_parent` checks parent
+      dir owner UID and mode (rejects `& 0o077 != 0`) before
+      `UnixStream::connect`; new `WireError::SocketDirInsecure`
+      variant surfaces a clear error message
+      ([vetter-core/src/socket_dir.rs](vetter-core/src/socket_dir.rs),
+      [vet/src/wrap.rs](vet/src/wrap.rs))
 - [ ] Same-UID admin-socket write hardening: `MgmtRequest::AddRule`
       and `AddKnownHost` on `vetter-admin.sock` currently trust any
       same-UID caller (peer-cred passes by definition). A malicious

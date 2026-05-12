@@ -444,7 +444,7 @@ unit test in
       file reads the audit log recorded. Agents that genuinely need
       multi-source bodies should pre-concatenate into one file and
       pass `-d @combined`. Widening `Body` to a multi-source variant
-      stays available if a future parser (`wget`, `gh`) needs it.
+      stays available if a future parser (`wget`, `httpie`) needs it.
       ([vetter-core/src/parsers/curl/state.rs](vetter-core/src/parsers/curl/state.rs),
       [vetter-core/tests/corpus/curl/data_mixed_inline_and_file.argv](vetter-core/tests/corpus/curl/data_mixed_inline_and_file.argv),
       [vetter-core/tests/corpus/curl/data_multi_at_file.argv](vetter-core/tests/corpus/curl/data_multi_at_file.argv))
@@ -469,8 +469,8 @@ than as clauses on the rule allowlist. A new `safe-paths.yaml`
 allowlist's `decide()`, then combines the two outcomes per
 [FilePaths.md §5.2](plans/FilePaths.md). The cross-cutting framing
 means a single safe-paths entry covers `~/Downloads/**` for every
-parser (curl, wget, gh, aws, git, ssh, rm, …) without duplicating
-policy on each `http:` / `process:` / etc. rule. The
+parser (curl, wget, httpie, …) without duplicating policy on each
+rule. The
 `RuleWhen.file_write` / `RuleWhen.file_read` clauses leave the rule
 schema entirely. Adds a built-in baseline of safe directories (so
 common scratch and cache writes auto-allow) plus a built-in deny
@@ -1103,7 +1103,7 @@ quickly after v0.1.
       daemon never sees a body sourced from a client-side pipe and
       the popover / audit log can no longer drift from what `vet`
       execs. This bullet stays open as a forward-looking concern
-      for any future parser (`gh`, `aws`, `wget`) that genuinely
+      for any future parser (`wget`, `httpie`) that genuinely
       needs to consume agent stdin: when one lands, the wire-v3
       stdin-digest forwarding (and exec-time re-injection) becomes
       the prerequisite for that parser to safely accept `-`-style
@@ -1121,20 +1121,29 @@ quickly after v0.1.
 Tracked but not on the v0.1 critical path. Each is roughly
 self-contained; pull from this list when v0.1 is out and stable.
 
-### Phase 7 — Additional command parsers
+### Phase 7 — Additional HTTP-client parsers
 
-Each is a new file implementing `CommandParser` plus snapshot
-fixtures. The first one doubles as a generalisation check on the
+The allowlist model, matcher, risk analyzer, render layout, and
+suggestion engine are all built around `Effect::HttpRequest` — URL
+scheme/host/port/path, method, headers, body, TLS policy, redirects.
+Only commands whose primary purpose is making HTTP requests map
+cleanly onto this approval surface. Non-HTTP commands (`ssh`, `rm`,
+`git push`, etc.) would need entirely different rule schemas,
+signal heuristics, and approval UIs; they are out of scope.
+
+Each parser below is a new file implementing `CommandParser` plus
+snapshot fixtures. `wget` doubles as a generalisation check on the
 Phase 1a interface — if it forces `Effect`/`ParsedCommand` changes,
 fix those before the rest land.
 
-- [ ] `wget`  (Phase 1a interface check; do this first)
-- [ ] `gh`
-- [ ] `aws`
-- [ ] `gcloud`
-- [ ] `ssh` / `scp`
-- [ ] `rm`
-- [ ] `git push` / `git remote`
+- [ ] `wget` — closest sibling to curl; emits `HttpRequest` +
+      `FileWrite` (default saves to disk). Handles `-O`, `--post-data`,
+      `--header`, `--no-check-certificate`, `--max-redirect`, auth
+      flags. Good first test of parser generality.
+- [ ] `httpie` (`http` / `https` commands) — developer-oriented HTTP
+      client with a distinctive `METHOD URL key=value` argv shape.
+      Emits `HttpRequest` + optional `FileWrite` (`--output` /
+      `--download`). Covers agents that prefer httpie over curl.
 
 ### Phase 8 — Other platforms (post-v0.2)
 

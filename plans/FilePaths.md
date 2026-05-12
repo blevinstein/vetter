@@ -26,7 +26,7 @@ Today the only file-effect signals are `FileOutsideCwd` and
   question of "may this command read `~/.ssh/id_rsa`?" has the same answer
   whether the command is `curl`, `wget`, `cat`, `git`, or `rm`. URL policy
   is the opposite — `url:` clauses only make sense for parsers that emit
-  `Effect::HttpRequest` (curl, wget, gh's REST calls, …) and forcing every
+  `Effect::HttpRequest` (curl, wget, httpie, …) and forcing every
   curl `http:` rule to also enumerate which file paths are OK to attach
   via `-d @file` is the wrong shape: it scales O(URLs × paths) rather than
   O(URLs + paths).
@@ -59,8 +59,8 @@ the allowlist uses:
 The store is consulted independently of the rule allowlist: every
 `Effect::FileRead` / `Effect::FileWrite` on a parsed command is checked
 against it, regardless of which command parser produced the effect. A
-single `safe-paths.yaml` therefore applies to curl, wget, gh, aws, git,
-ssh, rm, and every future parser without duplicating policy.
+single `safe-paths.yaml` therefore applies to curl, wget, httpie,
+and every future parser without duplicating policy.
 
 This is the model the user explicitly asked for: "file paths modeled as
 a separate layer."
@@ -79,7 +79,7 @@ Rationale:
 - The cross-cutting framing makes operator intent clearer: a single
   entry in `safe-paths.yaml` covers `~/Downloads/**` for every
   command, instead of having to add a `file_write:` clause to each
-  curl / wget / gh rule.
+  curl / wget / httpie rule.
 - Removes a long-standing footgun: today a rule with only `http:`
   populated silently auto-allows the file effects on the same
   command (clause omitted ⇒ effect unconstrained). Under the new

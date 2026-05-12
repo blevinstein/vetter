@@ -170,15 +170,14 @@ the client's. Two drift sources follow:
    auditable end-to-end. The unused `Body::FromStdin` variant,
    `ParsedCommand::stdin_digest` field, and `Sha256` newtype were
    scrubbed in the same change since no production code path can
-   emit them anymore. Future parsers (`gh`, `aws`, `wget`) that
-   genuinely need stdin payloads will reopen this question — see
+   emit them anymore. Future HTTP-client parsers (`wget`, `httpie`)
+   that genuinely need stdin payloads will reopen this question — see
    TODO's post-launch follow-up for the wire-v3 stdin-digest
    forwarding work that becomes the prerequisite for those
    parsers to safely accept `-`-style stdin invocations.
 
 2. **Env** — `EnvSnapshot::from_process()` on the daemon side means
-   a parser that consults env (today: none; tomorrow: `aws`
-   reading `$AWS_PROFILE`, `gh` reading `$GH_HOST`, curl honouring
+   a parser that consults env (today: none; tomorrow: curl honouring
    `$CURL_HOME → ~/.curlrc` if we ever teach it to) sees the
    daemon's view, not the client's. Divergence can silently flip
    which API endpoint or which creds the real exec targets. This

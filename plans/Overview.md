@@ -2,12 +2,12 @@
 
 `vetter` is a local security gate that sits between an LLM coding agent and
 "dangerous" CLI commands. The CLI is named `vet`. Agents are configured to
-allowlist `vet *` (instead of `curl *`, `wget *`, `gh *`, …); `vet` then runs
+allowlist `vet *` (instead of `curl *`, `wget *`, …); `vet` then runs
 its own, more sophisticated approval policy — backed by a separate-channel UI
 operated by the human approver, not by the agent.
 
 The MVP wraps `curl`. The architecture is built so additional command-aware
-parsers (wget, gh, aws, gcloud, ssh, rm, …) can be added later.
+parsers (wget, httpie, …) can be added for other HTTP clients.
 
 ---
 
@@ -176,7 +176,7 @@ Conventions:
 
 Rules match on **effects** (see §8.2), not on a command-specific shape.
 That means the same rule can cover any command that emits an
-`HttpRequest` effect (curl, wget, gh, …). An optional top-level
+`HttpRequest` effect (curl, wget, httpie, …). An optional top-level
 `command:` field can narrow a rule to one parser when needed.
 
 ```yaml
@@ -211,8 +211,7 @@ rules:
 ```
 
 `when` clauses are keyed by effect kind that's specific to the
-parser that produced it (`http:` for curl / wget / gh; future
-parsers will add `process_spawn:`, `network:`, etc.). A rule
+parser that produced it (`http:` for curl / wget / httpie). A rule
 matches iff *every* populated effect-clause finds *at least one*
 matching effect in the parsed command, and any populated `command:`
 filter agrees. Anything not listed in `headers_allow` (or set to
@@ -427,7 +426,7 @@ Operational guide: [UbuntuApp.md](UbuntuApp.md). Distribution flow:
 ### Other platforms
 
 Windows (WinRT toast + tray) and a localhost web UI remain on the
-backlog (TODO.md *Backlog → Phase 7*). Both reuse the existing wire
+backlog (TODO.md *Backlog → Phase 8*). Both reuse the existing wire
 protocol and the platform-agnostic card-data layer; only the UI
 shell is new work.
 
@@ -442,7 +441,7 @@ as JSON lines. `vet allow list --history` surfaces this.
 ## 8. Command parsers
 
 The parser layer is the project's most important extension point. Adding
-a new command (wget, gh, aws, ssh, …) should require **only** a new
+a new HTTP-client command (wget, httpie, …) should require **only** a new
 parser plugin — the renderer, the rule matcher, the risk analyzer, the
 audit log, and the UI all consume one shared output type and need no
 per-command code.
@@ -454,13 +453,13 @@ output and nothing else.
 
 ```rust
 pub trait CommandParser: Send + Sync {
-    /// Stable identifier ("curl", "wget", "gh", …). Appears in rules,
+    /// Stable identifier ("curl", "wget", …). Appears in rules,
     /// audit logs, and the wire protocol.
     fn name(&self) -> &'static str;
 
     /// True if this parser handles the given argv[0] (incl. basenames
     /// like "/opt/homebrew/bin/curl"). Plugins may also accept aliases
-    /// (e.g. a future gh plugin returning true for both "gh" and "hub").
+    /// (e.g. a future httpie plugin returning true for both "http" and "https").
     fn handles(&self, argv0: &str) -> bool;
 
     /// Parse argv into the shared output model. Returning Err means
@@ -513,10 +512,11 @@ the risk analyzer, the renderer's "summary" view — never branch on
 ```rust
 pub enum Effect {
     HttpRequest(HttpRequest),
-    FileWrite(FileWrite),     // -o /path, -O, scp dst, gh pr download
-    FileRead(FileRead),       // -d @file, -T file, scp src
-    ProcessSpawn(ProcessSpawn), // ssh remote command, gh codespace ssh
-    CredentialUse(CredentialUse), // --user, ~/.netrc, AWS_PROFILE…
+    FileWrite(FileWrite),     // -o /path, -O, wget default save
+    FileRead(FileRead),       // -d @file, -T file
+    ProcessSpawn(ProcessSpawn),
+    CredentialUse(CredentialUse), // --user, ~/.netrc
+
     Network(NetworkOpen),     // raw socket-y things (ssh, nc) where
                               //   "HTTP request" doesn't apply
 }
@@ -566,7 +566,7 @@ Why both `effects` and `extras`:
   on. Anything we want to write a generic rule against goes here.
 - `extras` is a **lossless escape hatch** for command-specific detail
   the renderer's detail view can show but policy doesn't reason about
-  (e.g. curl's `--write-out` format string, gh's repo-context flags).
+  (e.g. curl's `--write-out` format string).
   Keeping it free-form means parsers can ship richer detail without
   forcing a core-type change every time.
 
@@ -587,7 +587,7 @@ pub trait Renderer {
 // Matcher: rule WHEN clauses are written against effects.
 //   "method: POST, host: api.github.com" matches any ParsedCommand
 //   whose effects contain an HttpRequest matching the predicate —
-//   curl, wget, gh-with-an-http-effect, all handled identically.
+//   curl, wget, httpie — all handled identically.
 pub trait Matcher {
     fn matches(&self, p: &ParsedCommand, rule: &RuleWhen) -> bool;
 }
@@ -801,9 +801,13 @@ slower CLI cold start and worse parser ergonomics.)
   `vet daemon reject <id>` over the existing `vetter-admin.sock` so
   users can resolve from a TTY when no D-Bus session is available.
 
-### Phase 7 — Additional command parsers
-- `wget`, `gh`, `aws`, `gcloud`, `ssh/scp`, `rm`, `git push`/`git remote`
-  (mostly to gate `git push` to unfamiliar remotes).
+### Phase 7 — Additional HTTP-client parsers
+- `wget`, `httpie` (`http`/`https`). Only commands whose primary
+  purpose is making HTTP requests map cleanly onto the existing
+  allowlist model (URL scheme/host/port/path, method, headers, body,
+  TLS policy, redirects). Non-HTTP commands (`ssh`, `rm`, `git push`,
+  etc.) would need entirely different rule schemas, signal heuristics,
+  and approval UIs; they are out of scope.
 - Each is one new file implementing `CommandParser`, plus snapshot
   fixtures and any command-specific signal additions. No core changes.
   Budget: 1–3 days each. The first one (`wget`) doubles as a check
@@ -838,7 +842,7 @@ slower CLI cold start and worse parser ergonomics.)
 
 ## 13. Success criteria
 
-- An agent harness with `vet *` allowlisted and `curl|wget|gh|aws|… *`
+- An agent harness with `vet *` allowlisted and `curl|wget|… *`
   denied can complete normal development tasks with **fewer prompts than
   today** (because vetted patterns auto-allow) but **catches** any
   off-pattern HTTP call (because non-matching calls escalate to the human

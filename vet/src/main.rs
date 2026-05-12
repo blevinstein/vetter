@@ -14,6 +14,7 @@ mod color;
 mod daemon;
 mod doctor;
 mod explain;
+mod init;
 mod messages;
 mod wrap;
 
@@ -22,7 +23,7 @@ mod wrap;
     name = "vet",
     version,
     about = "Local security gate for LLM-agent CLI invocations.",
-    long_about = "vet wraps dangerous CLI commands (curl, wget, gh, ...) and \
+    long_about = "vet wraps dangerous CLI commands (curl, wget, ...) and \
                   routes them through a layered allowlist + separate-channel \
                   approval UI. See plans/Overview.md."
 )]
@@ -53,6 +54,9 @@ struct Cli {
 enum Command {
     /// Diagnose daemon, socket, parsers, and signing status.
     Doctor,
+
+    /// Create ~/.vet/ and seed empty config files.
+    Init,
 
     /// Manage allowlist rules.
     Allow {
@@ -141,6 +145,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Doctor => doctor::run(cli.allowlist.as_deref()),
+        Command::Init => init::run(),
         Command::Allow { action } => match action {
             AllowAction::Add { pattern, scope } => {
                 allow::add(&pattern, scope, cli.allowlist.as_deref())

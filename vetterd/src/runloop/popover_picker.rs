@@ -17,12 +17,12 @@
 //! file is only compiled into the daemon binary, never the
 //! integration-test wire harness.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{define_class, sel, MainThreadOnly};
+use objc2::{define_class, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAppearance, NSAppearanceCustomization,
     NSAppearanceNameDarkAqua, NSButton, NSButtonType, NSColor, NSControlStateValueOff,
@@ -57,21 +57,25 @@ define_class!(
     ///
     /// AppKit's documented contract for radio-button auto-grouping
     /// (the behaviour where clicking one radio toggles its siblings
-    /// off) is: every button in the group must share a superview
-    /// **and** the same action selector. Bare `NSButton::Radio`
-    /// instances with `target=nil, action=nil` (which is what
-    /// `buttonWithTitle:target:action:` with `None`/`None` produces)
-    /// are independent toggles — so the prior version of the picker
-    /// let users light up every radio simultaneously.
+    /// off) is: every button in the group must share **both** a
+    /// direct superview *and* the same action selector. This
+    /// picker's layout wraps every `radio + preview` pair in its
+    /// own per-row `NSStackView` (see [`build_picker_stack`]) so
+    /// the radios end up in different superviews and AppKit's
+    /// auto-grouping never kicks in — the prior version with a
+    /// no-op `radioClicked:` left every radio independent, so
+    /// users could light up multiple tiers at once and
+    /// [`read_selected_index`] would return whichever radio
+    /// happened to come first in `On` state instead of the user's
+    /// actual choice.
     ///
-    /// Wiring `target = some shared controller, action = radioClicked:`
-    /// satisfies the grouping contract. The selector body is a
-    /// deliberate no-op because AppKit performs the OFF-toggling
-    /// itself before delivering the action; we only need the
-    /// selector to *exist* so the responder-chain delivery doesn't
-    /// log "no such selector" warnings into Console. The controller
-    /// is otherwise stateless and is held alive by the picker
-    /// function's local for the duration of `runModal()`.
+    /// Rather than flatten the layout (which would force us to
+    /// hand-manage spacing between radio/preview pairs), we
+    /// enforce the invariant ourselves: the controller stores
+    /// every radio in the group via [`set_radios`], and
+    /// `radioClicked:` walks the list, turning the sender On and
+    /// every sibling Off. Controller is held alive by the picker
+    /// function's local binding for the duration of `runModal()`.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "VetterPickerRadioGroup"]
@@ -82,20 +86,45 @@ define_class!(
 
     impl RadioGroupController {
         #[unsafe(method(radioClicked:))]
-        fn radio_clicked(&self, _sender: Option<&NSButton>) {}
+        fn radio_clicked(&self, sender: Option<&NSButton>) {
+            let Some(sender) = sender else { return };
+            let radios = self.ivars().radios.lock().expect("radios poisoned");
+            for r in radios.iter() {
+                if std::ptr::eq(&**r as *const NSButton, sender as *const NSButton) {
+                    r.setState(NSControlStateValueOn);
+                } else {
+                    r.setState(NSControlStateValueOff);
+                }
+            }
+        }
     }
 );
 
-/// Empty ivar struct. `define_class!` requires `set_ivars(...)`
-/// before sending `init` to super; the class itself is stateless
-/// because the radio invariant is enforced entirely by AppKit.
+/// Ivars for [`RadioGroupController`]. The controller needs a
+/// handle to every radio in its group so `radioClicked:` can
+/// turn off the siblings of the freshly-pressed radio — AppKit's
+/// auto-grouping doesn't apply here, see the type-level comment.
+/// `Mutex` mirrors the [`crate::runloop::popover::PopoverControllerIvars`]
+/// pattern; in practice every access happens on the main thread
+/// (the controller is `MainThreadOnly`) so contention is nil.
 #[derive(Default)]
-pub(crate) struct RadioGroupIvars;
+pub(crate) struct RadioGroupIvars {
+    radios: Mutex<Vec<Retained<NSButton>>>,
+}
 
 impl RadioGroupController {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(RadioGroupIvars);
+        let this = Self::alloc(mtm).set_ivars(RadioGroupIvars::default());
         unsafe { objc2::msg_send![super(this), init] }
+    }
+
+    /// Register the radios that share this controller as their
+    /// target. Called once per picker after the accessory view
+    /// has finished building. Subsequent `radioClicked:` events
+    /// walk this list to enforce the "exactly one On" invariant.
+    fn set_radios(&self, radios: Vec<Retained<NSButton>>) {
+        let mut g = self.ivars().radios.lock().expect("radios poisoned");
+        *g = radios;
     }
 }
 
@@ -368,6 +397,12 @@ fn build_picker_stack(
         stack.addArrangedSubview(&row);
     }
 
+    // Hand the radio list to the controller so `radioClicked:`
+    // can enforce the group invariant; see the doc comment on
+    // [`RadioGroupController`] for why AppKit's auto-grouping
+    // doesn't apply to this layout.
+    group.set_radios(radios.clone());
+
     // Pin width via Auto Layout so wrapping labels know what to
     // wrap at, then read the natural fitting height. NSAlert
     // positions the accessory by frame, so we set both dimensions
@@ -386,12 +421,12 @@ fn build_picker_stack(
 
 /// Reads which radio in `radios` carries `NSControlStateValueOn`
 /// and returns its index. The grouping invariant (only one radio
-/// On at a time) is enforced by AppKit because every radio in a
-/// picker shares a superview *and* the action selector wired up
-/// in `build_picker_stack`. Returns `None` only if every radio
-/// was somehow turned off (defensive — should not happen in
-/// practice because the first radio starts On and AppKit refuses
-/// to turn the active one off via a click).
+/// On at a time) is enforced by [`RadioGroupController::radio_clicked`],
+/// which sweeps siblings Off when a new radio is clicked.
+/// Returns `None` only if every radio was somehow turned off
+/// (defensive — should not happen in practice because the first
+/// radio starts On and a click on the already-active radio leaves
+/// it On via the same sweep).
 fn read_selected_index(radios: &[Retained<NSButton>]) -> Option<usize> {
     let on = NSControlStateValueOn;
     radios.iter().position(|r| r.state() == on)
@@ -546,29 +581,4 @@ fn persist_host_async(mtm: MainThreadMarker, ctx: Arc<Context>, entry: KnownHost
             let _ = alert.runModal();
         });
     });
-}
-
-/// When a radio in a picker stack is clicked, walk its sibling
-/// radios and turn off every one that isn't the sender. NSAlert's
-/// auto-grouping only kicks in when the radios share an action
-/// selector — we wire each radio's action back to this function so
-/// we can keep the grouping behaviour without giving every alert
-/// its own subclassed controller object. Implemented as a free
-/// function so the popover module's `define_class!` action selector
-/// can call it without owning any state. Currently unused (we read
-/// `state()` directly off each radio at dismissal time, see
-/// `read_selected_index`); kept here as the documented extension
-/// point if a future picker needs the live "exactly one selected"
-/// invariant during interaction.
-#[allow(dead_code)]
-pub fn enforce_radio_group(radios: &[Retained<NSButton>], sender: &NSButton) {
-    let off = NSControlStateValueOff;
-    let on = NSControlStateValueOn;
-    for r in radios {
-        if std::ptr::eq(&**r, sender) {
-            r.setState(on);
-        } else {
-            r.setState(off);
-        }
-    }
 }

@@ -1,30 +1,19 @@
-//! Header-name and value redaction. Hard-coded list per
-//! `plans/Overview.md` §8.5.
-
-const SECRET_HEADER_NAMES_LC: &[&str] = &[
-    "authorization",
-    "cookie",
-    "x-api-key",
-    "proxy-authorization",
-];
-
-/// True if the header name should have its value redacted before
-/// reaching the rendered summary.
-pub fn is_secret_header(name: &str) -> bool {
-    let lc = name.to_ascii_lowercase();
-    if SECRET_HEADER_NAMES_LC.contains(&lc.as_str()) {
-        return true;
-    }
-    // x-<something>-token glob from §8.5 / §9.
-    if let Some(rest) = lc.strip_prefix("x-") {
-        if let Some(prefix) = rest.strip_suffix("-token") {
-            if !prefix.is_empty() {
-                return true;
-            }
-        }
-    }
-    false
-}
+//! Header-value redaction.
+//!
+//! The renderer redacts every header value unconditionally — there is
+//! no allowlist of "harmless" headers. Any value can carry secrets
+//! the redaction list wouldn't have recognised (custom auth headers,
+//! tenant identifiers, signed `Referer` URLs, JWTs in unusual
+//! places, etc.), and "guess wrong, leak the value" is a worse
+//! failure mode than "always redact, occasionally hide a benign
+//! value".
+//!
+//! This module therefore exposes only [`redact_value`], the recipe
+//! that turns a raw header value into the `••••<last4>` shape used
+//! in the §8.5 layout. The list of "auth-bearing" header names that
+//! used to live here moved to [`crate::signals::is_auth_header`],
+//! which is the single source of truth for the `auth-header` risk
+//! signal *and* the curl parser's `Auth::Header { name }` emission.
 
 /// `••••<last4>` of a value, or just `••••` if the value is shorter
 /// than 4 chars. Operates on chars, not bytes, to avoid splitting a

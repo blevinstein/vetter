@@ -214,7 +214,17 @@ fn analyze_http(req: &HttpRequest, idx: usize, out: &mut Vec<RiskSignal>) {
     }
 }
 
-fn is_auth_header(name: &str) -> bool {
+/// Canonical "this header carries credentials" predicate. Drives
+/// the [`SignalKind::AuthHeader`] signal *and* the curl parser's
+/// `derive_auth` helper, which emits `Auth::Header { name }` for
+/// custom auth headers (Cookie, X-Api-Key, X-*-Token, Proxy-
+/// Authorization) so the popover surfaces a green "auth-header"
+/// pill and the §8.5 renderer paints an `Auth: via header …` row.
+///
+/// Sibling crates outside `vetter_core` should not need this — it's
+/// `pub(crate)` so the list stays a single source of truth here
+/// (see `plans/Overview.md` §9 "auth-bearing headers").
+pub(crate) fn is_auth_header(name: &str) -> bool {
     let lc = name.to_ascii_lowercase();
     if AUTH_HEADER_NAMES_LC.contains(&lc.as_str()) {
         return true;

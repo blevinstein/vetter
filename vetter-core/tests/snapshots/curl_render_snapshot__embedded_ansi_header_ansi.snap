@@ -5,8 +5,8 @@ expression: out
  vet  \e[1mcurl\e[0m
 \e[90m ─────────────────────────────────────────────────────────────────
 \e[0m \e[1m\e[32mGET\e[0m  \e[4m\e[36mhttps://example.test/\e[0m
-   \e[94mX-Evil: \e[0mbefore<U+001B>[2J<U+001B>[Hmid<U+001B>[31mafter␍rtail
-   \e[94mX-Bidi: \e[0mpath/<U+202E>gpj.exe
+   \e[94mX-Evil: \e[0m\e[31m••••tail\e[0m\e[90m    ← redacted, len 32\e[0m
+   \e[94mX-Bidi: \e[0m\e[31m••••.exe\e[0m\e[90m    ← redacted, len 15\e[0m
 \e[90m ─────────────────────────────────────────────────────────────────
 \e[0m   \e[1mRisk signals: \e[0m\e[33mnone\e[0m
    \e[1mMatch:        \e[0m\e[33mno rule\e[0m

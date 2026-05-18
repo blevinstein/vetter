@@ -5,7 +5,7 @@ expression: render_plain(&p)
  vet  curl
  ─────────────────────────────────────────────────────────────────
  POST  https://api.example.test/v1/widgets
-   Content-Type: application/json
+   Content-Type: ••••json    ← redacted, len 16
  ─────────────────────────────────────────────────────────────────
    Body  (application/json, 9 B)
    {"k":"v"}

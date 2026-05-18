@@ -36,7 +36,7 @@ What works today on macOS:
 - Menu-bar app (`Vetter.app`) with a shield icon and pending-count badge
 - Native notifications with **Approve** / **Reject** buttons
 - A popover listing every pending request as a structured card, with risk
-  signals highlighted and secret headers redacted
+  signals highlighted and every header value redacted
 - Layered allowlist (global → project → per-call)
 - Audit log of every decision
 

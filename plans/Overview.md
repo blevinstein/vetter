@@ -626,10 +626,10 @@ Lifting this is a future phase.
  ─────────────────────────────────────────────────────────────────
  ⚠ POST  https://api.example.com/v1/users/42      [insecure: -k]
                               ──────────── path scrutinised
-   Authorization: Bearer ••••f3a2          ← redacted, len 64
-   Content-Type:  application/json
-   X-Api-Key:     ••••                      ← flagged: secret
-   User-Agent:    curl/8.4.0
+   Authorization: ••••f3a2    ← redacted, len 64
+   Content-Type:  ••••json    ← redacted, len 16
+   X-Api-Key:     ••••        ← redacted, len 3
+   User-Agent:    ••••8.4.0   ← redacted, len 10
  ─────────────────────────────────────────────────────────────────
    Body  (application/json, 312 B)
    { "email": "a@b.com", "role": "admin" }
@@ -641,10 +641,33 @@ Lifting this is a future phase.
 
 Color scheme (rough):
 - method: `GET/HEAD` green, `POST/PUT/PATCH` yellow, `DELETE` red, other magenta
-- secret-bearing headers: red label, value redacted past last 4 chars
+- header values: every value is redacted past last 4 chars (the
+  renderer treats every value as sensitive — see §8.5.1); known
+  auth-bearing headers also drive the `auth-header` risk signal
 - non-https or `-k`: red badge
 - localhost / loopback: dim cyan
 - matched rule: green; no match: yellow; denylist: red
+
+#### 8.5.1 Header value redaction
+
+Every header value is replaced with `••••<last4>` plus a dim
+`← redacted, len N` suffix before reaching the writer. There is
+no allowlist of "harmless" header names: any value can carry
+secrets we wouldn't recognise (custom auth headers like
+`X-Tenant-Token-V2`, signed S3 URLs in `Referer`, JWTs in
+non-standard places, tenant identifiers, etc.), and "guess wrong,
+leak the value" is a worse failure mode than "always redact,
+occasionally hide a benign value". The §8.5 layout therefore
+surfaces *which* headers a request carries, but never their
+contents.
+
+The list of header names that count as "auth-bearing" still
+exists, but only as a risk-signal heuristic: see §9 below and
+[`vetter_core::signals::is_auth_header`](../vetter-core/src/signals/mod.rs).
+A request that carries one of those headers fires the
+`auth-header` signal (green pill in the popover, listed under
+`Risk signals:` in the §8.5 layout); the value itself is still
+redacted by the same recipe as every other header.
 
 ---
 

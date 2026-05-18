@@ -234,18 +234,20 @@ fn empty_input_yields_empty_attributed_string() {
 
 /// Round-trip a `ParsedCommand` whose header value carries an
 /// argv-injected `\x1b[31m` (red) SGR through the full renderer
-/// (`AnsiWriter`) into the popover's ANSI parser. With H2's
-/// sanitisation in place, the only red span the parser sees is one
-/// the *renderer* legitimately emitted (the `[insecure: -k]` badge
-/// when present, or none in this minimal fixture); the malicious
-/// `\x1b[31m` from the header value must show up as a `<U+001B>`
-/// placeholder inside an unstyled span, never as its own bold-red
-/// run.
+/// (`AnsiWriter`) into the popover's ANSI parser. The popover must
+/// never paint a bold-red span that the *renderer* didn't itself
+/// emit — otherwise an attacker-controlled header value could
+/// visually impersonate the renderer's own colouring (e.g. fake a
+/// `[insecure]` badge or a "matched rule" line).
 ///
-/// This is the popover-side regression check for the H2 bug: prior
-/// to sanitisation, an attacker-controlled header value could open
-/// a fake colour span that visually impersonated the renderer's own
-/// colouring (e.g. fake the green "matched rule" line).
+/// Two layers of defence keep that out: (1) `write_header_row`
+/// redacts every value to `••••<last4>` so almost none of the
+/// attacker bytes reach the writer, and (2) any control byte that
+/// happens to land in the surviving four-char tail is replaced by
+/// a `<U+XXXX>` placeholder via `sanitize_for_display`. This test
+/// is the popover-side regression check for both layers — the
+/// crucial assertion is the negative one, that no red span
+/// survives.
 #[test]
 fn argv_injected_sgr_in_header_does_not_open_popover_style_span() {
     use vetter_core::parsers::{
@@ -283,23 +285,31 @@ fn argv_injected_sgr_in_header_does_not_open_popover_style_span() {
 
     let spans = parse_ansi_spans(&rendered);
     let visible: String = spans.iter().map(|s| s.text.as_str()).collect();
-    // The malicious "fake-red" text is still visible (we don't drop
-    // it), but the SGR bytes around it are placeholders.
-    assert!(visible.contains("fake-red"), "{visible}");
-    assert!(visible.contains("<U+001B>"), "{visible}");
+    // Unconditional redaction strips the bulk of the value down to
+    // `••••<last4>` ("after"'s last four chars are "fter" here), so
+    // neither the attacker SGR bytes nor the "fake-red" payload
+    // reach the popover.
+    assert!(
+        !visible.contains("fake-red"),
+        "value payload leaked past redaction: {visible}"
+    );
+    assert!(
+        visible.contains("••••"),
+        "missing redaction marker: {visible}"
+    );
 
     // The crucial property: no span carries `AnsiColor::Red` whose
-    // text is the attacker's "fake-red" payload. The renderer
-    // itself emits exactly one bold-red run today only for the
-    // `MatchDeny` decision (absent here) and the `Badge(Danger)`
-    // severity (absent here too — no signals), so any `Red` span at
-    // all in this fixture is a smuggled-in-from-argv hit.
-    let red_spans: Vec<&AnsiSpan> = spans
+    // text contains the attacker's "fake-red" payload. The renderer
+    // itself legitimately emits a red run for the redacted header
+    // value (`Style::RedactedHeader` → `systemRedColor`) — that
+    // span's text is the `••••<last4>` recipe, not the attacker's
+    // smuggled bytes.
+    let red_attacker_spans: Vec<&AnsiSpan> = spans
         .iter()
-        .filter(|s| s.style.color == Some(AnsiColor::Red))
+        .filter(|s| s.style.color == Some(AnsiColor::Red) && s.text.contains("fake-red"))
         .collect();
     assert!(
-        red_spans.is_empty(),
-        "argv-injected red span survived sanitisation: {red_spans:#?}"
+        red_attacker_spans.is_empty(),
+        "argv-injected red span survived sanitisation: {red_attacker_spans:#?}"
     );
 }

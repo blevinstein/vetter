@@ -31,7 +31,7 @@ use objc2_app_kit::{
     NSStackViewDistribution, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
-use vetter_core::render::{is_secret_header, redact_value, sanitize_for_display};
+use vetter_core::render::sanitize_for_display;
 use vetter_core::{Auth, Body, Effect, FileRead, FileWrite, Header, ParsedCommand, ProcessSpawn};
 
 /// Body / monospaced-label font size. Picked to read at the same
@@ -204,44 +204,26 @@ fn build_headers_section(headers: &[Header], mtm: MainThreadMarker) -> Option<Re
     Some(stack.into_super())
 }
 
-/// Single header row: `name: value`, with redaction for secret
-/// headers. Name is bold blue (matching the CLI `HeaderName` style);
-/// value is monospaced regular, or red `••••<last4>` plus a dim
-/// "len N" suffix when redacted.
+/// Single header row: just the header name in bold blue (matching
+/// the CLI `HeaderName` style). Values are deliberately not shown
+/// — any header value can carry secrets we cannot reliably
+/// recognise (custom auth headers, tenant IDs, signed URLs in
+/// `Referer`, JWTs in non-standard places, etc.), so the popover
+/// treats every value as sensitive and only surfaces the *names*
+/// of the headers being sent. The full payload is still reachable
+/// via "Show raw", where the §8.5 renderer applies the same
+/// unconditional `••••<last-4>` redaction recipe (see
+/// `plans/Overview.md` §8.5.1).
 fn build_header_row(h: &Header, mtm: MainThreadMarker) -> Retained<NSView> {
     let row = NSStackView::new(mtm);
     row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
     row.setSpacing(4.0);
 
     let safe_name = sanitize_for_display(&h.name);
-    let name = NSTextField::labelWithString(&NSString::from_str(&format!("{safe_name}:")), mtm);
+    let name = NSTextField::labelWithString(&NSString::from_str(&safe_name), mtm);
     name.setFont(Some(&NSFont::boldSystemFontOfSize(ROW_FONT_SIZE)));
     name.setTextColor(Some(&NSColor::systemBlueColor()));
     row.addArrangedSubview(&name);
-
-    if is_secret_header(&h.name) {
-        let redacted = redact_value(&h.value);
-        let value = NSTextField::labelWithString(
-            &NSString::from_str(&sanitize_for_display(&redacted)),
-            mtm,
-        );
-        value.setFont(Some(&monospaced(ROW_FONT_SIZE)));
-        value.setTextColor(Some(&NSColor::systemRedColor()));
-        row.addArrangedSubview(&value);
-
-        let suffix = NSTextField::labelWithString(
-            &NSString::from_str(&format!("← redacted, len {}", h.value.len())),
-            mtm,
-        );
-        suffix.setFont(Some(&NSFont::systemFontOfSize(ROW_FONT_SIZE - 1.0)));
-        suffix.setTextColor(Some(&NSColor::secondaryLabelColor()));
-        row.addArrangedSubview(&suffix);
-    } else {
-        let value =
-            NSTextField::labelWithString(&NSString::from_str(&sanitize_for_display(&h.value)), mtm);
-        value.setFont(Some(&monospaced(ROW_FONT_SIZE)));
-        row.addArrangedSubview(&value);
-    }
 
     let spacer = NSView::new(mtm);
     row.addArrangedSubview(&spacer);

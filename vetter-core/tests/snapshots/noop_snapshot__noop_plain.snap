@@ -5,7 +5,7 @@ expression: out
  vet  noop
  ─────────────────────────────────────────────────────────────────
  GET  https://example.test/
-   User-Agent: vet-noop/0
+   User-Agent: ••••op/0    ← redacted, len 10
  ─────────────────────────────────────────────────────────────────
    Risk signals: none
    Match:        no rule

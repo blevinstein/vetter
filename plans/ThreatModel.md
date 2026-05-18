@@ -128,13 +128,18 @@ local UID.
 
 The audit log is the tight case: `AuditEntry` carries `argv`
 verbatim, so any secret an agent passed via `-d '…password…'`,
-`-u 'user:token'`, or a custom `-H 'X-Whatever: bearer…'` (i.e.
-anything outside the four-entry redact list in
-[`vetter-core/src/render/redact.rs`](../vetter-core/src/render/redact.rs))
-ends up on disk in plaintext. It also carries `primary_target`
-(full URL with path) and the `rendered` §8.5 block, so another
-local user can reconstruct exactly what the approver saw plus all
-the non-secret headers.
+`-u 'user:token'`, or a custom `-H 'X-Whatever: bearer…'` ends
+up on disk in plaintext. The §8.5 renderer redacts every header
+value via [`vetter-core/src/render/redact.rs`](../vetter-core/src/render/redact.rs)
+before storing the `rendered` block, so what the approver saw is
+also what the audit log preserves — but the `argv` field still
+contains the raw header values, body bytes, and credentials, which
+is the canonical leak surface for a local-user adversary.
+
+`primary_target` (the full URL with path) is also stored verbatim,
+so another local user with read access to the audit log can
+reconstruct exactly what the approver saw — request line,
+redacted headers, body — plus the unsanitised `argv`.
 
 The allowlist file is a lower-severity leak but it still maps the
 user's trust surface — useful reconnaissance for picking on-pattern

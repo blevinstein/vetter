@@ -5,7 +5,7 @@ expression: pretty
  vet  \e[1mnoop\e[0m
 \e[90m ─────────────────────────────────────────────────────────────────
 \e[0m \e[1m\e[32mGET\e[0m  \e[4m\e[36mhttps://example.test/\e[0m
-   \e[94mUser-Agent: \e[0mvet-noop/0
+   \e[94mUser-Agent: \e[0m\e[31m••••op/0\e[0m\e[90m    ← redacted, len 10\e[0m
 \e[90m ─────────────────────────────────────────────────────────────────
 \e[0m   \e[1mRisk signals: \e[0m\e[33mnone\e[0m
    \e[1mMatch:        \e[0m\e[33mno rule\e[0m

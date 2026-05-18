@@ -32,7 +32,7 @@ mod escape;
 mod redact;
 
 pub use escape::sanitize_for_display;
-pub use redact::{is_secret_header, redact_value};
+pub use redact::redact_value;
 
 /// Style tag for a chunk of output. The writer implementation decides
 /// whether to translate it into ANSI escape codes.
@@ -45,8 +45,11 @@ pub enum Style {
     /// Header name (e.g. `Authorization:`).
     HeaderName,
     /// Header value that has been redacted before reaching us.
+    /// Header rows always use this style — the renderer treats every
+    /// header value as sensitive (see [`redact`] module docs).
     RedactedHeader,
-    /// Header value rendered in full (non-secret).
+    /// Plain-text auth label (today: only the `Auth: via ~/.netrc`
+    /// row, which has no value to redact).
     HeaderValue,
     Url,
     /// Loopback / localhost — dim cyan.
@@ -281,28 +284,31 @@ fn write_http_headers(w: &mut dyn StyledWriter, req: &HttpRequest) -> io::Result
     Ok(())
 }
 
+/// Render a single header row.
+///
+/// Every value is redacted to `••••<last4>` plus a dim `← redacted,
+/// len N` suffix — the renderer treats all header values as
+/// sensitive (see [`redact`] module docs). The §8.5 layout therefore
+/// surfaces *which* headers a request carries, but never their
+/// contents; an operator who needs the raw bytes runs the request
+/// through a debugger or audits the upstream agent transcript.
 fn write_header_row(w: &mut dyn StyledWriter, h: &Header, max_name: usize) -> io::Result<()> {
     w.plain("   ")?;
-    let secret = redact::is_secret_header(&h.name);
     let safe_name = sanitize_for_display(&h.name);
     w.write_styled(&format!("{safe_name}: "), Style::HeaderName)?;
     let pad = max_name.saturating_sub(h.name.len());
     if pad > 0 {
         w.plain(&" ".repeat(pad))?;
     }
-    if secret {
-        // Sanitise the *redacted* form too: the last-4 tail can
-        // legitimately be a control byte and we want to scrub before
-        // it reaches the writer.
-        let redacted = redact::redact_value(&h.value);
-        w.write_styled(&sanitize_for_display(&redacted), Style::RedactedHeader)?;
-        w.write_styled(
-            &format!("    ← redacted, len {}", h.value.len()),
-            Style::BodyMeta,
-        )?;
-    } else {
-        w.write_styled(&sanitize_for_display(&h.value), Style::HeaderValue)?;
-    }
+    // Sanitise the *redacted* form too: the last-4 tail can
+    // legitimately be a control byte and we want to scrub before
+    // it reaches the writer.
+    let redacted = redact::redact_value(&h.value);
+    w.write_styled(&sanitize_for_display(&redacted), Style::RedactedHeader)?;
+    w.write_styled(
+        &format!("    ← redacted, len {}", h.value.len()),
+        Style::BodyMeta,
+    )?;
     w.newline()
 }
 

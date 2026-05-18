@@ -123,16 +123,18 @@ fn render_bearer_auth_plain_redacts_token() {
 #[test]
 fn render_embedded_ansi_header_plain_strips_control_bytes() {
     // Hardening §H2: the fixture's `-H` values carry literal ESC,
-    // CR, and U+202E bytes. After the renderer's
-    // `sanitize_for_display` pass, none of them must appear raw in
-    // the output — they survive only as `<U+XXXX>` placeholders.
+    // CR, and U+202E bytes. Two layers keep them out of the output:
+    // (1) unconditional redaction in `write_header_row` replaces the
+    // value with `••••<last4>`, so most of the attacker bytes never
+    // reach the writer; (2) the surviving last-four chars still pass
+    // through `sanitize_for_display`, so any control byte that lands
+    // in the tail becomes a `<U+XXXX>` placeholder. Together they
+    // guarantee no raw ESC / CR / RTLO byte ends up in the output.
     let p = parsed_fixture("embedded_ansi_header");
     let out = render_plain(&p);
     assert!(!out.contains('\x1b'), "raw ESC survived: {out:?}");
     assert!(!out.contains('\r'), "raw CR survived: {out:?}");
     assert!(!out.contains('\u{202E}'), "raw RTLO survived: {out:?}");
-    assert!(out.contains("<U+001B>"), "missing ESC placeholder: {out}");
-    assert!(out.contains("<U+202E>"), "missing RTLO placeholder: {out}");
     insta::assert_snapshot!("embedded_ansi_header_plain", out);
 }
 

@@ -1530,11 +1530,13 @@ impl PopoverController {
             card.addArrangedSubview(&pills_row);
         }
 
-        // Per-effect native rows: headers (with redaction), body
-        // (typed per `Body` variant), auth, file ops, process
-        // spawns. Falls back to nothing when `parsed` is absent
-        // (legacy / mock callers); the "Show raw" disclosure below
-        // still surfaces the §8.5 layout in that case.
+        // Per-effect native rows: headers (names only — values are
+        // never shown in the popover; see `build_header_row` for
+        // the rationale), body (typed per `Body` variant), auth,
+        // file ops, process spawns. Falls back to nothing when
+        // `parsed` is absent (legacy / mock callers); the "Show
+        // raw" disclosure below still surfaces the §8.5 layout in
+        // that case.
         //
         // Pending vs resolved layout differs:
         // - Pending cards add the rows directly to the card so the

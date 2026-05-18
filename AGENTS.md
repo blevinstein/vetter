@@ -203,10 +203,14 @@ smoke checks.
 
 - Branching on `ParsedCommand.command` outside of parser code (renderer,
   analyzer, matcher must stay command-agnostic).
-- Leaking secret header values into rendered output, audit logs, or
-  test fixtures. The redaction list in
-  [vetter-core/src/render/redact.rs](vetter-core/src/render/redact.rs)
-  is the source of truth.
+- Leaking header values into rendered output, popover UI, or test
+  fixtures. The renderer treats every header value as sensitive and
+  always redacts via the recipe in
+  [vetter-core/src/render/redact.rs](vetter-core/src/render/redact.rs);
+  any new code path that touches a `Header` value should funnel
+  through it. Audit logs do still store `argv` verbatim — see
+  [plans/ThreatModel.md "Audit-log leak"](plans/ThreatModel.md) for
+  the open hardening item.
 - Adding a TTY prompt path to `vet`. Approvals must go through the
   daemon's separate-channel UI; see [plans/Overview.md §2, §4](plans/Overview.md).
 - Editing `plans/Overview.md` or `plans/TestingPlan.md` to fit the

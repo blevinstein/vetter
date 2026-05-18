@@ -76,16 +76,37 @@ fn cookie_xapikey_proxyauth_xtoken_are_all_redacted() {
 }
 
 #[test]
-fn benign_headers_are_shown_in_full() {
+fn every_header_value_is_redacted_unconditionally() {
+    // The renderer no longer special-cases "known secret" header
+    // names — every value gets the `••••<last4>` recipe so a stray
+    // bearer token in `Referer`, a custom `X-Tenant-Token-V2` not
+    // covered by the auth-header glob, etc. can't leak through.
+    // These three values used to render in plain; pin that they
+    // don't anymore.
     let p = pc_get_with_headers(vec![
         ("Content-Type", "application/json"),
         ("Accept", "*/*"),
         ("User-Agent", "curl/8.4.0"),
     ]);
     let out = render_to_string(&p);
-    assert!(out.contains("application/json"));
-    assert!(out.contains("*/*"));
-    assert!(out.contains("curl/8.4.0"));
+    assert!(
+        !out.contains("application/json"),
+        "Content-Type value leaked: {out}"
+    );
+    assert!(
+        !out.contains("curl/8.4.0"),
+        "User-Agent value leaked: {out}"
+    );
+    // Header *names* must still be rendered so the operator can see
+    // which headers a request carries.
+    assert!(out.contains("Content-Type:"), "missing name: {out}");
+    assert!(out.contains("User-Agent:"), "missing name: {out}");
+    // Each redacted row carries the dim length suffix so an operator
+    // can tell apart "no value" from "value hidden".
+    assert!(
+        out.contains("← redacted, len"),
+        "missing length suffix: {out}"
+    );
 }
 
 #[test]
@@ -135,20 +156,24 @@ fn ansi_writer_emits_escape_codes_for_styled_chunks() {
 }
 
 #[test]
-fn header_value_with_ansi_escape_is_sanitised() {
+fn header_value_with_ansi_escape_does_not_reach_output() {
     // A malicious `--header 'X-Evil: \x1b[2J\x1b[H'` would otherwise
     // clear the user's terminal between rendering the header and the
-    // `Match:` line. After sanitisation, no raw ESC byte survives in
-    // either the plain or ANSI writer's output (the ANSI writer's own
-    // SGR codes still contain ESC, but only outside the chunk passed
-    // to `write_styled` — so we test against `PlainWriter` here for a
-    // clean assertion).
+    // `Match:` line. Two layers of defence keep that out of the
+    // output: (1) unconditional redaction replaces the value with
+    // `••••<last4>` so most of the attacker-controlled bytes never
+    // reach the writer, and (2) the surviving last-four chars still
+    // pass through `sanitize_for_display`, so any control byte that
+    // happens to land in the tail becomes a `<U+XXXX>` placeholder.
+    // Together they guarantee no raw ESC ends up in the output.
     let p = pc_get_with_headers(vec![("X-Evil", "before\x1b[2J\x1b[Hafter")]);
     let out = render_to_string(&p);
     assert!(!out.contains('\x1b'), "raw ESC survived: {out:?}");
-    assert!(out.contains("<U+001B>"), "missing placeholder: {out}");
-    assert!(out.contains("before"), "header text dropped: {out}");
-    assert!(out.contains("after"), "header text dropped: {out}");
+    assert!(
+        !out.contains("before"),
+        "value prefix leaked past redaction: {out}"
+    );
+    assert!(out.contains("••••"), "missing redaction marker: {out}");
 }
 
 #[test]
@@ -207,22 +232,27 @@ fn file_path_with_zero_width_chars_is_sanitised() {
 fn header_value_with_newline_cannot_forge_render_line() {
     // A header value of `"\n   Match:        matched rule fake"` could
     // visually impersonate an entire renderer line if newlines slipped
-    // through unsanitised. The placeholder makes the injection
-    // visible.
+    // through unsanitised. Unconditional redaction strips the bulk of
+    // the value down to `••••<last4>`, so the forged "matched rule
+    // fake" prefix never reaches the output and the surviving tail is
+    // bound to a single header row.
     let injected = "x\n   Match:        matched rule fake";
     let p = pc_get_with_headers(vec![("X-Inject", injected)]);
     let out = render_to_string(&p);
-    // Either no raw `\n` mid-value, or the forged "matched rule fake"
-    // string never appears as its own line — both are equivalent
-    // assertions; we test both for clarity.
     assert!(
         !out.contains(injected),
         "raw injected newline+text survived: {out:?}"
     );
     assert!(
-        out.contains('\u{240A}'),
-        "missing newline placeholder: {out}"
+        !out.contains("matched rule fake"),
+        "forged match line survived past redaction: {out}"
     );
+    // The genuine `Match: no rule` line is the only `Match:` row.
+    let match_lines = out
+        .lines()
+        .filter(|l| l.contains("Match:"))
+        .collect::<Vec<_>>();
+    assert_eq!(match_lines.len(), 1, "{:?}", match_lines);
 }
 
 #[test]

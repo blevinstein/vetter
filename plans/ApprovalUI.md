@@ -187,12 +187,17 @@ always populated.
 Per `Effect`:
 
 - **`HttpRequest`**:
-  - **Headers.** Vertical `NSStackView`. Each row is `name: value` —
-    name in `systemBlueColor` (the existing `HeaderName` style),
-    value monospaced regular. Secret headers
-    (per [`vetter_core::render::is_secret_header`](../vetter-core/src/render/redact.rs))
-    show the `••••<last-4>` redaction recipe in `systemRedColor`
-    plus a dim "← redacted, len N" suffix.
+  - **Headers.** Vertical `NSStackView`. Each row is just the
+    header *name* in `systemBlueColor` (the existing `HeaderName`
+    style); values are intentionally never rendered in the popover.
+    Agents routinely send custom auth headers, tenant identifiers,
+    signed URLs in `Referer`, etc. that we cannot reliably
+    distinguish from "harmless" values, so the popover treats every
+    value as sensitive and only surfaces the names of the headers
+    being sent. Users who explicitly want to see values can still
+    expand "Show raw", where the §8.5 renderer applies the same
+    `••••<last-4>` recipe to every header (see
+    [Overview.md §8.5.1](Overview.md#851-header-value-redaction)).
   - **Body.** Typed cell:
     - `Body::None` → row omitted entirely.
     - `Body::Inline { bytes }` → meta line `"<content-type>, N B"`

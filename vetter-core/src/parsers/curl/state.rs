@@ -802,7 +802,12 @@ fn derive_auth(state: &CurlState) -> Option<Auth> {
                 name: h.name.clone(),
             });
         }
-        if crate::render::is_secret_header(&h.name) {
+        // Custom auth-bearing headers (Cookie, X-Api-Key, X-*-Token,
+        // Proxy-Authorization). The canonical list lives in
+        // `crate::signals` so the `auth-header` risk signal and the
+        // parser's `Auth::Header { name }` emission stay in lock-step
+        // — see `plans/Overview.md` §9.
+        if crate::signals::is_auth_header(&h.name) {
             return Some(Auth::Header {
                 name: h.name.clone(),
             });

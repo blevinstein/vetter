@@ -3,20 +3,27 @@
 //! Stored at `~/.vet/settings.yaml` (sibling to `allowlist.yaml` and
 //! `known-hosts.yaml`) so the user only has to remember one config
 //! directory. Designed to be extended over time with additional
-//! single-value preferences; today the only field is `autostart`,
-//! controlling whether the macOS daemon registers itself as a Login
-//! Item via [`SMAppService.mainApp`](https://developer.apple.com/documentation/servicemanagement/smappservice).
+//! single-value preferences. Today's fields:
+//!
+//! - `autostart` — register the macOS daemon as a Login Item via
+//!   [`SMAppService.mainApp`](https://developer.apple.com/documentation/servicemanagement/smappservice).
+//! - `notification_sound` — play the system default notification
+//!   sound alongside each approval banner.
 //!
 //! ## File format
 //!
 //! ```yaml
 //! autostart: true
+//! notification_sound: true
 //! ```
 //!
-//! Missing file → empty defaults (autostart off). Unknown fields
+//! Missing file → [`Settings::default`] (autostart off,
+//! notification_sound on). Unknown fields
 //! (`#[serde(deny_unknown_fields)]`) are rejected at load time so a
 //! typo in the YAML surfaces as a config error rather than being
-//! silently ignored.
+//! silently ignored. Fields missing from an otherwise-valid file
+//! (e.g. an older `settings.yaml` written before `notification_sound`
+//! existed) fall back to their individual `#[serde(default = ...)]`.
 //!
 //! ## On-disk perms
 //!
@@ -34,11 +41,14 @@ use crate::fs_secure::{create_dir_secure, persist_at_mode};
 
 /// User preferences persisted to `~/.vet/settings.yaml`.
 ///
-/// `Default` matches the "no settings file present" state — every
-/// field defaults to its safe / opt-out value, so a user who never
+/// `Default` matches the "no settings file present" state. Most
+/// fields default to their safe / opt-out value, so a user who never
 /// opens the popover or runs `vet daemon autostart enable` sees no
-/// behaviour change from the daemon doing nothing.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// behaviour change from the daemon doing nothing —
+/// `notification_sound` is the one exception, defaulting to `true`
+/// since it's a pure UX nicety with no security implication (see its
+/// field doc below).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     /// Register `Vetter.app` as a macOS Login Item so the daemon comes
@@ -47,6 +57,29 @@ pub struct Settings {
     /// outlive the user's explicit consent.
     #[serde(default)]
     pub autostart: bool,
+
+    /// Play the system default notification sound
+    /// ([`UNNotificationSound::defaultSound`](https://developer.apple.com/documentation/usernotifications/unnotificationsound/default))
+    /// alongside every approval banner the macOS notifier posts. On
+    /// by default: unlike `autostart`, this has no security
+    /// implication — it's an audible cue that an agent is waiting on
+    /// an approval, and the user's own system Focus / notification
+    /// settings remain the ultimate control.
+    #[serde(default = "default_notification_sound")]
+    pub notification_sound: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            autostart: false,
+            notification_sound: true,
+        }
+    }
+}
+
+fn default_notification_sound() -> bool {
+    true
 }
 
 /// User-facing summary of `[SMAppService.mainApp status]` (macOS) or

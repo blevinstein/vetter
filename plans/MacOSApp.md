@@ -141,6 +141,14 @@ driven by [`vetterd/tests/daemon_e2e_prompt.rs`].
     show the open-file button this round — write paths may not exist
     yet, and "Reveal in Finder" is a follow-up. Approve the request
     to finish.
+14. **Notification sound.** Open the popover; **Play sound on new
+    request** should be ticked (on by default). With the queue
+    empty, run `vet curl https://prompt-test.example/` — the banner
+    should arrive with the system default notification sound.
+    Untick the checkbox, resolve that request, then run another
+    `vet curl …` from an empty queue: the banner still appears but
+    silently. Re-tick the checkbox; the next fresh-queue banner is
+    audible again.
 
 ## Autostart on login
 
@@ -198,6 +206,35 @@ is the recovery path for two cases:
 `LSMinimumSystemVersion = 13.0` so older macOS hosts don't even
 launch the bundle and hit the missing-class panic from
 `class!(SMAppService)` at runtime.
+
+## Notification sound
+
+The popover footer also carries a **Play sound on new request**
+checkbox, next to **Start at login**. On by default — this is a
+pure UX nicety (an audible cue that an agent is waiting) with no
+security implication, unlike autostart.
+
+- Persists to `~/.vet/settings.yaml`'s `notification_sound: bool`
+  field, right alongside `autostart`.
+- Unlike the autostart checkbox, there's no OS-level API to
+  converge: `MacNotifier::notify`
+  ([vetterd/src/notifier/mac.rs](../vetterd/src/notifier/mac.rs))
+  re-reads the setting fresh from disk on every banner it posts and
+  passes it through to
+  [`runloop::post_notification`](../vetterd/src/runloop/mod.rs),
+  which calls `content.setSound(UNNotificationSound::defaultSound())`
+  when the setting is on.
+- The sound is gated by the exact same `NotifyHint::was_empty_before`
+  coalescing as the banner itself (smoke step 9 above) — it plays
+  once per burst, exactly when the banner is shown, not on every
+  individual request while others are already queued.
+- Because the system default sound respects the OS notification
+  pipeline, users who mute Vetter's notification sound in System
+  Settings → Notifications, or who are in a Focus that suppresses
+  banners, won't hear it regardless of this checkbox's state.
+- The checkbox re-syncs from `settings.yaml` on every
+  `popoverWillShow:`, so a hand-edit to the file (or, in the future,
+  a headless CLI toggle) is picked up next time the popover opens.
 
 ## Troubleshooting
 

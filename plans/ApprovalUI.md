@@ -291,6 +291,12 @@ classes reads at a glance when both sit in the same popover.
 - Header text uses `monospacedSystemFontOfSize_weight(13.0,
   NSFontWeightSemibold)` so the verb / URL on the header reads in
   lockstep with the body's monospaced font.
+- The popover footer (below the card list, alongside **Quit
+  Vetter**) carries two persistent checkboxes: **Start at login**
+  and **Play sound on new request** — settings toggles rather than
+  per-card widgets, so they live outside the card catalogue proper.
+  See [MacOSApp.md §Notification sound](MacOSApp.md#notification-sound)
+  and [§Autostart on login](MacOSApp.md#autostart-on-login).
 
 ### Approve / Reject buttons
 

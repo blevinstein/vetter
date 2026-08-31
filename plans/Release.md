@@ -228,6 +228,26 @@ already.
 
 ## Troubleshooting
 
+- **`notarytool submit --wait` fails immediately with `Error: HTTP
+  status code: 403. A required agreement is missing or has
+  expired.`** This is an Apple account-side block, not a problem
+  with the script, cert, or API key — Apple periodically revises
+  the Developer Program License Agreement (and sometimes the Paid
+  Apps agreement) and rejects **all** notary submissions from the
+  team until someone re-accepts it. Fix:
+  1. Sign in at
+     [appstoreconnect.apple.com/agreements](https://appstoreconnect.apple.com/agreements)
+     ("Agreements, Tax, and Banking") and accept any pending
+     agreement — even the "Paid Applications Agreement" can block
+     notarization for a free app.
+  2. If nothing's pending there, check
+     [developer.apple.com/account](https://developer.apple.com/account)
+     for an orange banner prompting acceptance of an updated
+     Program License Agreement. Only the account's **Account
+     Holder** role can typically accept it, not just any Admin.
+  3. Wait a few minutes for the acceptance to propagate, then
+     re-run `tools/release.sh`.
+
 - **`notarytool submit --wait` exits with `status: Invalid`.** The
   notarisation log explains why; fetch it with the submission UUID
   the script printed:

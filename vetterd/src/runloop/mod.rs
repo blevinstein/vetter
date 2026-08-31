@@ -45,7 +45,7 @@ use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationAction,
     UNNotificationActionOptions, UNNotificationCategory, UNNotificationCategoryOptions,
     UNNotificationDefaultActionIdentifier, UNNotificationDismissActionIdentifier,
-    UNNotificationRequest, UNNotificationResponse, UNUserNotificationCenter,
+    UNNotificationRequest, UNNotificationResponse, UNNotificationSound, UNUserNotificationCenter,
     UNUserNotificationCenterDelegate,
 };
 
@@ -179,6 +179,12 @@ fn stop_run_loop(mtm: MainThreadMarker) {
 /// base id stops at `Allowlist…`. Mirrors the popover's per-card
 /// gating so the banner doesn't offer Trust host… for already-known
 /// hosts.
+///
+/// `play_sound` mirrors the popover's "Play sound on new request"
+/// checkbox (backed by `Settings::notification_sound`): when true,
+/// the banner carries the system default notification sound;
+/// otherwise it's silent (visual-only), matching how the checkbox
+/// state is read fresh from `~/.vet/settings.yaml` by the caller.
 pub(crate) fn post_notification(
     id: String,
     command: String,
@@ -186,6 +192,7 @@ pub(crate) fn post_notification(
     primary_target: String,
     force_prompt: bool,
     has_unknown_host: bool,
+    play_sound: bool,
 ) {
     DispatchQueue::main().exec_async(move || {
         let mtm = MainThreadMarker::new().expect("dispatched onto main");
@@ -216,6 +223,9 @@ pub(crate) fn post_notification(
         content.setCategoryIdentifier(&NSString::from_str(category_id));
         if force_prompt {
             content.setSubtitle(&NSString::from_str("dry run"));
+        }
+        if play_sound {
+            content.setSound(Some(&UNNotificationSound::defaultSound()));
         }
 
         let req_id = NSString::from_str(&id);
@@ -569,6 +579,22 @@ define_class!(
                 button.state() == objc2_app_kit::NSControlStateValueOn;
             self.apply_autostart_change(want_on);
         }
+
+        /// Action wired to the popover footer's "Play sound on new
+        /// request" checkbox. Unlike `toggleAutostart:`, there's no
+        /// OS-level API to converge with — this just persists the
+        /// preference to `~/.vet/settings.yaml`, read fresh by
+        /// `MacNotifier::notify` on the next banner.
+        #[unsafe(method(toggleNotificationSound:))]
+        fn toggle_notification_sound_action(&self, sender: Option<&objc2_app_kit::NSButton>) {
+            let Some(button) = sender else {
+                eprintln!("vetterd: toggleNotificationSound: invoked with nil sender");
+                return;
+            };
+            let want_on =
+                button.state() == objc2_app_kit::NSControlStateValueOn;
+            self.apply_notification_sound_change(want_on);
+        }
     }
 );
 
@@ -642,6 +668,24 @@ impl AppDelegate {
         // stays on without lying.
         if let Some(popover) = self.ivars().popover.get() {
             popover.set_autostart_checkbox_state(enabled);
+        }
+    }
+
+    /// Persist `enabled` to `~/.vet/settings.yaml`'s
+    /// `notification_sound` field. Simpler than
+    /// `apply_autostart_change`: there's no OS-level state to
+    /// converge (`MacNotifier::notify` just re-reads the setting on
+    /// its next call), so the only failure mode is the settings
+    /// write itself, in which case we roll the checkbox back to
+    /// whatever's actually on disk.
+    fn apply_notification_sound_change(&self, enabled: bool) {
+        let mut settings = vetter_core::settings::load().unwrap_or_default();
+        settings.notification_sound = enabled;
+        if let Err(e) = vetter_core::settings::store(&settings) {
+            eprintln!("vetterd: persist notification-sound preference failed: {e}");
+            if let Some(popover) = self.ivars().popover.get() {
+                popover.refresh_notification_sound_checkbox();
+            }
         }
     }
 

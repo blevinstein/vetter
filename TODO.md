@@ -317,6 +317,26 @@ suggestions"), §11. Picker-sheet UI design lives in
       stdout-empty assertions in `vet/tests/explain.rs`; invariant
       documented atop [vet/src/wrap.rs](vet/src/wrap.rs) and
       [vet/src/explain.rs](vet/src/explain.rs))
+- [x] play a sound when a new approval popover/banner is created, so I know an agent is waiting for approval
+      New `notification_sound: bool` field on
+      [`vetter_core::settings::Settings`](vetter-core/src/settings.rs)
+      (defaults **on** — unlike `autostart`, this has no security
+      implication). `MacNotifier::notify`
+      ([vetterd/src/notifier/mac.rs](vetterd/src/notifier/mac.rs))
+      re-reads the setting fresh on every banner it posts (same
+      `NotifyHint::was_empty_before` coalescing gate as the banner
+      itself) and passes it to
+      [`runloop::post_notification`](vetterd/src/runloop/mod.rs),
+      which sets `UNNotificationSound::defaultSound()` on the
+      notification content — reusing the `Sound` permission already
+      requested, and respecting the user's system Focus / per-app
+      notification-sound settings. A **Play sound on new request**
+      checkbox in the popover footer (alongside **Start at login**)
+      toggles the setting directly (no OS API to converge, so no
+      rollback beyond a failed settings write)
+      ([vetterd/src/runloop/popover.rs](vetterd/src/runloop/popover.rs),
+      [vetterd/src/runloop/mod.rs](vetterd/src/runloop/mod.rs)).
+      Docs: [plans/MacOSApp.md § Notification sound](plans/MacOSApp.md#notification-sound).
 
 ## Phase 5.2 — Curl parser file-effect gaps
 

@@ -254,6 +254,39 @@ impl Popover {
         ));
         container.addSubview(&autostart_checkbox);
 
+        // "Play sound on new request" checkbox — same footer strip,
+        // immediately to the right of "Start at login". Routes
+        // through `toggleNotificationSound:` on the AppDelegate,
+        // which persists `Settings::notification_sound` (no OS API
+        // to converge, unlike autostart's `SMAppService` call).
+        //
+        // Initial state is set to On here (matching
+        // `Settings::default`); the real state is refreshed on
+        // every `popoverWillShow:` via
+        // `refresh_notification_sound_checkbox`.
+        let notification_sound_checkbox = unsafe {
+            NSButton::checkboxWithTitle_target_action(
+                ns_string!("Play sound on new request"),
+                Some(delegate_obj),
+                Some(sel!(toggleNotificationSound:)),
+                mtm,
+            )
+        };
+        notification_sound_checkbox.setState(NSControlStateValueOn);
+        notification_sound_checkbox.setToolTip(Some(ns_string!(
+            "Play the system default notification sound alongside \
+             each approval banner. Respects Focus / Do Not Disturb \
+             and your system notification-sound settings."
+        )));
+        // Frame width 230pt covers the longer title; sits between
+        // the autostart checkbox (ends at x=172) and the Quit
+        // button (starts at x=438).
+        notification_sound_checkbox.setFrame(NSRect::new(
+            NSPoint::new(184.0, 6.0),
+            NSSize::new(230.0, 28.0),
+        ));
+        container.addSubview(&notification_sound_checkbox);
+
         let vc = NSViewController::new(mtm);
         vc.setView(&container);
 
@@ -265,6 +298,11 @@ impl Popover {
             .ivars()
             .autostart_checkbox
             .set(autostart_checkbox)
+            .ok();
+        controller
+            .ivars()
+            .notification_sound_checkbox
+            .set(notification_sound_checkbox)
             .ok();
 
         let popover = NSPopover::new(mtm);
@@ -325,6 +363,13 @@ impl Popover {
     /// `RequiresApproval`-style error before the next OS poll).
     pub fn set_autostart_checkbox_state(&self, enabled: bool) {
         self.controller.set_autostart_checkbox_state(enabled);
+    }
+
+    /// Re-sync the "Play sound on new request" checkbox with
+    /// `~/.vet/settings.yaml`. Called on every `popoverWillShow:`
+    /// and as the rollback path when persisting a toggle fails.
+    pub fn refresh_notification_sound_checkbox(&self) {
+        self.controller.refresh_notification_sound_checkbox();
     }
 
     pub fn is_shown(&self) -> bool {
@@ -436,6 +481,12 @@ pub struct PopoverControllerIvars {
     /// have flipped via System Settings → Login Items since the
     /// popover was last opened.
     autostart_checkbox: std::sync::OnceLock<Retained<NSButton>>,
+    /// "Play sound on new request" checkbox in the popover footer.
+    /// Refreshed from `~/.vet/settings.yaml`'s `notification_sound`
+    /// field on every `popoverWillShow:`, mirroring
+    /// `autostart_checkbox`'s re-sync so an out-of-band edit to the
+    /// settings file is picked up next time the popover opens.
+    notification_sound_checkbox: std::sync::OnceLock<Retained<NSButton>>,
 }
 
 define_class!(
@@ -470,6 +521,10 @@ define_class!(
             // never want the checkbox to advertise a state the OS
             // contradicts.
             self.refresh_autostart_checkbox();
+            // Re-sync the sound checkbox with `settings.yaml` in
+            // case it changed out-of-band since the popover was
+            // last opened.
+            self.refresh_notification_sound_checkbox();
         }
     }
 
@@ -644,6 +699,29 @@ impl PopoverController {
         let Some(checkbox) = self.ivars().autostart_checkbox.get() else {
             return;
         };
+        checkbox.setState(if enabled {
+            NSControlStateValueOn
+        } else {
+            NSControlStateValueOff
+        });
+    }
+
+    /// Sync the "Play sound on new request" checkbox with the
+    /// current `~/.vet/settings.yaml` value. Unlike
+    /// `refresh_autostart_checkbox`, there's no OS API to query and
+    /// no "unsupported platform" state to disable the control for —
+    /// a missing/unreadable settings file just falls back to
+    /// `Settings::default()` (sound on). Also doubles as the
+    /// rollback path when `apply_notification_sound_change` fails
+    /// to persist the write: re-reading the (unchanged) on-disk
+    /// value snaps the checkbox back to what's actually saved.
+    pub(crate) fn refresh_notification_sound_checkbox(&self) {
+        let Some(checkbox) = self.ivars().notification_sound_checkbox.get() else {
+            return;
+        };
+        let enabled = vetter_core::settings::load()
+            .unwrap_or_default()
+            .notification_sound;
         checkbox.setState(if enabled {
             NSControlStateValueOn
         } else {

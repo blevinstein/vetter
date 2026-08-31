@@ -127,6 +127,14 @@ impl Notifier for MacNotifier {
             .signals
             .iter()
             .any(|s| s.kind == vetter_core::SignalKind::UnknownHost);
+        // Re-read on every call rather than caching: this only fires
+        // once per burst (human-approval-rate, not a hot path), and
+        // staying stateless means the popover's "Play sound on new
+        // request" checkbox can rewrite `settings.yaml` without the
+        // notifier needing to be told to invalidate a cache.
+        let play_sound = vetter_core::settings::load()
+            .unwrap_or_default()
+            .notification_sound;
         crate::runloop::post_notification(
             summary.id.clone(),
             summary.command.clone(),
@@ -134,6 +142,7 @@ impl Notifier for MacNotifier {
             summary.primary_target.clone(),
             summary.force_prompt,
             has_unknown_host,
+            play_sound,
         );
     }
 

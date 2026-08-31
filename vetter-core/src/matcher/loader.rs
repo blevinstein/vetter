@@ -91,10 +91,11 @@ pub fn load_default(
 ) -> Result<AllowlistStore, LoadError> {
     if let Some(path) = override_path {
         let file = load_file(path)?;
+        let (session, permanent) = partition_session_rules(file.rules);
         return Ok(AllowlistStore {
             denylist: file.deny,
-            session: vec![],
-            project: file.rules,
+            session,
+            project: permanent,
             user: vec![],
             builtin: vec![],
         });
@@ -106,7 +107,9 @@ pub fn load_default(
         if user_path.exists() {
             let file = load_file(&user_path)?;
             store.denylist.extend(file.deny);
-            store.user = file.rules;
+            let (session, permanent) = partition_session_rules(file.rules);
+            store.user = permanent;
+            store.session.extend(session);
         }
     }
 
@@ -116,12 +119,28 @@ pub fn load_default(
             if project_path.exists() {
                 let file = load_file(&project_path)?;
                 store.denylist.extend(file.deny);
-                store.project = file.rules;
+                let (session, permanent) = partition_session_rules(file.rules);
+                store.project = permanent;
+                store.session.extend(session);
             }
         }
     }
 
     Ok(store)
+}
+
+/// Split rules loaded from a single file into the temporary/session
+/// tier (anything with `expires_at` and/or `sid` set) versus the
+/// permanent tier that stays attributed to whichever scope the file
+/// itself represents (user/project/override). Which physical file a
+/// rule was read from no longer determines its precedence tier — the
+/// rule's own fields do; `decide()`'s
+/// `denylist > session > project > user > built-in` ordering is
+/// unaffected by this split.
+fn partition_session_rules(rules: Vec<Rule>) -> (Vec<Rule>, Vec<Rule>) {
+    rules
+        .into_iter()
+        .partition(|r| r.expires_at.is_some() || r.sid.is_some())
 }
 
 /// Walk up from `start` until either:
@@ -239,15 +258,29 @@ pub fn write_file(path: &Path, file: &AllowlistFile) -> Result<(), LoadError> {
     Ok(())
 }
 
+/// Drop any rule whose `expires_at` has already passed. There's no
+/// background reaper (see `plans/Overview.md` §5); every write path
+/// takes this one lazy pass instead so `allowlist.yaml` doesn't
+/// accumulate dead entries indefinitely.
+fn prune_expired(file: &mut AllowlistFile) {
+    let now = crate::matcher::now_epoch_secs();
+    file.rules
+        .retain(|r| r.expires_at.is_none_or(|exp| exp > now));
+    file.deny
+        .retain(|r| r.expires_at.is_none_or(|exp| exp > now));
+}
+
 /// Append `rule` to `path`'s `rules:` list, creating the file if it
 /// does not exist. Rejects rules whose `id` is already present (in
-/// either `rules:` or `deny:`).
+/// either `rules:` or `deny:`). Also prunes any already-expired
+/// rules from the file before writing (see [`prune_expired`]).
 pub fn add_rule(path: &Path, rule: Rule) -> Result<(), LoadError> {
     let mut file = if path.exists() {
         load_file(path)?
     } else {
         AllowlistFile::default()
     };
+    prune_expired(&mut file);
     file.rules.push(rule);
     enforce_unique_ids(&file, path)?;
     write_file(path, &file)
@@ -255,9 +288,11 @@ pub fn add_rule(path: &Path, rule: Rule) -> Result<(), LoadError> {
 
 /// Remove the first rule with the given `id` from `path`. Searches
 /// `rules:` first, then `deny:`. Returns `LoadError::RuleNotFound`
-/// if the id is absent.
+/// if the id is absent. Also prunes any already-expired rules from
+/// the file before writing (see [`prune_expired`]).
 pub fn remove_rule(path: &Path, id: &str) -> Result<(), LoadError> {
     let mut file = load_file(path)?;
+    prune_expired(&mut file);
     if let Some(idx) = file.rules.iter().position(|r| r.id == id) {
         file.rules.remove(idx);
     } else if let Some(idx) = file.deny.iter().position(|r| r.id == id) {

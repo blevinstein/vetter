@@ -194,6 +194,8 @@ fn covering_rule_for(host: &str) -> Rule {
         note: Some("auto-test rule".into()),
         created_by: None,
         created_at: None,
+        expires_at: None,
+        sid: None,
     }
 }
 

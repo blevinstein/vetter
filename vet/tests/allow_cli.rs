@@ -349,6 +349,57 @@ fn list_history_defers_with_phase3_message() {
 }
 
 #[test]
+fn list_shows_session_scoped_rules_with_expiry_annotation() {
+    // Time-limited allowlist rules: `expires_at`/`sid` land in the
+    // `session` precedence tier at load time (see
+    // `vetter_core::matcher::loader::partition_session_rules`), and
+    // `vet allow list` must surface them rather than silently
+    // dropping the tier.
+    let (mut cmd, scratch) = vet_isolated();
+    seed_file(
+        &user_allowlist_path(&scratch),
+        r#"
+rules:
+  - id: from-user
+    when:
+      http: { method: [GET] }
+  - id: temp-rule
+    when:
+      http: { method: [GET], url: { host: temp.test } }
+    expires_at: 99999999999
+    sid: 42
+"#,
+    );
+    let assertion = cmd.args(["allow", "list"]).assert().success();
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("[session] temp-rule"), "{stdout}");
+    assert!(stdout.contains("sid=42"), "{stdout}");
+    assert!(stdout.contains("expires in"), "{stdout}");
+    assert!(stdout.contains("[user] from-user"), "{stdout}");
+}
+
+#[test]
+fn list_scope_user_includes_session_scoped_rules() {
+    let (mut cmd, scratch) = vet_isolated();
+    seed_file(
+        &user_allowlist_path(&scratch),
+        r#"
+rules:
+  - id: temp-rule
+    when:
+      http: { method: [GET] }
+    sid: 7
+"#,
+    );
+    let assertion = cmd
+        .args(["allow", "list", "--scope", "user"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("[session] temp-rule"), "{stdout}");
+}
+
+#[test]
 fn list_with_no_rules_says_so() {
     let (mut cmd, _scratch) = vet_isolated();
     cmd.args(["allow", "list"])

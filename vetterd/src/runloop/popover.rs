@@ -747,7 +747,8 @@ impl PopoverController {
         let Some(id) = self.id_for_tag(sender) else {
             return;
         };
-        let Some((allowlist, _)) = crate::suggestions::suggestions_for(self.ctx(), &id) else {
+        let Some((allowlist, _, peer_sid)) = crate::suggestions::suggestions_for(self.ctx(), &id)
+        else {
             return;
         };
         if allowlist.is_empty() {
@@ -756,7 +757,7 @@ impl PopoverController {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
-        popover_picker::show_allowlist_picker(mtm, Arc::clone(self.ctx()), allowlist);
+        popover_picker::show_allowlist_picker(mtm, Arc::clone(self.ctx()), allowlist, peer_sid);
     }
 
     /// Body of `trustHostClicked:`. Mirror image of
@@ -765,7 +766,7 @@ impl PopoverController {
         let Some(id) = self.id_for_tag(sender) else {
             return;
         };
-        let Some((_, host)) = crate::suggestions::suggestions_for(self.ctx(), &id) else {
+        let Some((_, host, _)) = crate::suggestions::suggestions_for(self.ctx(), &id) else {
             return;
         };
         if host.is_empty() {

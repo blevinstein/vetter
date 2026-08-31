@@ -44,6 +44,10 @@ struct RulePattern {
     created_by: Option<String>,
     #[serde(default)]
     created_at: Option<String>,
+    #[serde(default)]
+    expires_at: Option<u64>,
+    #[serde(default)]
+    sid: Option<i32>,
 }
 
 pub fn add(pattern: &str, scope: AllowScope, override_path: Option<&Path>) -> ExitCode {
@@ -66,6 +70,8 @@ pub fn add(pattern: &str, scope: AllowScope, override_path: Option<&Path>) -> Ex
         note: parsed.note,
         created_by: parsed.created_by,
         created_at: parsed.created_at,
+        expires_at: parsed.expires_at,
+        sid: parsed.sid,
     };
     if rule.id.is_empty() {
         rule.id = derive_auto_id(&rule);
@@ -158,9 +164,16 @@ pub fn list(
     ExitCode::SUCCESS
 }
 
-fn ordered_scopes(store: &AllowlistStore) -> [(Scope, &[Rule]); 4] {
+fn ordered_scopes(store: &AllowlistStore) -> [(Scope, &[Rule]); 5] {
     [
         (Scope::Denylist, store.denylist.as_slice()),
+        // Session-scoped (time-limited and/or SID-scoped) rules —
+        // see `plans/Overview.md` §5. Listed right after the
+        // denylist to mirror `decide()`'s own precedence order, and
+        // included so `vet allow list` sees them "for free" per
+        // that design: they're disk-persisted like any other rule,
+        // not a separate in-memory store needing its own surface.
+        (Scope::Session, store.session.as_slice()),
         (Scope::Project, store.project.as_slice()),
         (Scope::User, store.user.as_slice()),
         (Scope::Builtin, store.builtin.as_slice()),
@@ -170,7 +183,12 @@ fn ordered_scopes(store: &AllowlistStore) -> [(Scope, &[Rule]); 4] {
 fn scope_passes_filter(scope: Scope, filter: Option<AllowScope>) -> bool {
     match filter {
         None => true,
-        Some(AllowScope::User) => matches!(scope, Scope::User),
+        // Session rules are only ever written through the popover's
+        // `add_allowlist_rule(WireScope::User)` path (see
+        // `vetterd/src/suggestions.rs`), so they're grouped with
+        // `--scope user` here even though a hand-authored project
+        // file could in principle also carry one.
+        Some(AllowScope::User) => matches!(scope, Scope::User | Scope::Session),
         Some(AllowScope::Project) => matches!(scope, Scope::Project | Scope::Denylist),
     }
 }
@@ -211,6 +229,17 @@ fn summarise(rule: &Rule) -> String {
     }
     if let Some(fr) = &rule.when.file_read {
         parts.push(format!("file_read {}", fr.path.as_deref().unwrap_or("*")));
+    }
+    if let Some(exp) = rule.expires_at {
+        let now = matcher::now_epoch_secs();
+        parts.push(if exp > now {
+            format!("expires in {}s", exp - now)
+        } else {
+            "expired".to_string()
+        });
+    }
+    if let Some(sid) = rule.sid {
+        parts.push(format!("sid={sid}"));
     }
     if let Some(note) = &rule.note {
         parts.push(format!("({note})"));

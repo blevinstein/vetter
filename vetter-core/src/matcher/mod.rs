@@ -29,6 +29,18 @@ pub use rule::{
 
 use sha2::{Digest, Sha256};
 
+/// Current Unix-epoch time in whole seconds, saturating to `0` on
+/// the (never expected in practice) case that the system clock reads
+/// before the epoch. Shared by every [`Rule::expires_at`] consumer —
+/// [`decide::decide`] callers and [`loader::add_rule`]'s lazy prune
+/// — so "now" means the same instant everywhere in one evaluation.
+pub fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Deterministic id for a rule whose author did not supply one.
 ///
 /// Computes `auto-<8-hex>` over the canonical YAML serialisation of

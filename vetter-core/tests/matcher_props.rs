@@ -115,6 +115,8 @@ fn build_pair(
         note: None,
         created_by: None,
         created_at: None,
+        expires_at: None,
+        sid: None,
     };
     Pair {
         parsed,
@@ -174,7 +176,7 @@ proptest! {
     #[test]
     fn matches_rule_holds_for_constructed_pair(pair in arb_pair()) {
         prop_assert!(
-            matches_rule(&pair.parsed, &pair.rule),
+            matches_rule(&pair.parsed, &pair.rule, 0, None),
             "expected rule to match its own parsed command: {pair:?}",
         );
     }
@@ -188,7 +190,7 @@ proptest! {
         };
         let req = build_request(other_method, &pair.host, &pair.path, &pair.headers, false);
         let parsed = build_parsed(req);
-        prop_assert!(!matches_rule(&parsed, &pair.rule));
+        prop_assert!(!matches_rule(&parsed, &pair.rule, 0, None));
     }
 
     #[test]
@@ -200,7 +202,7 @@ proptest! {
         };
         let req = build_request(pair.method.clone(), other_host, &pair.path, &pair.headers, false);
         let parsed = build_parsed(req);
-        prop_assert!(!matches_rule(&parsed, &pair.rule));
+        prop_assert!(!matches_rule(&parsed, &pair.rule, 0, None));
     }
 
     #[test]
@@ -212,7 +214,7 @@ proptest! {
         };
         let req = build_request(pair.method.clone(), &pair.host, other_path, &pair.headers, false);
         let parsed = build_parsed(req);
-        prop_assert!(!matches_rule(&parsed, &pair.rule));
+        prop_assert!(!matches_rule(&parsed, &pair.rule, 0, None));
     }
 
     #[test]
@@ -221,19 +223,19 @@ proptest! {
         headers.push(("X-Forbidden-Header".to_string(), "x".to_string()));
         let req = build_request(pair.method.clone(), &pair.host, &pair.path, &headers, false);
         let parsed = build_parsed(req);
-        prop_assert!(!matches_rule(&parsed, &pair.rule));
+        prop_assert!(!matches_rule(&parsed, &pair.rule, 0, None));
     }
 
     #[test]
     fn adding_body_flips_to_no_match(pair in arb_pair()) {
         let req = build_request(pair.method.clone(), &pair.host, &pair.path, &pair.headers, true);
         let parsed = build_parsed(req);
-        prop_assert!(!matches_rule(&parsed, &pair.rule));
+        prop_assert!(!matches_rule(&parsed, &pair.rule, 0, None));
     }
 
     #[test]
     fn matches_rule_never_panics(pair in arb_pair()) {
-        let _ = matches_rule(&pair.parsed, &pair.rule);
+        let _ = matches_rule(&pair.parsed, &pair.rule, 0, None);
     }
 
     /// Closes ThreatModel T10. With `no_redirects: Some(false)` (the
@@ -253,7 +255,7 @@ proptest! {
         );
         let parsed = build_parsed(req);
         prop_assert!(
-            matches_rule(&parsed, &pair.rule),
+            matches_rule(&parsed, &pair.rule, 0, None),
             "no_redirects=false rule should not reject on follow_redirects={follow}: {pair:?}",
         );
     }
@@ -277,7 +279,7 @@ proptest! {
             http.no_redirects = None;
         }
         prop_assert!(
-            !matches_rule(&parsed, &rule),
+            !matches_rule(&parsed, &rule, 0, None),
             "no_redirects=None rule should reject follow_redirects=true: {pair:?}",
         );
     }

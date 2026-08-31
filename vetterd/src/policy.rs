@@ -67,6 +67,7 @@ pub fn evaluate(
     force_prompt: bool,
     store: &AllowlistStore,
     known_hosts: &KnownHostsStore,
+    caller_sid: Option<i32>,
 ) -> PolicyOutcome {
     if force_prompt {
         return PolicyOutcome::Prompt(Box::new(build_summary(
@@ -74,9 +75,15 @@ pub fn evaluate(
             parsed,
             true,
             known_hosts,
+            caller_sid,
         )));
     }
-    match decide(parsed, store) {
+    match decide(
+        parsed,
+        store,
+        vetter_core::matcher::now_epoch_secs(),
+        caller_sid,
+    ) {
         Decision::Allow { rule_id, scope } => PolicyOutcome::Auto {
             decision: WireDecision::Allow,
             reason: format!("matched rule `{rule_id}` in {}", scope.as_str()),
@@ -94,6 +101,7 @@ pub fn evaluate(
             parsed,
             false,
             known_hosts,
+            caller_sid,
         ))),
     }
 }
@@ -111,6 +119,7 @@ pub(crate) fn build_summary(
     parsed: &ParsedCommand,
     force_prompt: bool,
     known_hosts: &KnownHostsStore,
+    peer_sid: Option<i32>,
 ) -> PromptSummary {
     // Per-effect host-trust hints. `host_known[i]` answers "is
     // `effects[i]` an HttpRequest whose host the user has
@@ -137,6 +146,7 @@ pub(crate) fn build_summary(
         signals: parsed.signals.clone(),
         parsed: Some(parsed.clone()),
         host_known,
+        peer_sid,
     }
 }
 

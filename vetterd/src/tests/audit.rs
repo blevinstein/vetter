@@ -23,6 +23,7 @@ fn entry(id: &str, dec: WireDecision) -> AuditEntry {
         parsed: None,
         host_known: Vec::new(),
         rendered: String::new(),
+        peer_sid: None,
     }
 }
 
@@ -148,6 +149,7 @@ fn prompt_entry(id: &str, target: &str, dec: WireDecision) -> AuditEntry {
         parsed: Some(parsed),
         host_known: vec![false],
         rendered: format!("\x1b[1mcurl\x1b[0m {target}"),
+        peer_sid: None,
     }
 }
 

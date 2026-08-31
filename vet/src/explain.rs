@@ -91,7 +91,18 @@ pub fn run(argv: Vec<String>, quiet: bool, allowlist_override: Option<&Path>) ->
             return ExitCode::from(EXIT_CONFIG);
         }
     };
-    let decision = matcher::decide(&parsed, &store);
+    // `--explain` never sees the daemon's live session rules (it has
+    // no connection to attribute a peer session to), so `caller_sid`
+    // is always `None` here — a session-scoped rule simply never
+    // matches on this path, which is the correct fail-safe: explain
+    // mode reasons about what *would* happen without pretending to
+    // know a session it can't observe.
+    let decision = matcher::decide(
+        &parsed,
+        &store,
+        vetter_core::matcher::now_epoch_secs(),
+        None,
+    );
 
     let stderr = io::stderr();
     let style = color::pick(&stderr);

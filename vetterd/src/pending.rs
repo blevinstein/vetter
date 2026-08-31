@@ -101,6 +101,20 @@ pub struct PromptSummary {
     /// to load the same YAML files itself.
     #[serde(default)]
     pub host_known: Vec<bool>,
+    /// The requesting connection's stable POSIX session id (see
+    /// [`vetter_core::peer_cred::stable_session_for`]), captured
+    /// once per connection in [`crate::handle_connection`]. `None`
+    /// when the walk failed (process raced past exit, permission
+    /// error, no tty-anchored ancestor found within the depth cap).
+    ///
+    /// Carried on every summary — pending, auto-allowed, and auto-
+    /// denied alike — so the popover's "Allowlist…" picker can offer
+    /// a "for this terminal session" duration option keyed off the
+    /// *original* request's session rather than the daemon's own
+    /// (irrelevant) session. `#[serde(default)]` keeps older mock
+    /// summaries (pre-dating this field) deserialising to `None`.
+    #[serde(default)]
+    pub peer_sid: Option<i32>,
 }
 
 /// A resolved request kept in the recent-history ring. Carries the
@@ -148,6 +162,7 @@ impl ResolvedEntry {
             signals: entry.signals,
             parsed: entry.parsed,
             host_known: entry.host_known,
+            peer_sid: entry.peer_sid,
         };
         Some(Self {
             summary,

@@ -27,6 +27,13 @@ use crate::wire::WireError;
 
 extern "C" {
     fn geteuid() -> u32;
+    // POSIX `getsid(2)`. Same signature on Linux and macOS (`pid_t`
+    // is `i32` on both). Unlike the peer-cred socket options above,
+    // this isn't scoped to a connected stream — it queries the
+    // session id of an arbitrary already-peer-cred-verified pid, so
+    // it lives in the shared extern block rather than either
+    // platform module.
+    fn getsid(pid: i32) -> i32;
 }
 
 /// Effective UID of the calling process. Cheap (one syscall) so we
@@ -72,6 +79,74 @@ pub fn assert_peer_is_self<S: AsRawFd>(stream: &S) -> Result<(), WireError> {
         return Err(WireError::PeerAuth { expected, peer });
     }
     Ok(())
+}
+
+/// Maximum number of ancestor-session hops before giving up. PPID
+/// chains are kernel-reported, not client-controlled, but a
+/// pathological or unusually deep process tree (or a bug in the walk
+/// itself) must not be able to hang the daemon on a connect.
+const MAX_SESSION_WALK_DEPTH: usize = 32;
+
+/// Resolve the "stable session" for `pid`: the session id of the
+/// nearest ancestor (by session leader) that owns a controlling TTY.
+///
+/// Naively calling `getsid(pid)` is not useful for session-scoped
+/// allowlist rules under harnesses that spawn a fresh session leader
+/// for every shell-tool invocation (confirmed live against the
+/// Cursor CLI agent shell tool — see
+/// `plans/Time-limited allowlist rules-*.plan.md` for the spike
+/// write-up): every call gets its own ephemeral sid that is never
+/// reused, so a rule scoped to it would only ever match once.
+/// Walking up to the nearest TTY-anchored ancestor's session
+/// resolves to the same stable id (typically the login shell's
+/// session in the terminal tab) across independent invocations from
+/// the same terminal.
+///
+/// Algorithm, one hop at a time starting from `pid`:
+/// 1. `sid = getsid(pid)`.
+/// 2. If the session leader (`sid` is itself a pid) has a
+///    controlling tty, `sid` is stable — return it.
+/// 3. Otherwise walk to the session leader's *parent* (not `pid`'s
+///    parent) and repeat.
+///
+/// This runs entirely server-side against the kernel-reported PPID
+/// chain of a connection whose peer pid was already verified via
+/// [`peer_pid`]/[`assert_peer_is_self`], so it carries the same trust
+/// level — a client cannot forge its own ancestry.
+///
+/// Returns `Err` if any step fails (a process in the chain exited
+/// mid-walk, a permission error, or the walk exceeds
+/// [`MAX_SESSION_WALK_DEPTH`] without finding a tty-anchored
+/// ancestor). Callers map `Err` to "session-scoped rules unavailable
+/// for this request" rather than propagating a hard failure.
+pub fn stable_session_for(pid: u32) -> Result<i32, WireError> {
+    let mut current = i32::try_from(pid).map_err(|_| {
+        WireError::Io(std::io::Error::other(format!(
+            "pid {pid} does not fit in pid_t"
+        )))
+    })?;
+    for _ in 0..MAX_SESSION_WALK_DEPTH {
+        let sid = getsid_checked(current)?;
+        if platform::has_controlling_tty(sid)? {
+            return Ok(sid);
+        }
+        match platform::ppid_of(sid)? {
+            Some(parent) if parent > 1 => current = parent,
+            _ => return Ok(sid),
+        }
+    }
+    Err(WireError::Io(std::io::Error::other(format!(
+        "stable_session_for({pid}): exceeded walk depth {MAX_SESSION_WALK_DEPTH} \
+         without finding a tty-anchored ancestor session"
+    ))))
+}
+
+fn getsid_checked(pid: i32) -> Result<i32, WireError> {
+    let sid = unsafe { getsid(pid) };
+    if sid < 0 {
+        return Err(WireError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(sid)
 }
 
 #[cfg(target_os = "linux")]
@@ -138,6 +213,60 @@ mod platform {
         }
         Ok(pid as u32)
     }
+
+    /// Fields 4 (`ppid`) and 7 (`tty_nr`) of `/proc/[pid]/stat`
+    /// (`proc(5)`). Parsed together since both primitives need the
+    /// same file; each public function below just reads what it
+    /// needs off one parse.
+    ///
+    /// The `comm` field (field 2) is parenthesised and may itself
+    /// contain `)` (a process can rename itself to anything), so we
+    /// skip to the **last** `)` in the line before splitting the
+    /// remaining space-separated fields — the same defensive
+    /// convention every `/proc/[pid]/stat` parser needs.
+    struct ProcStat {
+        ppid: i32,
+        tty_nr: i32,
+    }
+
+    fn read_proc_stat(pid: i32) -> Result<ProcStat, WireError> {
+        let path = format!("/proc/{pid}/stat");
+        let content = std::fs::read_to_string(&path)?;
+        let close = content.rfind(')').ok_or_else(|| {
+            WireError::Io(std::io::Error::other(format!(
+                "malformed {path}: no `)` found closing the comm field"
+            )))
+        })?;
+        let mut fields = content[close + 1..].split_whitespace();
+        let malformed = || {
+            WireError::Io(std::io::Error::other(format!(
+                "malformed {path}: fewer fields than expected after comm"
+            )))
+        };
+        let _state = fields.next().ok_or_else(malformed)?;
+        let ppid: i32 = fields
+            .next()
+            .ok_or_else(malformed)?
+            .parse()
+            .map_err(|_| malformed())?;
+        let _pgrp = fields.next().ok_or_else(malformed)?;
+        let _session = fields.next().ok_or_else(malformed)?;
+        let tty_nr: i32 = fields
+            .next()
+            .ok_or_else(malformed)?
+            .parse()
+            .map_err(|_| malformed())?;
+        Ok(ProcStat { ppid, tty_nr })
+    }
+
+    pub(super) fn ppid_of(pid: i32) -> Result<Option<i32>, WireError> {
+        Ok(Some(read_proc_stat(pid)?.ppid))
+    }
+
+    /// `tty_nr` is 0 iff the process has no controlling terminal.
+    pub(super) fn has_controlling_tty(pid: i32) -> Result<bool, WireError> {
+        Ok(read_proc_stat(pid)?.tty_nr != 0)
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -193,6 +322,92 @@ mod platform {
             ))));
         }
         Ok(pid as u32)
+    }
+
+    // `proc_pidinfo(3)` from libSystem (no extra linking needed —
+    // every macOS binary already links against it). We deliberately
+    // read `struct proc_bsdinfo` via `PROC_PIDTBSDINFO` rather than
+    // `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID, ...)`'s
+    // `struct kinfo_proc`: `kinfo_proc` embeds several kernel-
+    // internal, pointer-sized, non-portable-across-builds structs
+    // (`extern_proc`, `vmspace`, …) before the fields we actually
+    // want, so hand-rolling its layout is fragile. `proc_bsdinfo` is
+    // Apple's own public, fixed-width, documented ABI (declared in
+    // `<sys/proc_info.h>`) and conveniently carries both the parent
+    // pid *and* the controlling-tty flag in one call, so both
+    // primitives below share one syscall.
+    extern "C" {
+        fn proc_pidinfo(
+            pid: i32,
+            flavor: i32,
+            arg: u64,
+            buffer: *mut std::ffi::c_void,
+            buffersize: i32,
+        ) -> i32;
+    }
+
+    const PROC_PIDTBSDINFO: i32 = 3;
+    /// `PROC_FLAG_CTTY` from `<sys/proc_info.h>`: set when the
+    /// process has a controlling terminal.
+    const PROC_FLAG_CTTY: u32 = 0x0100;
+    const MAXCOMLEN: usize = 16;
+
+    /// Mirrors `struct proc_bsdinfo` field-for-field (every field is
+    /// a fixed-width integer or byte array, so `repr(C)` reproduces
+    /// the C layout without needing `#[repr(packed)]` tricks).
+    #[repr(C)]
+    struct ProcBsdInfo {
+        pbi_flags: u32,
+        pbi_status: u32,
+        pbi_xstatus: u32,
+        pbi_pid: u32,
+        pbi_ppid: u32,
+        pbi_uid: u32,
+        pbi_gid: u32,
+        pbi_ruid: u32,
+        pbi_rgid: u32,
+        pbi_svuid: u32,
+        pbi_svgid: u32,
+        rfu_1: u32,
+        pbi_comm: [u8; MAXCOMLEN],
+        pbi_name: [u8; 2 * MAXCOMLEN],
+        pbi_nfiles: u32,
+        pbi_pgid: u32,
+        pbi_pjobc: u32,
+        e_tdev: u32,
+        e_tpgid: u32,
+        pbi_nice: i32,
+        pbi_start_tvsec: u64,
+        pbi_start_tvusec: u64,
+    }
+
+    fn proc_bsdinfo(pid: i32) -> Result<ProcBsdInfo, WireError> {
+        // SAFETY: `ProcBsdInfo` is a plain-old-data struct of
+        // fixed-width integers / byte arrays; zeroed is a valid
+        // initial value for every field.
+        let mut info: ProcBsdInfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<ProcBsdInfo>() as i32;
+        let rc = unsafe {
+            proc_pidinfo(
+                pid,
+                PROC_PIDTBSDINFO,
+                0,
+                &mut info as *mut ProcBsdInfo as *mut std::ffi::c_void,
+                size,
+            )
+        };
+        if rc <= 0 {
+            return Err(WireError::Io(std::io::Error::last_os_error()));
+        }
+        Ok(info)
+    }
+
+    pub(super) fn ppid_of(pid: i32) -> Result<Option<i32>, WireError> {
+        Ok(Some(proc_bsdinfo(pid)?.pbi_ppid as i32))
+    }
+
+    pub(super) fn has_controlling_tty(pid: i32) -> Result<bool, WireError> {
+        Ok(proc_bsdinfo(pid)?.pbi_flags & PROC_FLAG_CTTY != 0)
     }
 }
 

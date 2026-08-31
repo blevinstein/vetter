@@ -80,7 +80,11 @@ pub enum AddError {
     KnownHosts(#[from] known_hosts::KnownHostsError),
 }
 
-/// Build the allowlist + known-host suggestion lists for `id`.
+/// Build the allowlist + known-host suggestion lists for `id`, plus
+/// the request's recorded `peer_sid` (needed so the picker's "for
+/// this terminal session" duration choice knows what SID to write
+/// into the rule, and can grey itself out when the card never
+/// resolved one — see [`crate::runloop::popover_picker`]).
 ///
 /// Searches the pending queue first, then the resolved-history
 /// ring. Returns `None` when the id is unknown or when the
@@ -89,12 +93,12 @@ pub enum AddError {
 pub fn suggestions_for(
     ctx: &Arc<Context>,
     id: &str,
-) -> Option<(Vec<RuleSuggestion>, Vec<HostSuggestion>)> {
+) -> Option<(Vec<RuleSuggestion>, Vec<HostSuggestion>, Option<i32>)> {
     let (pending, resolved) = ctx.pending.all_entries();
-    let parsed = pending
+    let found = pending
         .iter()
-        .find_map(|(s, _)| (s.id == id).then(|| s.parsed.clone()))
-        .flatten()
+        .find_map(|(s, _)| (s.id == id).then(|| (s.parsed.clone(), s.peer_sid)))
+        .and_then(|(parsed, sid)| parsed.map(|p| (p, sid)))
         .or_else(|| {
             resolved.iter().find_map(|entry| {
                 use vetter_core::wire::WireDecision::*;
@@ -102,16 +106,22 @@ pub fn suggestions_for(
                     return None;
                 }
                 match entry.decision {
-                    Allow | AllowOnce => entry.summary.parsed.clone(),
+                    Allow | AllowOnce => entry
+                        .summary
+                        .parsed
+                        .clone()
+                        .map(|p| (p, entry.summary.peer_sid)),
                     Deny => None,
                 }
             })
-        })?;
+        });
+    let (parsed, peer_sid) = found?;
 
     let known_hosts = ctx.known_hosts.read().expect("known_hosts lock poisoned");
     Some((
         allowlist_suggestions(&parsed),
         host_suggestions(&parsed, &known_hosts),
+        peer_sid,
     ))
 }
 
@@ -164,7 +174,10 @@ pub fn add_allowlist_rule(
         let Some(parsed) = summary.parsed.as_ref() else {
             continue;
         };
-        if let Decision::Allow { rule_id, .. } = decide(parsed, &store_snapshot) {
+        let now = vetter_core::matcher::now_epoch_secs();
+        if let Decision::Allow { rule_id, .. } =
+            decide(parsed, &store_snapshot, now, summary.peer_sid)
+        {
             if rule_id == id {
                 let reason = format!("auto-approved by newly added rule `{id}`");
                 if ctx

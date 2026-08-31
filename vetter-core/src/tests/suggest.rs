@@ -78,7 +78,7 @@ fn store_with(rules: Vec<Rule>) -> AllowlistStore {
 
 fn assert_rule_covers(rule: &Rule, parsed: &ParsedCommand) {
     let store = store_with(vec![rule.clone()]);
-    let dec = decide(parsed, &store);
+    let dec = decide(parsed, &store, 0, None);
     assert!(
         matches!(dec, Decision::Allow { .. }),
         "rule {rule:?} should cover {parsed:?} but decide() returned {dec:?}"

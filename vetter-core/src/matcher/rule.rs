@@ -27,6 +27,19 @@ pub struct Rule {
     pub created_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
+    /// Unix epoch seconds. Once `now >= expires_at`, this rule stops
+    /// matching anywhere it's evaluated. Written by the popover's
+    /// duration picker for anything shorter than "Forever"; nothing
+    /// stops a human from hand-authoring one too. `#[serde(default)]`
+    /// keeps every existing rule (and every existing `Rule { .. }`
+    /// literal) parsing/compiling unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    /// POSIX session id ([`crate::peer_cred::stable_session_for`]).
+    /// Once set, this rule only matches requests whose caller shares
+    /// this session — see [`crate::matcher::decide::matches_rule`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<i32>,
 }
 
 /// Effect-keyed clause set. Every populated clause must find at least

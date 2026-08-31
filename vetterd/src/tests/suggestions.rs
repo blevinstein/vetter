@@ -54,6 +54,8 @@ fn add_allowlist_rule_rejects_project_scope() {
         note: None,
         created_by: None,
         created_at: None,
+        expires_at: None,
+        sid: None,
     };
     let err = super::add_allowlist_rule(&ctx, WireScope::Project, rule)
         .expect_err("project scope should be rejected in v1");
@@ -140,6 +142,8 @@ fn remove_allowlist_rule_drops_persisted_rule_and_reloads_store() {
         note: None,
         created_by: None,
         created_at: None,
+        expires_at: None,
+        sid: None,
     };
     let added = super::add_allowlist_rule(&ctx, WireScope::User, rule).expect("add ok");
     assert_eq!(added.id, "trust-api");
@@ -187,6 +191,112 @@ fn remove_allowlist_rule_unknown_id_propagates_loader_error() {
     assert!(
         matches!(err, super::AddError::Allowlist(_)),
         "expected loader error wrapping, got {err:?}"
+    );
+}
+
+/// Build a covering `Rule` for `https://api.sid-test.test/v1/**`,
+/// optionally scoped to `sid`. Mirrors `covering_rule_for` in
+/// `vetterd/tests/suggestions_admin.rs` but lives here since only
+/// this file drives `add_allowlist_rule` directly against an
+/// in-process `Context` (needed to control `peer_sid` on the
+/// synthetic pending summary — the real admin-socket integration
+/// tests can't simulate two different caller SIDs from one test
+/// process).
+fn sid_scoped_rule(sid: Option<i32>) -> vetter_core::matcher::Rule {
+    use vetter_core::matcher::rule::{HostPattern, HttpClause, RuleWhen, UrlClause};
+    use vetter_core::HttpMethod;
+    vetter_core::matcher::Rule {
+        id: String::new(),
+        command: None,
+        when: RuleWhen {
+            http: Some(HttpClause {
+                method: Some(vec![HttpMethod::Get]),
+                url: Some(UrlClause {
+                    scheme: Some("https".into()),
+                    host: Some(HostPattern::One("api.sid-test.test".into())),
+                    port: None,
+                    path: Some("/v1/**".into()),
+                }),
+                headers_allow: Some(vec!["*".into()]),
+                no_body: None,
+                query: None,
+                no_redirects: None,
+            }),
+            file_write: None,
+            file_read: None,
+        },
+        note: None,
+        created_by: None,
+        created_at: None,
+        expires_at: None,
+        sid,
+    }
+}
+
+fn parsed_get(url: &str) -> vetter_core::ParsedCommand {
+    vetter_core::ParsedCommand {
+        command: "curl".into(),
+        argv: vec!["curl".into(), url.into()],
+        cwd: None,
+        effects: vec![vetter_core::Effect::HttpRequest(vetter_core::HttpRequest {
+            method: vetter_core::HttpMethod::Get,
+            url: url::Url::parse(url).unwrap(),
+            headers: vec![],
+            body: vetter_core::Body::None,
+            auth: None,
+            tls: vetter_core::TlsPolicy::Strict,
+            follow_redirects: false,
+            proxy: None,
+        })],
+        signals: vec![],
+        display_hints: vetter_core::DisplayHints::default(),
+        extras: serde_json::Value::Null,
+    }
+}
+
+fn pending_summary_with_sid(
+    id: &str,
+    url: &str,
+    peer_sid: Option<i32>,
+) -> crate::pending::PromptSummary {
+    crate::pending::PromptSummary {
+        id: id.into(),
+        command: "curl".into(),
+        primary_verb: "GET".into(),
+        primary_target: url.into(),
+        force_prompt: false,
+        signals: vec![],
+        parsed: Some(parsed_get(url)),
+        host_known: vec![false],
+        peer_sid,
+    }
+}
+
+#[test]
+fn add_rule_with_matching_sid_auto_approves_only_same_sid_pending() {
+    let dir = tmpdir("vetterd-suggestions-sid-");
+    let allow_path = dir.path().join("allowlist.yaml");
+    std::fs::write(&allow_path, "rules: []\n").unwrap();
+    let ctx = build_ctx(&allow_path);
+
+    let url = "https://api.sid-test.test/v1/data";
+    let _rx_same = ctx
+        .pending
+        .submit(pending_summary_with_sid("same-sid", url, Some(42)));
+    let _rx_other = ctx
+        .pending
+        .submit(pending_summary_with_sid("other-sid", url, Some(99)));
+    let _rx_none = ctx
+        .pending
+        .submit(pending_summary_with_sid("no-sid", url, None));
+
+    let added = super::add_allowlist_rule(&ctx, WireScope::User, sid_scoped_rule(Some(42)))
+        .expect("add ok");
+
+    assert_eq!(
+        added.auto_approved_ids,
+        vec!["same-sid".to_string()],
+        "only the pending entry sharing the rule's sid should auto-approve"
     );
 }
 

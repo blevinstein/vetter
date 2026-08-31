@@ -128,13 +128,90 @@ impl RadioGroupController {
     }
 }
 
-/// Show the allowlist picker for `suggestions`. Returns immediately
-/// after the alert is dismissed; success / error follow-up alerts
-/// are dispatched from the background persist closure.
+/// Duration choices offered by the picker's second radio group.
+/// Order here is the display order (top to bottom) and the default
+/// selection is [`DurationChoice::Forever`] — this preserves the
+/// pre-existing one-click muscle memory of "pick a tier, hit the
+/// button, done" for anyone who never touches the duration group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DurationChoice {
+    FifteenMinutes,
+    OneHour,
+    FourHours,
+    /// Scoped to the requesting connection's stable POSIX session
+    /// (see [`vetter_core::peer_cred::stable_session_for`]).
+    /// Disabled in the UI when the card never resolved a `peer_sid`.
+    ThisSession,
+    Forever,
+}
+
+impl DurationChoice {
+    const ALL: [DurationChoice; 5] = [
+        DurationChoice::FifteenMinutes,
+        DurationChoice::OneHour,
+        DurationChoice::FourHours,
+        DurationChoice::ThisSession,
+        DurationChoice::Forever,
+    ];
+
+    fn title(&self) -> &'static str {
+        match self {
+            DurationChoice::FifteenMinutes => "15 minutes",
+            DurationChoice::OneHour => "1 hour",
+            DurationChoice::FourHours => "4 hours",
+            DurationChoice::ThisSession => "For this terminal session",
+            DurationChoice::Forever => "Forever",
+        }
+    }
+
+    /// Backstop TTL applied to `Some(sid)`-scoped rules purely so
+    /// `add_rule`'s lazy prune (see
+    /// `vetter_core::matcher::loader::add_rule`) eventually reaps
+    /// them even if the terminal that set the SID never comes back
+    /// to invalidate the match. Does not change matching behaviour
+    /// — the `sid` check already stops the rule from matching well
+    /// before this elapses — it just bounds how long a dead entry
+    /// can sit physically in the YAML file.
+    const SESSION_BACKSTOP_SECS: u64 = 7 * 24 * 60 * 60;
+
+    /// Compute the `(expires_at, sid)` pair to write onto the
+    /// [`Rule`] for this choice, given the current wall clock and
+    /// the card's recorded `peer_sid`. Only [`DurationChoice::ThisSession`]
+    /// reads `peer_sid`; every other variant ignores it.
+    fn apply(&self, now: u64, peer_sid: Option<i32>) -> (Option<u64>, Option<i32>) {
+        match self {
+            DurationChoice::FifteenMinutes => (Some(now + 15 * 60), None),
+            DurationChoice::OneHour => (Some(now + 60 * 60), None),
+            DurationChoice::FourHours => (Some(now + 4 * 60 * 60), None),
+            DurationChoice::ThisSession => (Some(now + Self::SESSION_BACKSTOP_SECS), peer_sid),
+            DurationChoice::Forever => (None, None),
+        }
+    }
+
+    fn confirmation_note(&self) -> &'static str {
+        match self {
+            DurationChoice::FifteenMinutes => "Expires in 15 minutes.",
+            DurationChoice::OneHour => "Expires in 1 hour.",
+            DurationChoice::FourHours => "Expires in 4 hours.",
+            DurationChoice::ThisSession => "Active for this terminal session.",
+            DurationChoice::Forever => "Persisted to your user allowlist.",
+        }
+    }
+}
+
+/// Show the allowlist picker for `suggestions`. `peer_sid` is the
+/// triggering request's recorded session id (see
+/// [`crate::suggestions::suggestions_for`]); it's threaded through
+/// so the "For this terminal session" duration choice can be
+/// disabled (with an explanatory tooltip) when the daemon never
+/// resolved one for this connection. Returns immediately after the
+/// alert is dismissed; success / error follow-up alerts are
+/// dispatched from the background persist closure.
 pub fn show_allowlist_picker(
     mtm: MainThreadMarker,
     ctx: Arc<Context>,
     suggestions: Vec<RuleSuggestion>,
+    peer_sid: Option<i32>,
 ) {
     if suggestions.is_empty() {
         // Defensive: caller should not have offered the button.
@@ -143,17 +220,35 @@ pub fn show_allowlist_picker(
     let alert = NSAlert::new(mtm);
     alert.setMessageText(ns_string!("Add to allowlist"));
     alert.setInformativeText(ns_string!(
-        "Pick a generalisation tier. The new rule is appended to your user allowlist; \
-         pending requests it covers will be auto-approved."
+        "Pick a generalisation tier and a duration. The new rule is appended to your \
+         user allowlist; pending requests it covers will be auto-approved."
     ));
     alert.setAlertStyle(NSAlertStyle::Informational);
     pin_dark_appearance(&alert);
 
-    // `_group` keeps the shared radio-button target alive for the
-    // duration of `runModal()`; without this binding it would drop
-    // immediately and the buttons would lose their grouping.
-    let (accessory, radios, _group) = build_radio_stack_for_rules(&suggestions, mtm);
-    alert.setAccessoryView(Some(&accessory));
+    // `_group` / `_duration_group` keep their shared radio-button
+    // targets alive for the duration of `runModal()`; without these
+    // bindings they'd drop immediately and the buttons would lose
+    // their grouping.
+    let (tier_view, radios, _group) = build_radio_stack_for_rules(&suggestions, mtm);
+    let (duration_view, duration_radios, _duration_group) =
+        build_duration_stack(mtm, peer_sid.is_some());
+
+    let accessory = NSStackView::new(mtm);
+    accessory.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+    accessory.setAlignment(NSLayoutAttribute::Leading);
+    accessory.setSpacing(16.0);
+    accessory.addArrangedSubview(&tier_view);
+    let duration_label = NSTextField::labelWithString(ns_string!("Duration:"), mtm);
+    accessory.addArrangedSubview(&duration_label);
+    accessory.addArrangedSubview(&duration_view);
+    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[accessory
+        .widthAnchor()
+        .constraintEqualToConstant(ACCESSORY_WIDTH)]));
+    let fitting = accessory.fittingSize();
+    accessory.setFrameSize(NSSize::new(ACCESSORY_WIDTH, fitting.height));
+
+    alert.setAccessoryView(Some(&accessory.into_super()));
     alert.addButtonWithTitle(ns_string!("Add to user allowlist"));
     alert.addButtonWithTitle(ns_string!("Cancel"));
 
@@ -167,7 +262,75 @@ pub fn show_allowlist_picker(
     let Some(suggestion) = suggestions.into_iter().nth(picked) else {
         return;
     };
-    persist_rule_async(mtm, ctx, suggestion.rule);
+    let duration = read_selected_index(&duration_radios)
+        .and_then(|i| DurationChoice::ALL.get(i).copied())
+        .unwrap_or(DurationChoice::Forever);
+    let now = vetter_core::matcher::now_epoch_secs();
+    let (expires_at, sid) = duration.apply(now, peer_sid);
+
+    let mut rule = suggestion.rule;
+    rule.expires_at = expires_at;
+    rule.sid = sid;
+    persist_rule_async(mtm, ctx, rule, duration.confirmation_note());
+}
+
+/// Build the "Duration:" radio group. `session_available` gates
+/// whether the "For this terminal session" radio is interactive —
+/// it's disabled with an explanatory tooltip when the triggering
+/// card never resolved a `peer_sid` (headless / non-tty callers).
+fn build_duration_stack(
+    mtm: MainThreadMarker,
+    session_available: bool,
+) -> (
+    Retained<NSView>,
+    Vec<Retained<NSButton>>,
+    Retained<RadioGroupController>,
+) {
+    let stack = NSStackView::new(mtm);
+    stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+    stack.setAlignment(NSLayoutAttribute::Leading);
+    stack.setSpacing(6.0);
+
+    let group = RadioGroupController::new(mtm);
+    let group_target: &AnyObject = unsafe { &*(Retained::as_ptr(&group) as *const AnyObject) };
+    let action = sel!(radioClicked:);
+
+    let default_idx = DurationChoice::ALL
+        .iter()
+        .position(|d| *d == DurationChoice::Forever)
+        .unwrap_or(0);
+
+    let mut radios = Vec::with_capacity(DurationChoice::ALL.len());
+    for (i, choice) in DurationChoice::ALL.iter().enumerate() {
+        let radio = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(choice.title()),
+                Some(group_target),
+                Some(action),
+                mtm,
+            )
+        };
+        radio.setButtonType(NSButtonType::Radio);
+        radio.setTag(i as isize);
+        radio.setState(if i == default_idx {
+            NSControlStateValueOn
+        } else {
+            NSControlStateValueOff
+        });
+        if *choice == DurationChoice::ThisSession && !session_available {
+            unsafe {
+                let _: () = objc2::msg_send![&*radio, setEnabled: false];
+            }
+            radio.setToolTip(Some(ns_string!(
+                "No stable terminal session was recorded for this request."
+            )));
+        }
+        radios.push(radio.clone());
+        stack.addArrangedSubview(&radio);
+    }
+    group.set_radios(radios.clone());
+
+    (stack.into_super(), radios, group)
 }
 
 /// Confirm + execute a `Revoke rule` action surfaced from the
@@ -188,13 +351,18 @@ pub fn confirm_and_revoke_rule(
     rule_scope: Scope,
 ) {
     // Today only `User`-scope rules are wired through the popover
-    // (matches the `add_allowlist_rule` path). A Recent card built
-    // from a built-in or denylist hit shouldn't surface the Revoke
-    // button in the first place — but we defend here so a stale
-    // popover snapshot can't trigger a misleading "removed" alert.
+    // (matches the `add_allowlist_rule` path). Session-scoped rules
+    // (`expires_at`/`sid` set) now live in the *same* on-disk user
+    // file as any other rule (see `vetter_core::matcher::loader`'s
+    // load-time partition) — so `Scope::Session` is revokable via
+    // the identical `WireScope::User` remove call, not a dead end.
+    // A Recent card built from a built-in or denylist hit shouldn't
+    // surface the Revoke button in the first place — but we defend
+    // here so a stale popover snapshot can't trigger a misleading
+    // "removed" alert.
     let scope = match rule_scope {
-        Scope::User => WireScope::User,
-        Scope::Project | Scope::Builtin | Scope::Session | Scope::Denylist => {
+        Scope::User | Scope::Session => WireScope::User,
+        Scope::Project | Scope::Builtin | Scope::Denylist => {
             let alert = NSAlert::new(mtm);
             pin_dark_appearance(&alert);
             alert.setMessageText(ns_string!("Cannot revoke from this scope"));
@@ -458,10 +626,15 @@ fn pin_dark_appearance(alert: &NSAlert) {
 }
 
 /// Persist `rule` from a background dispatch and surface the result
-/// on the main queue. The alert is fire-and-forget; we don't wait
-/// for it to be dismissed before returning to the caller.
-fn persist_rule_async(mtm: MainThreadMarker, ctx: Arc<Context>, rule: Rule) {
+/// on the main queue. `duration_note` is the picker's duration-
+/// specific wording (e.g. "Expires in 15 minutes.") prepended to the
+/// success alert; the underlying persist call is identical
+/// regardless of duration (see [`DurationChoice::apply`]). The alert
+/// is fire-and-forget; we don't wait for it to be dismissed before
+/// returning to the caller.
+fn persist_rule_async(mtm: MainThreadMarker, ctx: Arc<Context>, rule: Rule, duration_note: &str) {
     let _ = mtm; // captured for type checking; persist hops back to main below.
+    let duration_note = duration_note.to_string();
     DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(
         DispatchQoS::Default,
     ))
@@ -490,10 +663,13 @@ fn persist_rule_async(mtm: MainThreadMarker, ctx: Arc<Context>, rule: Rule) {
                     }
                     alert.setMessageText(ns_string!("Rule added"));
                     let body = if added.auto_approved_ids.is_empty() {
-                        format!("Persisted as `{}`. No pending requests matched.", added.id)
+                        format!(
+                            "Persisted as `{}`. {duration_note} No pending requests matched.",
+                            added.id
+                        )
                     } else {
                         format!(
-                            "Persisted as `{}`. Auto-approved {} pending request(s).",
+                            "Persisted as `{}`. {duration_note} Auto-approved {} pending request(s).",
                             added.id,
                             added.auto_approved_ids.len()
                         )

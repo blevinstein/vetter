@@ -377,6 +377,8 @@ fn make_rule_suggestion(
         note: None,
         created_by: None,
         created_at: None,
+        expires_at: None,
+        sid: None,
     };
     rule.id = crate::matcher::derive_auto_id(&rule);
 

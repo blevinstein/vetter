@@ -337,6 +337,36 @@ suggestions"), §11. Picker-sheet UI design lives in
       ([vetterd/src/runloop/popover.rs](vetterd/src/runloop/popover.rs),
       [vetterd/src/runloop/mod.rs](vetterd/src/runloop/mod.rs)).
       Docs: [plans/MacOSApp.md § Notification sound](plans/MacOSApp.md#notification-sound).
+- [x] Time-limited / session-scoped allowlist rules: `Rule` grows
+      optional `expires_at` (Unix epoch seconds) and `sid` (POSIX
+      session id) fields; `matcher::decide`/`matches_rule` take
+      `now`/`caller_sid` and reject expired or session-mismatched
+      rules. `peer_cred::stable_session_for` resolves a stable
+      session id by walking the connecting process's ancestry to
+      the nearest tty-anchored session (native `getsid`/ppid/tty
+      lookups on Linux + macOS, no `ps` shelling), captured once per
+      connection in `handle_connection` and threaded through
+      `PromptSummary::peer_sid` / `AuditEntry::peer_sid`. Session
+      rules are disk-persisted like any other rule (no separate
+      store or wire message): `load_default()` partitions whatever
+      it reads off disk into `store.session` based on the two new
+      fields, and `allow_loader::add_rule` lazily prunes already-
+      expired rules on every write. The popover's Allowlist… picker
+      grows a "Duration:" radio group (15m / 1h / 4h / for this
+      terminal session / Forever) that sets the two fields before
+      calling the same, unchanged `add_allowlist_rule(User)`; a
+      pure session-scoped pick also gets a 7-day backstop
+      `expires_at` so lazy-prune eventually reaps it even if the
+      terminal never comes back. `vet allow list` / `vet --explain`
+      surface session rules for free.
+      ([vetter-core/src/matcher/rule.rs](vetter-core/src/matcher/rule.rs),
+      [vetter-core/src/matcher/decide.rs](vetter-core/src/matcher/decide.rs),
+      [vetter-core/src/matcher/loader.rs](vetter-core/src/matcher/loader.rs),
+      [vetter-core/src/peer_cred.rs](vetter-core/src/peer_cred.rs),
+      [vetterd/src/lib.rs](vetterd/src/lib.rs),
+      [vetterd/src/pending.rs](vetterd/src/pending.rs),
+      [vetterd/src/runloop/popover_picker.rs](vetterd/src/runloop/popover_picker.rs),
+      [plans/Overview.md §5](plans/Overview.md))
 
 ## Phase 5.2 — Curl parser file-effect gaps
 

@@ -730,7 +730,7 @@ impl AppDelegate {
     /// auto-approved by another path.
     fn handle_allowlist_action(&self, id: String) {
         let ctx = Arc::clone(self.ivars().ctx());
-        let Some((allowlist, _)) = crate::suggestions::suggestions_for(&ctx, &id) else {
+        let Some((allowlist, _, peer_sid)) = crate::suggestions::suggestions_for(&ctx, &id) else {
             return;
         };
         if allowlist.is_empty() {
@@ -738,7 +738,7 @@ impl AppDelegate {
         }
         let mtm = self.mtm();
         activate_app(mtm);
-        popover_picker::show_allowlist_picker(mtm, ctx, allowlist);
+        popover_picker::show_allowlist_picker(mtm, ctx, allowlist, peer_sid);
     }
 
     /// Body of the banner-side `Trust host…` action. Mirror of
@@ -746,7 +746,7 @@ impl AppDelegate {
     /// no-op rule on unknown id / empty suggestions.
     fn handle_trust_host_action(&self, id: String) {
         let ctx = Arc::clone(self.ivars().ctx());
-        let Some((_, host)) = crate::suggestions::suggestions_for(&ctx, &id) else {
+        let Some((_, host, _)) = crate::suggestions::suggestions_for(&ctx, &id) else {
             return;
         };
         if host.is_empty() {

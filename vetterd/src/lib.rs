@@ -45,7 +45,7 @@ use std::time::{Duration, SystemTime};
 use vetter_core::known_hosts::{load_default as load_known_hosts_default, KnownHostsStore};
 use vetter_core::matcher::{load_default, AllowlistStore};
 use vetter_core::parsers::{self, EnvSnapshot, ParseError, StdinHandle};
-use vetter_core::peer_cred::assert_peer_is_self;
+use vetter_core::peer_cred::{assert_peer_is_self, peer_pid};
 use vetter_core::pidfile;
 // `AnsiWriter` / `DefaultRenderer` / `Renderer` were used to build
 // the §8.5 detail block for the popover. The native UI now renders
@@ -467,7 +467,7 @@ fn handle_admin_request(ctx: &Arc<Context>, req: MgmtRequest) -> MgmtResponse {
             MgmtResponse::PendingList { items }
         }
         MgmtRequest::SuggestionsFor { id } => match suggestions::suggestions_for(ctx, &id) {
-            Some((allowlist, known_host)) => MgmtResponse::Suggestions {
+            Some((allowlist, known_host, _peer_sid)) => MgmtResponse::Suggestions {
                 allowlist,
                 known_host,
             },
@@ -704,6 +704,29 @@ pub fn handle_connection(
     // body fits well inside a kernel send buffer.
     stream.set_read_timeout(Some(REQUEST_FRAME_TIMEOUT))?;
     stream.set_write_timeout(Some(REQUEST_FRAME_TIMEOUT))?;
+
+    // Peer-cred check on the main socket, closing part of the H1
+    // backlog item "pairing peer-cred on the main accept_loop
+    // (currently absent)": refuse a connection from a foreign UID
+    // before reading anything client-controlled off the wire.
+    // Same-UID callers pass by definition (same trust level as
+    // everything else reachable on this socket) — this only rejects
+    // a *different*-UID connector, mirroring the admin socket's
+    // existing check.
+    assert_peer_is_self(&stream)?;
+
+    // Best-effort: the peer's stable session id powers session-
+    // scoped allowlist rules (`Rule::sid`) end to end — both for
+    // matching an existing session rule below and for recording on
+    // the popover card so "Allowlist… → for this terminal session"
+    // has something to persist. Failure (process raced past exit, a
+    // permission error, or no tty-anchored ancestor found within the
+    // walk's depth cap) degrades to `None`: the request still gets a
+    // decision, it just can't use or offer session scope.
+    let peer_sid = peer_pid(&stream)
+        .ok()
+        .and_then(|pid| vetter_core::peer_cred::stable_session_for(pid).ok());
+
     let req = read_request(&mut stream)?;
     // After the request frame we never read again on this socket;
     // clearing the read timeout is forward-looking (any later
@@ -725,7 +748,14 @@ pub fn handle_connection(
                 .signals
                 .extend(check_known_hosts(&parsed, &known_hosts));
             let command_for_audit = parsed.command.clone();
-            let outcome = evaluate(&parsed, &req.id, req.force_prompt, &allowlist, &known_hosts);
+            let outcome = evaluate(
+                &parsed,
+                &req.id,
+                req.force_prompt,
+                &allowlist,
+                &known_hosts,
+                peer_sid,
+            );
             // Build the per-effect popover summary while the
             // known_hosts read lock is still held — it powers the
             // host-trust pills and we want the same one for both
@@ -733,7 +763,7 @@ pub fn handle_connection(
             // paths. `force_prompt` mirrors what `evaluate` would
             // record on its own Prompt summary.
             let auto_summary =
-                policy::build_summary(&req.id, &parsed, req.force_prompt, &known_hosts);
+                policy::build_summary(&req.id, &parsed, req.force_prompt, &known_hosts, peer_sid);
             // Drop the read locks before resolve_outcome, which can
             // block the worker on the pending queue waiting for a
             // human decision; holding either lock across that wait
@@ -784,6 +814,7 @@ pub fn handle_connection(
         rendered,
         rule_id,
         rule_scope,
+        peer_sid,
     ) = match prompt_ctx {
         Some(pc) => (
             pc.summary.primary_verb,
@@ -794,6 +825,7 @@ pub fn handle_connection(
             pc.rendered,
             pc.rule_id,
             pc.rule_scope,
+            pc.summary.peer_sid,
         ),
         None => (
             String::new(),
@@ -802,6 +834,7 @@ pub fn handle_connection(
             None,
             Vec::new(),
             String::new(),
+            None,
             None,
             None,
         ),
@@ -823,6 +856,7 @@ pub fn handle_connection(
         parsed: parsed_payload,
         host_known,
         rendered,
+        peer_sid,
     };
     if let Err(e) = ctx.audit.append(&entry) {
         eprintln!("vetterd: audit log append failed: {e}");

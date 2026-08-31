@@ -63,9 +63,22 @@ impl Scope {
 
 /// Walk the store and return the first rule that fires under the
 /// layered precedence rules from `plans/Overview.md` §2.
-pub fn decide(parsed: &ParsedCommand, store: &AllowlistStore) -> Decision {
+///
+/// `now` is Unix-epoch seconds, checked against
+/// [`crate::matcher::rule::Rule::expires_at`]. `caller_sid` is the
+/// requesting connection's stable POSIX session id (see
+/// [`crate::peer_cred::stable_session_for`]), checked against
+/// [`crate::matcher::rule::Rule::sid`]; pass `None` when the caller
+/// is unknown (e.g. `vet --explain`, which never sees the daemon's
+/// live session rules).
+pub fn decide(
+    parsed: &ParsedCommand,
+    store: &AllowlistStore,
+    now: u64,
+    caller_sid: Option<i32>,
+) -> Decision {
     for r in &store.denylist {
-        if matches_rule(parsed, r) {
+        if matches_rule(parsed, r, now, caller_sid) {
             return Decision::Deny {
                 rule_id: r.id.clone(),
                 scope: Scope::Denylist,
@@ -78,7 +91,10 @@ pub fn decide(parsed: &ParsedCommand, store: &AllowlistStore) -> Decision {
         (Scope::User, &store.user),
         (Scope::Builtin, &store.builtin),
     ] {
-        if let Some(r) = rules.iter().find(|r| matches_rule(parsed, r)) {
+        if let Some(r) = rules
+            .iter()
+            .find(|r| matches_rule(parsed, r, now, caller_sid))
+        {
             return Decision::Allow {
                 rule_id: r.id.clone(),
                 scope,
@@ -95,7 +111,25 @@ pub fn decide(parsed: &ParsedCommand, store: &AllowlistStore) -> Decision {
 /// (each by some effect — not necessarily the same one). Empty
 /// [`crate::matcher::RuleWhen`] never matches; the loader rejects such
 /// rules at load time so this is purely defensive.
-pub fn matches_rule(parsed: &ParsedCommand, rule: &Rule) -> bool {
+///
+/// `now` / `caller_sid` gate [`Rule::expires_at`] / [`Rule::sid`]
+/// respectively — see [`decide`]'s doc comment for their meaning.
+pub fn matches_rule(
+    parsed: &ParsedCommand,
+    rule: &Rule,
+    now: u64,
+    caller_sid: Option<i32>,
+) -> bool {
+    if let Some(exp) = rule.expires_at {
+        if now >= exp {
+            return false;
+        }
+    }
+    if let Some(sid) = rule.sid {
+        if caller_sid != Some(sid) {
+            return false;
+        }
+    }
     if let Some(cmd) = &rule.command {
         if cmd != &parsed.command {
             return false;

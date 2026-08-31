@@ -27,6 +27,8 @@ fn rule(id: &str, methods: Vec<HttpMethod>) -> Rule {
         note: None,
         created_by: None,
         created_at: None,
+        expires_at: None,
+        sid: None,
     }
 }
 

@@ -149,3 +149,36 @@ when:
         "omitted no_redirects should not be serialised: {back}",
     );
 }
+
+#[test]
+fn rule_round_trip_expires_at_and_sid() {
+    let yaml = r#"
+id: temp-rule
+when:
+  http:
+    method: [GET]
+expires_at: 1234567890
+sid: 42
+"#;
+    let r = roundtrip_yaml(yaml);
+    assert_eq!(r.expires_at, Some(1234567890));
+    assert_eq!(r.sid, Some(42));
+}
+
+#[test]
+fn rule_expires_at_and_sid_omitted_stay_none_and_unserialised() {
+    let yaml = r#"
+id: permanent-rule
+when:
+  http:
+    method: [GET]
+"#;
+    let r = roundtrip_yaml(yaml);
+    assert!(r.expires_at.is_none());
+    assert!(r.sid.is_none());
+    let back = serde_yaml_ng::to_string(&r).expect("rule -> yaml");
+    assert!(
+        !back.contains("expires_at") && !back.contains("sid"),
+        "omitted expires_at/sid should not be serialised: {back}",
+    );
+}

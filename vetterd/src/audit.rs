@@ -99,6 +99,11 @@ pub struct AuditEntry {
     /// keys on to tell UI-bearing rows apart from skipped ones.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub rendered: String,
+    /// Mirrors [`crate::pending::PromptSummary::peer_sid`]. `None`
+    /// on rows that didn't render a popover card, and whenever the
+    /// session walk failed for the requesting connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_sid: Option<i32>,
 }
 
 fn is_false(b: &bool) -> bool {

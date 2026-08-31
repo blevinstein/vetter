@@ -19,6 +19,7 @@ fn summary(id: &str, target: &str) -> PromptSummary {
         signals: Vec::new(),
         parsed: None,
         host_known: Vec::new(),
+        peer_sid: None,
     }
 }
 
@@ -430,6 +431,7 @@ fn try_from_audit_accepts_rich_prompt_row() {
         parsed: Some(parsed),
         host_known: vec![false],
         rendered: "rendered".into(),
+        peer_sid: None,
     };
     let entry = ResolvedEntry::try_from_audit(audit).expect("prompt row");
     assert_eq!(entry.summary.id, "abc");
@@ -458,6 +460,7 @@ fn try_from_audit_rejects_no_card_row() {
         parsed: None,
         host_known: Vec::new(),
         rendered: String::new(),
+        peer_sid: None,
     };
     assert!(ResolvedEntry::try_from_audit(audit).is_none());
 }
@@ -513,6 +516,7 @@ fn prompt_summary_round_trips_through_serde_with_new_fields() {
         signals: parsed.signals.clone(),
         parsed: Some(parsed.clone()),
         host_known: vec![false],
+        peer_sid: Some(4242),
     };
 
     let json = serde_json::to_string(&original).expect("serialise");
@@ -529,6 +533,7 @@ fn prompt_summary_round_trips_through_serde_with_new_fields() {
     assert!(legacy_decoded.signals.is_empty());
     assert!(legacy_decoded.parsed.is_none());
     assert!(legacy_decoded.host_known.is_empty());
+    assert!(legacy_decoded.peer_sid.is_none());
 }
 
 // -- refresh_with: pending + resolved coverage -----------------
@@ -579,6 +584,7 @@ fn unknown_host_summary(id: &str, host: &str) -> PromptSummary {
         signals: parsed.signals.clone(),
         parsed: Some(parsed),
         host_known: vec![false],
+        peer_sid: None,
     }
 }
 

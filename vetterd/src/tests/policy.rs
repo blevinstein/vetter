@@ -66,6 +66,8 @@ fn allow_rule(id: &str, host: &str) -> Rule {
         note: None,
         created_by: None,
         created_at: None,
+        expires_at: None,
+        sid: None,
     }
 }
 
@@ -84,6 +86,7 @@ fn allow_rule_in_user_scope_returns_auto_allow_with_reason() {
         false,
         &store,
         &empty_known_hosts(),
+        None,
     );
     match outcome {
         PolicyOutcome::Auto {
@@ -117,6 +120,7 @@ fn denylist_rule_returns_auto_deny_with_reason() {
         false,
         &store,
         &empty_known_hosts(),
+        None,
     );
     match outcome {
         PolicyOutcome::Auto {
@@ -144,6 +148,7 @@ fn no_match_returns_prompt_with_summary() {
         false,
         &store,
         &empty_known_hosts(),
+        None,
     );
     match outcome {
         PolicyOutcome::Prompt(s) => {
@@ -172,6 +177,7 @@ fn force_prompt_short_circuits_allow_rule_with_force_prompt_summary() {
         true,
         &store,
         &empty_known_hosts(),
+        None,
     );
     match outcome {
         PolicyOutcome::Prompt(s) => {
@@ -203,6 +209,7 @@ fn force_prompt_does_not_short_circuit_denylist() {
         false,
         &store,
         &empty_known_hosts(),
+        None,
     );
     matches!(
         outcome,
@@ -235,6 +242,7 @@ fn prompt_summary_marks_host_known_for_store_match() {
         false,
         &store,
         &known_hosts,
+        None,
     );
     let summary = match outcome {
         PolicyOutcome::Prompt(s) => s,
@@ -253,6 +261,7 @@ fn prompt_summary_marks_host_unknown_for_store_miss() {
         false,
         &store,
         &empty_known_hosts(),
+        None,
     );
     let summary = match outcome {
         PolicyOutcome::Prompt(s) => s,
@@ -270,6 +279,7 @@ fn prompt_summary_marks_loopback_as_known() {
         false,
         &store,
         &empty_known_hosts(),
+        None,
     );
     let summary = match outcome {
         PolicyOutcome::Prompt(s) => s,
@@ -280,4 +290,123 @@ fn prompt_summary_marks_loopback_as_known() {
         vec![true],
         "loopback host should be flagged known even when the store is empty"
     );
+}
+
+// -- session-scoped / time-limited rules -------------------------
+
+fn session_rule(id: &str, host: &str, expires_at: Option<u64>, sid: Option<i32>) -> Rule {
+    let mut r = allow_rule(id, host);
+    r.expires_at = expires_at;
+    r.sid = sid;
+    r
+}
+
+#[test]
+fn session_rule_with_matching_sid_auto_allows() {
+    let store = AllowlistStore {
+        denylist: vec![],
+        session: vec![session_rule("sess", "example.test", None, Some(7))],
+        project: vec![],
+        user: vec![],
+        builtin: vec![],
+    };
+    let outcome = evaluate(
+        &parsed_get("example.test"),
+        "id-sess",
+        false,
+        &store,
+        &empty_known_hosts(),
+        Some(7),
+    );
+    match outcome {
+        PolicyOutcome::Auto {
+            decision,
+            rule_id,
+            scope,
+            ..
+        } => {
+            assert_eq!(decision, WireDecision::Allow);
+            assert_eq!(rule_id.as_deref(), Some("sess"));
+            assert_eq!(scope, Some(Scope::Session));
+        }
+        other => panic!("expected auto-allow, got {other:?}"),
+    }
+}
+
+#[test]
+fn expired_duration_rule_falls_through_to_prompt() {
+    let store = AllowlistStore {
+        denylist: vec![],
+        session: vec![session_rule("expired", "example.test", Some(0), None)],
+        project: vec![],
+        user: vec![],
+        builtin: vec![],
+    };
+    let outcome = evaluate(
+        &parsed_get("example.test"),
+        "id-expired",
+        false,
+        &store,
+        &empty_known_hosts(),
+        None,
+    );
+    assert!(
+        matches!(outcome, PolicyOutcome::Prompt(_)),
+        "expected prompt for an already-expired rule, got {outcome:?}"
+    );
+}
+
+#[test]
+fn sid_mismatch_falls_through_to_prompt() {
+    let store = AllowlistStore {
+        denylist: vec![],
+        session: vec![session_rule("sess", "example.test", None, Some(7))],
+        project: vec![],
+        user: vec![],
+        builtin: vec![],
+    };
+    let outcome = evaluate(
+        &parsed_get("example.test"),
+        "id-mismatch",
+        false,
+        &store,
+        &empty_known_hosts(),
+        Some(8),
+    );
+    assert!(
+        matches!(outcome, PolicyOutcome::Prompt(_)),
+        "expected prompt on sid mismatch, got {outcome:?}"
+    );
+}
+
+#[test]
+fn denylist_still_wins_over_active_session_rule() {
+    let store = AllowlistStore {
+        denylist: vec![allow_rule("blocked", "example.test")],
+        session: vec![session_rule("sess", "example.test", None, Some(7))],
+        project: vec![],
+        user: vec![],
+        builtin: vec![],
+    };
+    let outcome = evaluate(
+        &parsed_get("example.test"),
+        "id-deny-wins",
+        false,
+        &store,
+        &empty_known_hosts(),
+        Some(7),
+    );
+    match outcome {
+        PolicyOutcome::Auto {
+            decision,
+            rule_id,
+            scope,
+            ..
+        } => {
+            assert_eq!(decision, WireDecision::Deny);
+            assert_eq!(rule_id.as_deref(), Some("blocked"));
+            assert_eq!(scope, Some(Scope::Denylist));
+        }
+        other => panic!("expected auto-deny, got {other:?}"),
+    }
 }

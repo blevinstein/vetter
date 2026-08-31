@@ -10,8 +10,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use tempfile::TempDir;
 use vetter_core::matcher::{
-    add_rule, discover_project_root, load_default, load_file, write_file, AllowlistFile, LoadError,
-    Rule, RuleWhen,
+    add_rule, discover_project_root, load_default, load_file, now_epoch_secs, write_file,
+    AllowlistFile, LoadError, Rule, RuleWhen,
 };
 
 fn write(path: &std::path::Path, contents: &str) {
@@ -222,6 +222,8 @@ fn simple_rule(id: &str) -> Rule {
         note: None,
         created_by: None,
         created_at: None,
+        expires_at: None,
+        sid: None,
     }
 }
 
@@ -278,6 +280,170 @@ fn abandoned_tempfile_leaves_original_intact() {
     let reloaded = load_file(&target).expect("reload");
     assert_eq!(reloaded.rules.len(), 1);
     assert_eq!(reloaded.rules[0].id, "original");
+}
+
+// ── Time-limited / session-scoped rules ─────────────────────────────────────
+
+fn simple_rule_with(id: &str, expires_at: Option<u64>, sid: Option<i32>) -> Rule {
+    let mut r = simple_rule(id);
+    r.expires_at = expires_at;
+    r.sid = sid;
+    r
+}
+
+#[test]
+fn load_default_partitions_user_file_rules_into_session_by_expiry_or_sid() {
+    let _user = isolate_user_scope();
+    let home = allow_loader_home_path();
+    let file = AllowlistFile {
+        rules: vec![
+            simple_rule("permanent"),
+            simple_rule_with("expires-soon", Some(now_epoch_secs() + 3600), None),
+            simple_rule_with("session-scoped", None, Some(42)),
+            simple_rule_with("both-set", Some(now_epoch_secs() + 3600), Some(42)),
+        ],
+        deny: vec![],
+    };
+    write_file(&home, &file).unwrap();
+
+    let cwd = TempDir::new().unwrap();
+    let store = load_default(Some(cwd.path()), None).expect("load");
+    assert_eq!(store.user.len(), 1, "{:?}", store.user);
+    assert_eq!(store.user[0].id, "permanent");
+
+    let mut session_ids: Vec<&str> = store.session.iter().map(|r| r.id.as_str()).collect();
+    session_ids.sort();
+    assert_eq!(
+        session_ids,
+        vec!["both-set", "expires-soon", "session-scoped"]
+    );
+}
+
+#[test]
+fn load_default_partitions_project_file_rules_into_session_by_expiry_or_sid() {
+    let _user = isolate_user_scope();
+    let root = TempDir::new().unwrap();
+    let project_path = root.path().join(".vet/allowlist.yaml");
+    let file = AllowlistFile {
+        rules: vec![
+            simple_rule("permanent"),
+            simple_rule_with("session-scoped", None, Some(7)),
+        ],
+        deny: vec![],
+    };
+    write_file(&project_path, &file).unwrap();
+
+    let store = load_default(Some(root.path()), None).expect("load");
+    assert_eq!(store.project.len(), 1);
+    assert_eq!(store.project[0].id, "permanent");
+    assert_eq!(store.session.len(), 1);
+    assert_eq!(store.session[0].id, "session-scoped");
+}
+
+#[test]
+fn load_default_override_path_partitions_into_session_too() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("custom.yaml");
+    let file = AllowlistFile {
+        rules: vec![
+            simple_rule("permanent"),
+            simple_rule_with("session-scoped", None, Some(1)),
+        ],
+        deny: vec![],
+    };
+    write_file(&path, &file).unwrap();
+
+    let store = load_default(None, Some(&path)).expect("load");
+    assert_eq!(store.project.len(), 1);
+    assert_eq!(store.project[0].id, "permanent");
+    assert_eq!(store.session.len(), 1);
+    assert_eq!(store.session[0].id, "session-scoped");
+}
+
+#[test]
+fn add_rule_prunes_already_expired_rules_before_writing() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("allowlist.yaml");
+    let initial = AllowlistFile {
+        rules: vec![
+            simple_rule_with(
+                "already-expired",
+                Some(now_epoch_secs().saturating_sub(1)),
+                None,
+            ),
+            simple_rule("still-good"),
+        ],
+        deny: vec![simple_rule_with(
+            "expired-deny",
+            Some(now_epoch_secs().saturating_sub(1)),
+            None,
+        )],
+    };
+    write_file(&path, &initial).expect("initial write");
+
+    add_rule(&path, simple_rule("fresh")).expect("add_rule");
+
+    let loaded = load_file(&path).expect("reload");
+    let ids: Vec<&str> = loaded.rules.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["still-good", "fresh"],
+        "already-expired rule must be pruned on the next write"
+    );
+    assert!(
+        loaded.deny.is_empty(),
+        "expired deny rule must also be pruned: {:?}",
+        loaded.deny
+    );
+}
+
+#[test]
+fn add_rule_keeps_unexpired_rules() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("allowlist.yaml");
+    let initial = AllowlistFile {
+        rules: vec![simple_rule_with(
+            "not-yet-expired",
+            Some(now_epoch_secs() + 3600),
+            None,
+        )],
+        deny: vec![],
+    };
+    write_file(&path, &initial).expect("initial write");
+
+    add_rule(&path, simple_rule("fresh")).expect("add_rule");
+
+    let loaded = load_file(&path).expect("reload");
+    let ids: Vec<&str> = loaded.rules.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, vec!["not-yet-expired", "fresh"]);
+}
+
+#[test]
+fn regression_reload_preserves_session_scoped_rule_after_unrelated_add() {
+    // Round-1 design had session rules live only in an in-memory
+    // side channel that a disk reload didn't know about, so a
+    // second, unrelated `add_rule` (which forces a reload) silently
+    // dropped them. This round writes everything to disk and
+    // partitions at load time, so this now passes by construction —
+    // pinned here as an explicit regression test per the plan.
+    let _user = isolate_user_scope();
+    let home = allow_loader_home_path();
+    add_rule(&home, simple_rule_with("temp-session-rule", None, Some(99))).expect("add temp rule");
+
+    // Force a reload via an unrelated permanent add.
+    add_rule(&home, simple_rule("unrelated-permanent")).expect("add permanent rule");
+
+    let cwd = TempDir::new().unwrap();
+    let store = load_default(Some(cwd.path()), None).expect("load after both adds");
+    assert_eq!(store.user.len(), 1);
+    assert_eq!(store.user[0].id, "unrelated-permanent");
+    assert_eq!(store.session.len(), 1);
+    assert_eq!(store.session[0].id, "temp-session-rule");
+    assert_eq!(store.session[0].sid, Some(99));
+}
+
+fn allow_loader_home_path() -> std::path::PathBuf {
+    vetter_core::matcher::user_allowlist_path().expect("HOME must be set by isolate_user_scope")
 }
 
 #[test]

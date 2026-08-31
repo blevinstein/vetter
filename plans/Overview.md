@@ -168,8 +168,33 @@ Conventions:
 3. **Project scope** — `<repo>/.vet/allowlist.yaml`. Discovered by walking
    up from `cwd` to a directory containing this file or `.git`. Designed to
    be checked in so a team shares vetted patterns.
-4. **Session scope** — in-memory only, populated by `allow_once` decisions
-   from the UI. Discarded on daemon restart.
+4. **Session scope** — disk-persisted like every other rule, self-describing
+   via two optional `Rule` fields rather than a dedicated file or wire
+   message: `expires_at` (Unix epoch seconds; the rule stops matching once
+   `now >= expires_at`) and `sid` (a POSIX session id; the rule only
+   matches requests whose caller shares that session, resolved server-side
+   by [`peer_cred::stable_session_for`](../vetter-core/src/peer_cred.rs)
+   walking the connecting process's ancestry to the nearest tty-anchored
+   session — see that module's doc comment for the algorithm). Rules with
+   either field set are written into the *same* `~/.vet/allowlist.yaml` /
+   `<repo>/.vet/allowlist.yaml` files as permanent rules — the popover's
+   duration picker ("15 minutes" / "1 hour" / "4 hours" / "for this
+   terminal session" / "Forever") calls the identical
+   `add_allowlist_rule(User)` path regardless of duration, only the two
+   fields differ. `load_default()` partitions whatever it reads off disk
+   into this tier at load time (`expires_at.is_some() || sid.is_some()`),
+   so which physical file a rule came from no longer determines its
+   precedence tier. This means session-scoped rules **survive a daemon
+   restart** (expiry is wall-clock/identity based, not tied to process
+   lifetime) — a deliberate improvement over "discarded on daemon
+   restart", and also means `vet allow list` / `vet allow rm <id>` and
+   `vet --explain` see them for free, no separate CLI surface needed.
+   There is no background reaper: every rule-add (`allow_loader::add_rule`)
+   lazily strips already-expired rules from the file before writing, and a
+   pure `sid`-scoped rule (no `expires_at`, "for this session" with no
+   fixed duration) gets a generous 7-day backstop `expires_at` from the
+   picker purely so it's eventually reaped — the `sid` check already stops
+   it from *matching* long before that.
 5. **Denylist** — same shape, takes precedence over allows at every layer.
 
 ### Rule shape
@@ -223,6 +248,12 @@ File paths (`Effect::FileRead` / `Effect::FileWrite`) are evaluated
 through a separate cross-cutting layer — see [File-path
 safe-paths layer](#file-path-safe-paths-layer) below. Rules in
 `allowlist.yaml` do not carry file-path clauses.
+
+Any rule (in either `rules:` or `deny:`, in any of the three files
+above) may also carry `expires_at: <unix-epoch-seconds>` and/or
+`sid: <i32>` — see "Session scope" above. These aren't restricted to
+popover-authored rules; a human can hand-write them too, e.g. to
+give a temporary teammate's onboarding rule a natural expiry.
 
 ### Known-hosts list
 

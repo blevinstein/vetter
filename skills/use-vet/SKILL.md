@@ -1,10 +1,18 @@
 ---
 name: use-vet
 description: >-
-  Intercepts curl commands and routes them through the `vet` security gate.
-  Use whenever you are about to run `curl` — prefix it with `vet` instead
-  (e.g. `vet curl https://…`). If vet exits 78 (parse error / daemon down),
-  retry without the prefix. If it exits 77 (denied), stop and tell the user.
+  ALWAYS prefix every `curl` invocation with `vet` (e.g. `vet curl https://…`)
+  — no exceptions. This applies to ALL curl usage: API calls, downloads,
+  health checks, debugging, one-liners, scripts, anything. Never run a bare
+  `curl` first and only fall back to `vet` if something fails — start with
+  `vet curl` every single time. The ONLY situation in which you may run bare
+  `curl` is when `vet` itself is unavailable: it is not installed (`command
+  -v vet` is empty) OR a previous `vet curl` invocation exited 78 (parse
+  error / daemon unreachable) for this exact command. If `vet` exits 77
+  (denied by policy), STOP — do not retry without the prefix; report the
+  block to the user and ask them to update their allowlist. Use this skill
+  every time you reach for `curl`, including inside pipelines, command
+  substitutions, and shell scripts.
 ---
 
 # Skill: Prefix commands with `vet`
@@ -45,6 +53,25 @@ vet curl https://api.example.com/data
 The exit code, stdout, and stderr are identical to running the command
 directly when allowed. Nothing about your argument syntax changes.
 
+## If a `vet curl` invocation appears to hang
+
+`vet` may pop up an approval dialog for the user and then block until
+they respond. This can look identical to a hung process, especially if
+the user is away from the keyboard.
+
+- **Do NOT kill the process** just because it hasn't returned yet.
+  Killing it abandons a pending approval and trains the user to ignore
+  future prompts, or forces them to re-approve a command that already
+  looked handled.
+- Before assuming something is stuck, run `vet daemon list` to check
+  for a pending approval on this command.
+  - If there is a pending approval: wait for the user to respond. Tell
+    the user a `vet` approval is awaiting their input instead of
+    working around it.
+  - If there is no pending approval (and the command still isn't
+    returning), then it's reasonable to treat it as a genuine hang and
+    investigate/kill it as you normally would.
+
 ## What to do if `vet` errors
 
 `vet` exits **78** (config error) when it cannot parse the command or
@@ -68,3 +95,4 @@ policy.
 | Recognised command, denied (exit 77) | Stop and tell the user |
 | Unrecognised command or exit 78 | Retry without `vet` prefix |
 | Daemon not running | Exit 78; retry without prefix |
+| `vet curl` seems to hang | Run `vet daemon list`; if approval is pending, wait — do not kill the process |

@@ -1,0 +1,282 @@
+//! Tests for [`crate::notifier::linux`]. Layout convention from `AGENTS.md`.
+//!
+//! Everything here runs without a session bus — CI has none, and a
+//! test that needs one would be a test that never runs. The bus
+//! plumbing itself is covered by the manual smoke procedure in
+//! `plans/LinuxApp.md` §7 steps 5–6; what *is* covered here is every
+//! decision the notifier makes before it touches the bus.
+
+use super::*;
+
+use vetter_core::wire::WireDecision;
+
+// ── Capabilities ────────────────────────────────────────────────────────────
+
+#[test]
+fn capabilities_read_actions_and_body_markup() {
+    let caps = Capabilities::from_list(&["actions", "body-markup", "persistence"]);
+    assert!(caps.actions);
+    assert!(caps.body_markup);
+}
+
+#[test]
+fn capabilities_absent_when_server_advertises_neither() {
+    // notify-osd's actual capability set: no `actions`, so our
+    // buttons would never render (§5.4).
+    let caps = Capabilities::from_list(&["body", "icon-static"]);
+    assert!(!caps.actions);
+    assert!(!caps.body_markup);
+}
+
+#[test]
+fn capabilities_from_empty_list_is_all_false() {
+    let empty: [&str; 0] = [];
+    assert_eq!(Capabilities::from_list(&empty), Capabilities::default());
+}
+
+#[test]
+fn capabilities_do_not_match_on_prefix() {
+    // `actions-extra` is not `actions`; a sloppy `starts_with` here
+    // would claim button support we don't have.
+    let caps = Capabilities::from_list(&["actions-extra", "body-markup-ish"]);
+    assert!(!caps.actions);
+    assert!(!caps.body_markup);
+}
+
+// ── Action → decision ───────────────────────────────────────────────────────
+
+#[test]
+fn approve_action_maps_to_allow_with_the_promised_audit_reason() {
+    let d = decision_for_action("approve").expect("approve is a known action");
+    assert_eq!(d.decision, WireDecision::Allow);
+    assert_eq!(d.reason, "approved via notification");
+}
+
+#[test]
+fn reject_action_maps_to_deny_with_the_promised_audit_reason() {
+    let d = decision_for_action("reject").expect("reject is a known action");
+    assert_eq!(d.decision, WireDecision::Deny);
+    assert_eq!(d.reason, "rejected via notification");
+}
+
+#[test]
+fn default_action_is_not_a_decision() {
+    // The spec's `"default"` key is the *body* click. Treating it as
+    // an approval would turn "user clicked the banner to read it"
+    // into "user authorised the request" — the exact failure mode a
+    // security gate cannot have. It becomes the click-through into
+    // the approval window in Phase 6d.
+    assert!(decision_for_action("default").is_none());
+}
+
+#[test]
+fn unknown_action_is_not_a_decision() {
+    assert!(decision_for_action("").is_none());
+    assert!(
+        decision_for_action("Approve").is_none(),
+        "keys are lowercase"
+    );
+    assert!(decision_for_action("allow").is_none());
+}
+
+// ── Coalescing ──────────────────────────────────────────────────────────────
+
+#[test]
+fn banner_is_raised_only_for_the_request_that_found_the_queue_empty() {
+    assert!(should_raise_banner(NotifyHint {
+        was_empty_before: true
+    }));
+    assert!(!should_raise_banner(NotifyHint {
+        was_empty_before: false
+    }));
+}
+
+// ── Sound ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn sound_hint_follows_the_user_preference() {
+    assert_eq!(sound_name_for(true), Some("dialog-question"));
+    assert_eq!(sound_name_for(false), None);
+}
+
+// ── Body markup escaping ────────────────────────────────────────────────────
+
+#[test]
+fn body_markup_escapes_the_xml_entities() {
+    assert_eq!(
+        escape_body_markup(r#"<b>&"'"#),
+        "&lt;b&gt;&amp;&quot;&apos;"
+    );
+}
+
+#[test]
+fn body_markup_leaves_ordinary_text_alone() {
+    assert_eq!(
+        escape_body_markup("https://example.test/a?b=c"),
+        "https://example.test/a?b=c"
+    );
+}
+
+// ── Banner text ─────────────────────────────────────────────────────────────
+
+fn summary(verb: &str, target: &str) -> PromptSummary {
+    PromptSummary {
+        id: "01ABCDEFGHIJKLMNOPQRSTUVWX".into(),
+        command: "curl".into(),
+        primary_verb: verb.into(),
+        primary_target: target.into(),
+        force_prompt: false,
+        signals: Vec::new(),
+        parsed: None,
+        host_known: Vec::new(),
+        peer_sid: None,
+    }
+}
+
+#[test]
+fn banner_text_pairs_verb_and_target() {
+    let (title, body) = banner_text(
+        &summary("GET", "https://example.test/"),
+        Capabilities::default(),
+    );
+    assert_eq!(title, "vet curl");
+    assert_eq!(body, "GET https://example.test/");
+}
+
+#[test]
+fn banner_text_drops_an_empty_verb() {
+    let (_, body) = banner_text(
+        &summary("", "https://example.test/"),
+        Capabilities::default(),
+    );
+    assert_eq!(body, "https://example.test/");
+}
+
+#[test]
+fn banner_text_labels_a_dry_run() {
+    // macOS puts this in the subtitle; the freedesktop spec has no
+    // subtitle, so it has to ride on the title.
+    let mut s = summary("GET", "https://example.test/");
+    s.force_prompt = true;
+    let (title, _) = banner_text(&s, Capabilities::default());
+    assert_eq!(title, "vet curl (dry run)");
+}
+
+#[test]
+fn banner_text_strips_bidi_overrides_from_the_target() {
+    // U+202E RIGHT-TO-LEFT OVERRIDE would otherwise let a hostile URL
+    // render reversed, hiding the real host from the human about to
+    // click Approve. Same defence the macOS banner applies.
+    let s = summary("GET", "https://evil.test/\u{202e}gnp.exe");
+    let (_, body) = banner_text(&s, Capabilities::default());
+    assert!(
+        !body.contains('\u{202e}'),
+        "RTLO must not reach the notification server: {body:?}"
+    );
+}
+
+#[test]
+fn banner_text_escapes_markup_only_when_the_server_parses_it() {
+    let s = summary("GET", "https://example.test/?q=<b>");
+    let plain = banner_text(&s, Capabilities::default()).1;
+    let markup = banner_text(
+        &s,
+        Capabilities {
+            actions: false,
+            body_markup: true,
+        },
+    )
+    .1;
+    assert!(plain.contains("<b>"), "literal server shows it raw");
+    assert!(
+        markup.contains("&lt;b&gt;") && !markup.contains("<b>"),
+        "markup server must get escaped text: {markup:?}"
+    );
+}
+
+// ── Notification id map ─────────────────────────────────────────────────────
+
+#[test]
+fn map_links_both_directions() {
+    let mut m = NotificationMap::default();
+    m.link(7, "REQ-A");
+    assert_eq!(m.request_for(7), Some("REQ-A"));
+    assert_eq!(m.forget_request("REQ-A"), Some(7));
+    assert_eq!(m.request_for(7), None);
+}
+
+#[test]
+fn relinking_a_reused_notification_id_evicts_the_stale_request() {
+    // Servers reuse ids across restarts (§11). If id 7 comes back for
+    // a new request, the old pairing must go — otherwise resolving
+    // REQ-A later would close a banner belonging to REQ-B.
+    let mut m = NotificationMap::default();
+    m.link(7, "REQ-A");
+    m.link(7, "REQ-B");
+    assert_eq!(m.request_for(7), Some("REQ-B"));
+    assert_eq!(m.forget_request("REQ-A"), None, "stale pairing evicted");
+    assert_eq!(m.len(), 1);
+}
+
+#[test]
+fn relinking_a_request_to_a_new_notification_evicts_the_old_id() {
+    let mut m = NotificationMap::default();
+    m.link(7, "REQ-A");
+    m.link(9, "REQ-A");
+    assert_eq!(m.request_for(9), Some("REQ-A"));
+    assert_eq!(m.request_for(7), None);
+    assert_eq!(m.len(), 1);
+}
+
+#[test]
+fn forgetting_a_notification_drops_both_sides() {
+    let mut m = NotificationMap::default();
+    m.link(7, "REQ-A");
+    assert_eq!(m.forget_notification(7).as_deref(), Some("REQ-A"));
+    assert_eq!(m.forget_request("REQ-A"), None);
+    assert_eq!(m.len(), 0);
+}
+
+#[test]
+fn forgetting_an_unknown_id_is_a_no_op() {
+    let mut m = NotificationMap::default();
+    assert_eq!(m.forget_notification(1), None);
+    assert_eq!(m.forget_request("nope"), None);
+}
+
+#[test]
+fn clear_drops_every_pairing() {
+    let mut m = NotificationMap::default();
+    m.link(1, "A");
+    m.link(2, "B");
+    m.clear();
+    assert_eq!(m.len(), 0);
+    assert_eq!(m.request_for(1), None);
+}
+
+// ── Reconciliation ──────────────────────────────────────────────────────────
+
+#[test]
+fn banners_close_for_requests_that_left_the_pending_queue() {
+    // The whole point of driving this off queue state: "resolved by
+    // `vet daemon approve`" and "resolved by clicking Approve" are
+    // indistinguishable here, so both close their banner.
+    let held = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+    let still_pending = vec!["B".to_string()];
+    let mut close = banners_to_close(&held, &still_pending);
+    close.sort();
+    assert_eq!(close, vec!["A".to_string(), "C".to_string()]);
+}
+
+#[test]
+fn nothing_closes_while_every_request_is_still_pending() {
+    let held = vec!["A".to_string(), "B".to_string()];
+    assert!(banners_to_close(&held, &held).is_empty());
+}
+
+#[test]
+fn every_banner_closes_when_the_queue_drains() {
+    // What shutdown's `cancel_all` looks like from here.
+    let held = vec!["A".to_string(), "B".to_string()];
+    assert_eq!(banners_to_close(&held, &[]).len(), 2);
+}

@@ -1,7 +1,5 @@
 //! Tests for [`crate::socket_dir`]. Layout convention from `AGENTS.md`.
 
-use std::os::unix::fs::PermissionsExt as _;
-
 use super::*;
 
 #[test]

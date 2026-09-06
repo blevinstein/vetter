@@ -35,6 +35,15 @@ block2 = "0.6"
 dispatch2 = "0.3"
 serde_yaml_ng = "0.10"
 
+# Linux approver UI (Phase 6b). Gated to Linux targets the same way
+# the `objc2` stack above is gated to macOS, so the crate still builds
+# on every other target. `zbus`'s default features bring its own
+# internal executor, which is what lets us drive the session bus from
+# one dedicated thread via the blocking API — no general-purpose async
+# runtime enters the dependency tree. See plans/LinuxApp.md §6b, §11.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5.19"
+
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }

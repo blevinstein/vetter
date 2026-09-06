@@ -706,19 +706,29 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
 
 ### PR 2 — D-Bus notifications via zbus
 
-- [ ] Real `LinuxNotifier::notify` against
+- [x] Real `LinuxNotifier::notify` against
       `org.freedesktop.Notifications`; subscribe to
-      `ActionInvoked` and `NotificationClosed`; route to
-      `PendingQueue::resolve` (mirroring
+      `ActionInvoked`, `NotificationClosed` and `ActivationToken`;
+      route to `PendingQueue::resolve` (mirroring
       `runloop/mac/mod.rs::did_receive_response`).
-- [ ] Coalesce after first banner per existing
+      `ActivationToken` is parsed but unused until 6d has a window
+      to raise.
+- [x] Coalesce after first banner per existing
       `NotifyHint::was_empty_before`.
-- [ ] Capability fallback: when `GetCapabilities` lacks
+- [x] Capability fallback: when `GetCapabilities` lacks
       `actions`, post a body-only notification and rely on the
       tray (PR 3) / `vet daemon approve` (PR 1) to resolve.
+      Capabilities are re-queried on `NameOwnerChanged` so a
+      notification-daemon restart is picked up.
 - [ ] Mock `org.freedesktop.Notifications` server in
       `vetterd/tests/notifier_linux_dbus.rs` for E2E coverage of
-      action routing.
+      action routing. **Prototyped and proven during 6b** but not
+      landed: a Python fake server under `dbus-run-session` drove
+      the whole loop (Notify → `ActionInvoked` → resolve →
+      `CloseNotification`), including the no-`actions` degradation
+      and a mid-run server restart. Automating it needs a decision
+      about a Python dependency in CI, which belongs with the PR-6
+      CI work rather than here.
 
 ### PR 3 — Tray (StatusNotifierItem)
 
@@ -792,6 +802,35 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
       Ubuntu install block (parallel to the existing macOS one).
 - [ ] Update [TODO.md](TODO.md) (this file): flip Phase 6 boxes
       to `[x]` and the phase tag to `[x] done` once PR 6 lands.
+
+---
+
+## Build health  `[x] done`
+
+Items that make `cargo clippy` / `cargo test` red at `main`. These
+jump the queue regardless of which phase is in flight: a red baseline
+hides the next real regression.
+
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` failed at
+      `main` on two unused imports —
+      `use std::os::unix::fs::PermissionsExt as _;` in
+      [vetter-core/src/tests/fs_secure.rs](vetter-core/src/tests/fs_secure.rs):3
+      and
+      [vetter-core/src/tests/socket_dir.rs](vetter-core/src/tests/socket_dir.rs):3.
+      Both test files do use `PermissionsExt` methods, but each is a
+      `#[path]`-included `mod tests` whose `use super::*;` already
+      pulls the trait in from the parent module's own import
+      ([fs_secure.rs](vetter-core/src/fs_secure.rs):31,
+      [socket_dir.rs](vetter-core/src/socket_dir.rs):16) — so the
+      explicit import in the test file is redundant, not the usage.
+      Fix is two line deletions; it stays correct only while both
+      parents keep importing the trait, so delete the child import,
+      not the parent's. Fails in **both** feature configurations, so
+      CI is red independently of any in-flight phase work. Found
+      while landing Phase 6a (2026-09-06), which touched neither
+      file. **Fixed 2026-09-06**: both child imports deleted, parents
+      left alone; `fmt`, both clippy configurations, and
+      `cargo test --workspace --all-features` (637 passed) all green.
 
 ---
 

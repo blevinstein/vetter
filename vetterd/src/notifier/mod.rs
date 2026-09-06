@@ -6,29 +6,38 @@
 //! from whatever thread / callback the platform delivers them on
 //! (UNUserNotificationCenter delegate, control socket reader, etc.).
 //!
-//! Two implementations ship with this crate:
+//! Three implementations ship with this crate:
 //!
 //! - [`mac::MacNotifier`] (cfg `target_os = "macos"`) — real
 //!   `UNUserNotificationCenter` integration with Approve / Reject
 //!   action buttons. Requires the binary to be inside a code-signed
 //!   `.app` bundle with `LSUIElement=true`; see `tools/build-app.sh`.
+//! - [`linux::LinuxNotifier`] (cfg `target_os = "linux"`) — real
+//!   `org.freedesktop.Notifications` integration with the same two
+//!   action buttons. Requires a reachable session bus and nothing
+//!   else; unlike macOS there is no bundle to validate
+//!   (`plans/LinuxApp.md` §5.2).
 //! - [`mock::MockNotifier`] — talks to a Unix socket the test harness
 //!   listens on, used by `daemon_e2e_prompt.rs` and the
 //!   `prompt_class_*` tests in `daemon_e2e.rs`. CI never has a logged-in
 //!   GUI session to drive the real notifier, so the mock is the
 //!   workhorse for automated coverage.
 //!
-//! Both implementations are constructed at daemon startup based on the
+//! All three are constructed at daemon startup based on the
 //! `VETTERD_NOTIFIER` env variable. The default on macOS is `mac` —
 //! the daemon expects to run inside a code-signed `Vetter.app` bundle
-//! and refuses to start otherwise. Tests and non-macOS targets opt
-//! into `noop` (or `mock`) explicitly.
+//! and refuses to start otherwise — and on Linux it is `linux`, which
+//! needs only a session bus. Tests and headless environments (CI has
+//! neither a GUI session nor a bus) opt into `noop` or `mock`
+//! explicitly.
 
 use std::sync::Arc;
 
 use crate::pending::{NotifyHint, PendingQueue, PromptSummary};
 use crate::PlatformDriver;
 
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod mac;
 pub mod mock;
@@ -73,17 +82,22 @@ pub fn boxed<N: Notifier + 'static>(n: N) -> Arc<dyn Notifier> {
 ///   [`PlatformDriver::AppKit`]. Refuses to install if the
 ///   executable is not inside a code-signed `.app` bundle (see
 ///   [`mac::MacNotifier::install`]).
+/// - `linux` (default on Linux) yields [`linux::LinuxNotifier`] +
+///   [`PlatformDriver::None`] — the bus runs on threads the notifier
+///   spawns itself, so the main thread keeps the accept loop. Refuses
+///   to install if the session bus is unreachable (see
+///   [`linux::LinuxNotifier::install`]).
 /// - `mock` yields [`mock::MockNotifier`]; requires
 ///   `VETTERD_NOTIFIER_SOCKET`. Driver is [`PlatformDriver::None`]
 ///   (accept loop on main thread).
 /// - `noop` yields [`NoopNotifier`]. Driver is
 ///   [`PlatformDriver::None`].
 ///
-/// Default when unset: `mac` on macOS, `noop` everywhere else. We
-/// fail closed: a daemon that can't bring up its UI crashes at
-/// startup so the operator gets an exit-78 instead of a silently
-/// half-running daemon that hangs every prompt-class request. Tests
-/// and non-bundle dev workflows on macOS must set
+/// Default when unset: see [`default_kind`]. We fail closed: a daemon
+/// that can't bring up its UI crashes at startup so the operator gets
+/// an exit-78 instead of a silently half-running daemon that hangs
+/// every prompt-class request. Tests, non-bundle dev workflows on
+/// macOS, and any headless Linux environment must set
 /// `VETTERD_NOTIFIER=noop` (or `mock`) explicitly.
 pub fn build_from_env(
     queue: Arc<PendingQueue>,
@@ -111,16 +125,37 @@ pub fn build_from_env(
         "mac" => Err(NotifierBuildError::Unsupported(
             "VETTERD_NOTIFIER=mac requires a macOS target",
         )),
+        #[cfg(target_os = "linux")]
+        "linux" => {
+            let n: Arc<dyn Notifier> = Arc::new(linux::LinuxNotifier::install(queue)?);
+            Ok((n, PlatformDriver::None))
+        }
+        #[cfg(not(target_os = "linux"))]
+        "linux" => Err(NotifierBuildError::Unsupported(
+            "VETTERD_NOTIFIER=linux requires a Linux target",
+        )),
         other => Err(NotifierBuildError::Unknown(other.to_string())),
     }
 }
 
 /// Default `VETTERD_NOTIFIER` value when the env var is unset.
-/// macOS expects the bundled UI; every other target falls back to
-/// `noop` so non-mac CI smoke checks still come up.
+///
+/// macOS expects the bundled UI and Linux expects a session bus; both
+/// fail closed at startup when their precondition is missing, so an
+/// operator gets an exit-78 rather than a daemon that silently parks
+/// every prompt-class request forever. Every other target falls back
+/// to `noop` so their CI smoke checks still come up.
+///
+/// Consequence worth knowing when writing tests: anything that spawns
+/// `vetterd` on Linux — directly, or indirectly via
+/// `vet daemon start`, which passes its own environment through —
+/// must set `VETTERD_NOTIFIER` to `noop` or `mock`, because CI has no
+/// session bus.
 const fn default_kind() -> &'static str {
     if cfg!(target_os = "macos") {
         "mac"
+    } else if cfg!(target_os = "linux") {
+        "linux"
     } else {
         "noop"
     }
@@ -132,7 +167,7 @@ const fn default_kind() -> &'static str {
 pub enum NotifierBuildError {
     #[error("missing required env: {0}")]
     MissingEnv(&'static str),
-    #[error("unknown VETTERD_NOTIFIER value `{0}`; expected mac | mock | noop")]
+    #[error("unknown VETTERD_NOTIFIER value `{0}`; expected mac | linux | mock | noop")]
     Unknown(String),
     #[error("notifier not supported on this build: {0}")]
     Unsupported(&'static str),

@@ -49,6 +49,7 @@ Wayland session, kernel 7.1.4.
 |---|---|
 | `cargo build --release -p vetterd -p vet` | **OK** — clean, no cfg fallout, ~49 s cold |
 | `cargo test --workspace --all-features` | **OK** — 637 passed, 0 failed, 0 ignored |
+| `cargo clippy --workspace --all-targets` | **OK** — both feature configurations; was red on two unused `PermissionsExt` imports until 2026-09-06 (TODO.md §"Build health") |
 | `vet doctor` | **OK** — all rows resolve; correct XDG paths |
 | `vet daemon start` / `status` / `stop` | **OK** — pidfile, socket, clean teardown, no leftovers |
 | Socket path | `/run/user/1000/vetter/vetter.sock`, dir mode 0700, socket 0600 |
@@ -126,11 +127,11 @@ Linux stands.
 | macOS feature | Implementation | Linux status |
 |---|---|---|
 | **Resolve a prompt** | UI callbacks → `PendingQueue::resolve` | **DONE (6a)** — `MgmtRequest::Resolve` + `vet daemon approve`/`reject` |
-| Notification with Approve/Reject | `UNUserNotificationCenter` (`notifier/mac.rs`) | **MISSING** — no `LinuxNotifier` |
+| Notification with Approve/Reject | `UNUserNotificationCenter` (`notifier/mac.rs`) | **DONE (6b)** — `notifier/linux.rs` over `org.freedesktop.Notifications` |
 | Notification body click-through → detail UI | `runloop/mod.rs` | **MISSING** |
-| Banner coalescing (`NotifyHint::was_empty_before`) | `notifier/mac.rs` | Hint plumbing is portable; **no consumer** |
-| Banner dismissal on resolve | `removeDeliveredNotificationsWithIdentifiers:` | **MISSING** (`CloseNotification` is the analogue) |
-| Notification sound setting | `UNNotificationSound::defaultSound()` | **MISSING** (`sound` hint is the analogue) |
+| Banner coalescing (`NotifyHint::was_empty_before`) | `notifier/mac.rs` | **DONE (6b)** — consumed by `notifier/linux.rs` |
+| Banner dismissal on resolve | `removeDeliveredNotificationsWithIdentifiers:` | **DONE (6b)** — `CloseNotification`, driven off the queue change listener so *every* resolve path closes |
+| Notification sound setting | `UNNotificationSound::defaultSound()` | **DONE (6b)** — `sound-name` hint |
 | Tray icon + pending-count badge | `runloop/status_item.rs` (180 ln) | **MISSING** — no SNI item |
 | Approval window listing pending cards | `runloop/popover.rs` (2250 ln) + 5 helper modules (~1500 ln) | **MISSING** |
 | — §8.5 detail disclosure | `toggleDetailsDisclosure:` | **MISSING** |
@@ -160,10 +161,12 @@ ship. They do not exist:
   including macOS**, and was not implemented. **Landed in Phase 6a
   (2026-09-06)**; `vet daemon --help` now lists `start`, `stop`,
   `status`, `list`, `approve`, `reject`, `autostart`.
-- `VETTERD_NOTIFIER=linux` — not a valid value; `build_from_env`
-  accepts only `mac` / `mock` / `noop`. The claim that the daemon
-  "refuses to install if `$DBUS_SESSION_BUS_ADDRESS` is unset and
-  exits 78" is fiction; on Linux it silently comes up with `noop`.
+- ~~`VETTERD_NOTIFIER=linux`~~ — was not a valid value, and the claim
+  that the daemon "refuses to install if `$DBUS_SESSION_BUS_ADDRESS`
+  is unset and exits 78" was fiction. **Landed in Phase 6b
+  (2026-09-06)**: `build_from_env` accepts `mac` / `linux` / `mock` /
+  `noop`, `linux` is the default on Linux, and it does now fail closed
+  with exit 78 when the session bus is unreachable.
 - `[package.metadata.deb]` in `vetterd/Cargo.toml` — absent.
 - `/usr/lib/systemd/user/vetter.service` — no unit file in the repo.
 - `/etc/xdg/autostart/vetter.desktop` — no desktop entry in the repo.
@@ -343,34 +346,34 @@ against.
       `$DBUS_SESSION_BUS_ADDRESS` — that is the documented headless
       story and it should finally be true.
 
-### Phase 6b — `LinuxNotifier` (D-Bus notifications) `[ ]`
+### Phase 6b — `LinuxNotifier` (D-Bus notifications) `[x]` **done 2026-09-06**
 
-- [ ] Add `zbus` (5.19) under
+- [x] Add `zbus` (5.19) under
       `[target.'cfg(target_os = "linux")'.dependencies]` in
       [vetterd/Cargo.toml](../vetterd/Cargo.toml), mirroring how the
       `objc2` stack is gated for macOS.
-- [ ] `vetterd/src/notifier/linux.rs` implementing `Notifier`:
+- [x] `vetterd/src/notifier/linux.rs` implementing `Notifier`:
       `Notify` with `actions = ["approve", "Approve", "reject", "Reject"]`,
       `desktop-entry` hint, `urgency = critical`, `expire_timeout = 0`
       (never auto-expire — a prompt must not silently vanish).
-- [ ] Subscribe to `ActionInvoked`, `NotificationClosed`, and
+- [x] Subscribe to `ActionInvoked`, `NotificationClosed`, and
       `ActivationToken`; map notification id → request ULID;
       route into `PendingQueue::resolve`.
-- [ ] `CloseNotification` on every resolve path — including
+- [x] `CloseNotification` on every resolve path — including
       resolves that came from the admin socket or a rule addition
       (the macOS `persist_rule_async` analogue), so banners don't
       linger.
-- [ ] Consume `NotifyHint::was_empty_before` for coalescing (spec
+- [x] Consume `NotifyHint::was_empty_before` for coalescing (spec
       §7: "we don't spam banners"). The hint is already computed.
-- [ ] Cache `GetCapabilities`; re-query on `NameOwnerChanged` for
+- [x] Cache `GetCapabilities`; re-query on `NameOwnerChanged` for
       `org.freedesktop.Notifications` (§5.4). Degrade to
       click-through when `actions` is absent.
-- [ ] Honour `settings.notification_sound` via the `sound-name` hint.
-- [ ] Add `"linux"` to `notifier::build_from_env` and make it the
+- [x] Honour `settings.notification_sound` via the `sound-name` hint.
+- [x] Add `"linux"` to `notifier::build_from_env` and make it the
       default `default_kind()` on `target_os = "linux"`. Guard on a
       reachable session bus, **not** on any bundle notion (§5.2);
       exit 78 with a message pointing at `VETTERD_NOTIFIER=noop`.
-- [ ] Threading: run the `zbus` connection on its own thread with a
+- [x] Threading: run the `zbus` connection on its own thread with a
       single-threaded async runtime. Never block the UI thread on a
       bus call.
 
@@ -501,11 +504,11 @@ Per §4.3: tarball + `cargo install` only, for now.
 
 ---
 
-## 7. Manual smoke test (Linux) — **target state, not yet runnable**
+## 7. Manual smoke test (Linux) — **steps 1–7 runnable; 8–15 target state**
 
 Every step below depends on phases that are not written yet. Marked
-with the phase that unlocks it. With 6a landed, steps 1–4 work
-today; the rest wait on 6b–6e.
+with the phase that unlocks it. With 6a and 6b landed, steps 1–7
+work today; the rest wait on 6c–6e.
 
 1. Build: `cargo build --release -p vetterd -p vet`, then
    `export PATH="$PWD/target/release:$PATH"`. *(works today)*
@@ -520,12 +523,14 @@ today; the rest wait on 6b–6e.
    26 characters. *(6a — works today)*
 5. **Notification path.** A Plasma notification appears with
    **Approve** and **Reject**. Clicking either resolves the request
-   and the banner clears. *(6b)*
+   and the banner clears. *(6b — works today)*
 6. **Coalescing.** Two concurrent `vet curl` commands raise only one
-   banner; the second coalesces. *(6b)*
+   banner; the second coalesces. *(6b — works today)*
 7. **Capability degradation.** Repeat under a daemon without
-   `actions` (e.g. `notify-osd`); confirm the body-click path still
-   reaches the UI. *(6b)*
+   `actions` (e.g. `notify-osd`); confirm the daemon still posts the
+   banner and warns that buttons are unavailable. (The body-click
+   path into the window arrives with 6d; until then the fallback is
+   `vet daemon approve`.) *(6b — works today)*
 8. **Tray.** A shield appears in the Plasma system tray. Right-click
    → **Open Vetter…**, **Pending: N**, **Quit Vetter**. Badge
    tracks the pending count. *(6c)*

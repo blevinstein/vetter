@@ -1,7 +1,5 @@
 //! Tests for [`crate::fs_secure`]. Layout convention from `AGENTS.md`.
 
-use std::os::unix::fs::PermissionsExt as _;
-
 use super::*;
 
 #[test]

@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 use vetter_core::peer_cred::assert_peer_is_self;
 use vetter_core::pidfile::{self, PidFileContents};
 use vetter_core::wire::{
-    read_frame, write_frame, MgmtRequest, MgmtResponse, PendingItem, WireError,
+    read_frame, write_frame, MgmtRequest, MgmtResponse, PendingItem, WireDecision, WireError,
 };
 use vetter_core::{default_admin_socket_path, default_pidfile_path, default_socket_path};
 
@@ -261,6 +261,73 @@ pub fn list() -> ExitCode {
         }
         Err(e) => {
             eprintln!("vet daemon list: {e}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+    }
+}
+
+/// `vet daemon approve <id>` — resolve a parked prompt-class request
+/// with an allow, from a terminal.
+///
+/// This is the headless approval path: it needs nothing but the
+/// admin socket, so it works over SSH with no `$DISPLAY` and no
+/// session bus. On a host with an approval UI it sits alongside the
+/// UI rather than replacing it — the blocked worker cannot tell the
+/// two apart.
+pub fn approve(id: &str) -> ExitCode {
+    resolve(id, WireDecision::Allow, None)
+}
+
+/// `vet daemon reject [--reason R] <id>` — resolve a parked request
+/// with a deny; the waiting `vet` exits 77. `reason` is appended to
+/// the audit-log entry, which always records that the decision came
+/// over the admin socket.
+pub fn reject(id: &str, reason: Option<&str>) -> ExitCode {
+    resolve(id, WireDecision::Deny, reason)
+}
+
+/// Shared body of [`approve`] / [`reject`].
+///
+/// Note what is *not* here: the id is sent to the daemon verbatim,
+/// prefix and all. The daemon owns the pending map, so only it can
+/// expand a prefix atomically — doing it client-side would race
+/// against every other approver.
+fn resolve(id: &str, decision: WireDecision, reason: Option<&str>) -> ExitCode {
+    let verb = if matches!(decision, WireDecision::Allow) {
+        "approve"
+    } else {
+        "reject"
+    };
+    match query_admin(MgmtRequest::Resolve {
+        id: id.to_string(),
+        decision,
+        reason: reason.map(str::to_string),
+    }) {
+        Ok(MgmtResponse::Resolved { id, decision }) => {
+            // Echo the *full* ULID the daemon resolved, not the
+            // abbreviation the user typed — it's the id that shows
+            // up in the audit log.
+            let label = match decision {
+                WireDecision::Allow | WireDecision::AllowOnce => "approved",
+                WireDecision::Deny => "rejected",
+            };
+            println!("vet daemon {verb}: {label} request {id}");
+            ExitCode::from(EXIT_OK)
+        }
+        Ok(MgmtResponse::Error { message }) => {
+            // Unknown, already-resolved, and ambiguous ids all land
+            // here and are all errors: silently succeeding on a
+            // no-op would let a script believe it had unblocked a
+            // request it never touched.
+            eprintln!("vet daemon {verb}: daemon error: {message}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+        Ok(other) => {
+            eprintln!("vet daemon {verb}: unexpected daemon response: {other:?}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+        Err(e) => {
+            eprintln!("vet daemon {verb}: {e}");
             ExitCode::from(EXIT_CONFIG)
         }
     }

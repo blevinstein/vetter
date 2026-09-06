@@ -212,3 +212,76 @@ fn max_inflight_rejects_negative() {
     let err = super::max_inflight_from_env().expect_err("negative must be a config error");
     assert!(matches!(err, super::DaemonError::Config(_)), "{err:?}");
 }
+
+// ── `match_pending_id` — admin-socket id resolution ─────────────────
+
+/// Two ULIDs minted in the same millisecond that share a long
+/// prefix; realistic input for the ambiguity path, since the ULID
+/// timestamp occupies the leading 10 characters.
+const ID_A: &str = "01JBQ7Z9M0AAAAAAAAAAAAAAAA";
+const ID_B: &str = "01JBQ7Z9M0BBBBBBBBBBBBBBBB";
+
+fn pending_ids() -> Vec<String> {
+    vec![ID_A.to_string(), ID_B.to_string()]
+}
+
+#[test]
+fn match_pending_id_accepts_a_full_ulid() {
+    assert_eq!(
+        super::match_pending_id(&pending_ids(), ID_A).expect("exact match"),
+        ID_A
+    );
+}
+
+#[test]
+fn match_pending_id_accepts_a_unique_prefix() {
+    // One character past the shared timestamp+randomness prefix is
+    // enough to disambiguate.
+    assert_eq!(
+        super::match_pending_id(&pending_ids(), "01JBQ7Z9M0A").expect("unique prefix"),
+        ID_A
+    );
+}
+
+#[test]
+fn match_pending_id_is_case_insensitive() {
+    assert_eq!(
+        super::match_pending_id(&pending_ids(), &ID_B.to_ascii_lowercase())
+            .expect("lowercase full id"),
+        ID_B
+    );
+    assert_eq!(
+        super::match_pending_id(&pending_ids(), "01jbq7z9m0b").expect("lowercase prefix"),
+        ID_B
+    );
+}
+
+#[test]
+fn match_pending_id_rejects_an_ambiguous_prefix() {
+    let err = super::match_pending_id(&pending_ids(), "01JBQ7Z9M0")
+        .expect_err("shared prefix must be ambiguous");
+    assert!(err.contains("ambiguous"), "{err}");
+    // The operator needs to see *which* requests collided.
+    assert!(err.contains(ID_A), "{err}");
+    assert!(err.contains(ID_B), "{err}");
+}
+
+#[test]
+fn match_pending_id_rejects_an_unknown_id() {
+    let err = super::match_pending_id(&pending_ids(), "01ZZZZZZZZ")
+        .expect_err("unknown id must not match");
+    assert!(err.contains("no pending request"), "{err}");
+    assert!(err.contains("01ZZZZZZZZ"), "{err}");
+}
+
+#[test]
+fn match_pending_id_rejects_an_empty_id() {
+    let err = super::match_pending_id(&pending_ids(), "   ").expect_err("blank id must not match");
+    assert!(err.contains("empty request id"), "{err}");
+}
+
+#[test]
+fn match_pending_id_against_an_empty_queue_is_an_error() {
+    let err = super::match_pending_id(&[], ID_A).expect_err("nothing is pending");
+    assert!(err.contains("no pending request"), "{err}");
+}

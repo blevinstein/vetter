@@ -685,14 +685,22 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
       `default_kind()` in
       [vetterd/src/notifier/mod.rs](vetterd/src/notifier/mod.rs)
       to `"linux"` on Linux.
-- [ ] Add `MgmtRequest::ResolvePending { id, decision, reason }`
-      + matching `MgmtResponse::PendingResolved` to
+- [x] Add `MgmtRequest::Resolve { id, decision, reason }`
+      + matching `MgmtResponse::Resolved { id, decision }` to
       [vetter-core/src/wire/mod.rs](vetter-core/src/wire/mod.rs);
       handle in
       [vetterd/src/lib.rs::handle_admin_request](vetterd/src/lib.rs).
-- [ ] `vet daemon approve <id>` and `vet daemon reject <id>`
-      subcommands in [vet/src/daemon.rs](vet/src/daemon.rs); both
-      take an optional `--reason <str>`.
+      (Named `Resolve`/`Resolved`, not `ResolvePending`/
+      `PendingResolved`, to match `PendingQueue::resolve`.) The
+      daemon expands a unique ULID *prefix* to the full id, so the
+      match is atomic against its own pending map; unknown,
+      already-resolved, and ambiguous ids are all errors.
+- [x] `vet daemon approve <id>` and `vet daemon reject <id>`
+      subcommands in [vet/src/daemon.rs](vet/src/daemon.rs).
+      `--reason <str>` is on `reject` only, per
+      [plans/LinuxApp.md](plans/LinuxApp.md) §6a; the wire field
+      carries a reason for either decision if `approve` ever wants
+      one.
 - [ ] CI: extend `.github/workflows/ci.yml` test job with
       `apt-get install -y libgtk-4-dev libdbus-1-dev`.
 

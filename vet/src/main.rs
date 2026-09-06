@@ -121,6 +121,21 @@ enum DaemonAction {
     Status,
     /// List pending approval requests waiting for a human decision.
     List,
+    /// Approve a pending request, unblocking the waiting `vet`.
+    Approve {
+        /// Request id from `vet daemon list`. A unique prefix of the
+        /// ULID is enough — you don't have to type all 26 chars.
+        id: String,
+    },
+    /// Reject a pending request; the waiting `vet` exits 77.
+    Reject {
+        /// Request id from `vet daemon list`. A unique prefix of the
+        /// ULID is enough — you don't have to type all 26 chars.
+        id: String,
+        /// Note appended to the audit-log reason for this rejection.
+        #[arg(long, value_name = "REASON")]
+        reason: Option<String>,
+    },
     /// Register or unregister Vetter.app as a macOS Login Item so
     /// the daemon comes back automatically after every reboot.
     Autostart {
@@ -160,6 +175,8 @@ fn main() -> ExitCode {
             DaemonAction::Stop => daemon::stop(),
             DaemonAction::Status => daemon::status(),
             DaemonAction::List => daemon::list(),
+            DaemonAction::Approve { id } => daemon::approve(&id),
+            DaemonAction::Reject { id, reason } => daemon::reject(&id, reason.as_deref()),
             DaemonAction::Autostart { action } => match action {
                 AutostartAction::Enable => daemon::autostart_enable(),
                 AutostartAction::Disable => daemon::autostart_disable(),

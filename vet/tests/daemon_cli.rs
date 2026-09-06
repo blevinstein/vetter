@@ -252,3 +252,177 @@ fn stop_with_stale_pidfile_cleans_up_and_exits_zero() {
         "pidfile should be cleaned up after stale stop"
     );
 }
+
+// ── Phase 6a: `vet daemon approve` / `reject` ───────────────────────
+
+impl Scratch {
+    /// Like [`Scratch::vet`] but returns a plain `std::process::Command`,
+    /// which can be `spawn`ed instead of run to completion.
+    /// `assert_cmd::Command` only offers blocking execution, and these
+    /// tests need a `vet curl` left *parked* in the daemon's pending
+    /// queue while a second `vet` resolves it.
+    fn vet_spawnable(&self) -> std::process::Command {
+        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("vet"));
+        let prior = std::env::var_os("PATH").unwrap_or_default();
+        let mut new_path = std::ffi::OsString::new();
+        new_path.push(self.dir.path());
+        new_path.push(":");
+        new_path.push(prior);
+        cmd.env("PATH", new_path)
+            .env("VETTERD_SOCKET", &self.socket)
+            .env("VETTERD_BIN", assert_cmd::cargo::cargo_bin("vetterd"))
+            .env("VETTERD_PIDFILE", &self.pidfile)
+            .env("VETTER_AUDIT_LOG", &self.audit)
+            .env("VETTER_ALLOWLIST", &self.allowlist)
+            .env("VETTERD_NOTIFIER", "noop")
+            .env_remove("NO_COLOR")
+            .env_remove("CLICOLOR_FORCE")
+            .env_remove("CLICOLOR")
+            .env_remove("TERM");
+        cmd
+    }
+
+    /// The id of the single request parked in the daemon's pending
+    /// queue, scraped from `vet daemon list`. Polls because the
+    /// submit races the `list` call.
+    fn wait_for_one_pending_id(&self) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let out = self
+                .vet_spawnable()
+                .args(["daemon", "list"])
+                .output()
+                .expect("run vet daemon list");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            // `print_pending_list` formats each row as
+            // "  [<ULID>] curl GET <target>".
+            if let Some(id) = stdout
+                .lines()
+                .find_map(|l| l.trim().strip_prefix('['))
+                .and_then(|rest| rest.split(']').next())
+            {
+                return id.to_string();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for a pending request; last list output: {stdout}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// The end-to-end headless approval story: a parked `vet curl`
+/// unblocks with exit 0 and actually execs the wrapped command once
+/// an operator approves it from a second terminal. This is
+/// `plans/LinuxApp.md` §7 step 4.
+#[test]
+fn approve_unblocks_parked_vet_with_exit_zero() {
+    let s = Scratch::new();
+    let _r = Reaper(s.pidfile.clone());
+    let marker = s.dir.path().join("curl-ran");
+    common::install_fake_curl(s.dir.path(), &marker);
+
+    s.vet().args(["daemon", "start"]).assert().success();
+    assert!(wait_for_socket(&s.socket, Duration::from_secs(2)));
+
+    // Parks: the noop notifier never resolves anything, so this
+    // child blocks until the admin socket says otherwise.
+    let mut parked = s
+        .vet_spawnable()
+        .args(["curl", "https://approve-e2e.example.test/"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn parked vet");
+
+    let id = s.wait_for_one_pending_id();
+
+    s.vet()
+        .args(["daemon", "approve", &id])
+        .assert()
+        .success()
+        .stdout(contains("approved"))
+        .stdout(contains(&id));
+
+    let status = parked.wait().expect("wait for parked vet");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "approved request should exit 0 (curl's own status)"
+    );
+    assert!(marker.exists(), "approved request should have exec'd curl");
+}
+
+/// The mirror image: a rejection unblocks the parked `vet` with exit
+/// 77 (`EX_NOPERM`) and the wrapped command never runs.
+#[test]
+fn reject_unblocks_parked_vet_with_exit_77() {
+    let s = Scratch::new();
+    let _r = Reaper(s.pidfile.clone());
+    let marker = s.dir.path().join("curl-ran");
+    common::install_fake_curl(s.dir.path(), &marker);
+
+    s.vet().args(["daemon", "start"]).assert().success();
+    assert!(wait_for_socket(&s.socket, Duration::from_secs(2)));
+
+    let mut parked = s
+        .vet_spawnable()
+        .args(["curl", "https://reject-e2e.example.test/"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn parked vet");
+
+    let id = s.wait_for_one_pending_id();
+
+    // Resolve by prefix — the whole point of daemon-side matching.
+    s.vet()
+        .args(["daemon", "reject", "--reason", "test rejection", &id[..8]])
+        .assert()
+        .success()
+        .stdout(contains("rejected"))
+        .stdout(contains(&id));
+
+    let status = parked.wait().expect("wait for parked vet");
+    assert_eq!(status.code(), Some(77), "rejected request should exit 77");
+    assert!(!marker.exists(), "rejected request must not exec curl");
+
+    // The operator's note reached the audit log alongside the
+    // admin-socket provenance.
+    let audit = std::fs::read_to_string(&s.audit).expect("audit log");
+    assert!(
+        audit.contains("rejected via admin socket: test rejection"),
+        "{audit}"
+    );
+}
+
+/// Resolving an id the daemon has never heard of is an error, not a
+/// silent success.
+#[test]
+fn approve_unknown_id_exits_non_zero() {
+    let s = Scratch::new();
+    let _r = Reaper(s.pidfile.clone());
+
+    s.vet().args(["daemon", "start"]).assert().success();
+    assert!(wait_for_socket(&s.socket, Duration::from_secs(2)));
+
+    s.vet()
+        .args(["daemon", "approve", "01ZZZZZZZZZZZZZZZZZZZZZZZZ"])
+        .assert()
+        .code(78)
+        .stderr(contains("no pending request"));
+}
+
+/// With no daemon running there is no admin socket to talk to;
+/// `approve` must say so rather than hanging or reporting success.
+#[test]
+fn approve_with_no_daemon_running_exits_non_zero() {
+    let s = Scratch::new();
+
+    s.vet()
+        .args(["daemon", "approve", "01ZZZZZZZZZZZZZZZZZZZZZZZZ"])
+        .assert()
+        .code(78)
+        .stderr(contains("admin socket"));
+}

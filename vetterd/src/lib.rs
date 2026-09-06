@@ -504,6 +504,11 @@ fn handle_admin_request(ctx: &Arc<Context>, req: MgmtRequest) -> MgmtResponse {
                 },
             }
         }
+        MgmtRequest::Resolve {
+            id,
+            decision,
+            reason,
+        } => handle_resolve(ctx, &id, decision, reason.as_deref()),
         MgmtRequest::GetAutostart => {
             // Read both: settings.yaml (the user's persisted
             // preference) and SMAppService (the live OS state). The
@@ -526,6 +531,129 @@ fn handle_admin_request(ctx: &Arc<Context>, req: MgmtRequest) -> MgmtResponse {
                 message: e.to_string(),
             },
         },
+    }
+}
+
+/// Resolve one parked prompt-class request on behalf of an admin
+/// client — the daemon half of `vet daemon approve` /
+/// `vet daemon reject`.
+///
+/// Deliberately owns the *policy* around resolving (which decisions
+/// are legal here, how ids are matched, what the audit reason says)
+/// so every admin client behaves identically and none of it has to
+/// be reimplemented in `vet`. The actual state change is the same
+/// [`PendingQueue::resolve`] call the macOS UI callbacks make, so
+/// an admin-socket approval and a button click are indistinguishable
+/// to the blocked connection worker.
+fn handle_resolve(
+    ctx: &Arc<Context>,
+    id: &str,
+    decision: WireDecision,
+    reason: Option<&str>,
+) -> MgmtResponse {
+    let verb = match decision {
+        WireDecision::Allow => "approved",
+        WireDecision::Deny => "rejected",
+        // `AllowOnce` is reserved for a one-shot UI affordance that
+        // does not exist yet. Silently widening it to `Allow` would
+        // be the wrong kind of forgiving on a security gate, so
+        // refuse and let the caller pick a real decision.
+        WireDecision::AllowOnce => {
+            return MgmtResponse::Error {
+                message: "allow_once is not a valid decision on the admin socket; \
+                          send allow or deny"
+                    .into(),
+            };
+        }
+    };
+
+    let pending: Vec<String> = ctx
+        .pending
+        .pending_summaries()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    let full_id = match match_pending_id(&pending, id) {
+        Ok(found) => found,
+        Err(message) => return MgmtResponse::Error { message },
+    };
+
+    // "approved via admin socket" / "rejected via admin socket" are
+    // the exact audit strings `plans/Overview.md` and friends have
+    // promised since Phase 3. An operator-supplied note is appended
+    // rather than substituted so the provenance of the decision is
+    // never lost from the log.
+    let audit_reason = match reason.map(str::trim) {
+        Some(r) if !r.is_empty() => format!("{verb} via admin socket: {r}"),
+        _ => format!("{verb} via admin socket"),
+    };
+    let pending_decision = if matches!(decision, WireDecision::Allow) {
+        PendingDecision::allow(audit_reason)
+    } else {
+        PendingDecision::deny(audit_reason)
+    };
+
+    if ctx.pending.resolve(&full_id, pending_decision) {
+        MgmtResponse::Resolved {
+            id: full_id,
+            decision,
+        }
+    } else {
+        // Two ways to land here, and the caller can't act
+        // differently on either: the entry was resolved by a racing
+        // approver (GUI, notification action, second admin client)
+        // between our snapshot and the call above, or it was still
+        // present but its connection worker had already gone away.
+        // Both mean "your decision did not take effect", which is an
+        // error, not a no-op — see `plans/LinuxApp.md` §6a.
+        MgmtResponse::Error {
+            message: format!(
+                "request `{full_id}` is no longer pending \
+                 (already resolved, or the waiting client disconnected)"
+            ),
+        }
+    }
+}
+
+/// Map a possibly-abbreviated request id onto the full ULID of a
+/// pending entry.
+///
+/// Exact match wins outright, so a caller that pastes a complete
+/// ULID never pays for the prefix scan and can never be told its own
+/// id is ambiguous. Otherwise the id must prefix exactly one pending
+/// entry. On failure returns the message to hand straight to
+/// [`MgmtResponse::Error`]; split out from [`handle_resolve`] so the
+/// matching rules are unit-testable without standing up a
+/// [`Context`].
+fn match_pending_id(pending: &[String], id: &str) -> Result<String, String> {
+    // ULIDs are Crockford base32 and canonically uppercase, but a
+    // shell-history recall or a sloppy copy/paste can lowercase
+    // them; the ids are unambiguous either way.
+    let needle = id.trim().to_ascii_uppercase();
+    if needle.is_empty() {
+        return Err("empty request id".into());
+    }
+    if pending.contains(&needle) {
+        return Ok(needle);
+    }
+    let mut matches: Vec<String> = pending
+        .iter()
+        .filter(|p| p.starts_with(&needle))
+        .cloned()
+        .collect();
+    match matches.len() {
+        0 => Err(format!("no pending request matches id `{id}`")),
+        1 => Ok(matches.remove(0)),
+        n => {
+            // Sorted so the operator sees a stable list they can
+            // re-run against; ULIDs sort chronologically.
+            matches.sort();
+            Err(format!(
+                "id `{id}` is ambiguous: it matches {n} pending requests ({list}); \
+                 supply more characters",
+                list = matches.join(", "),
+            ))
+        }
     }
 }
 

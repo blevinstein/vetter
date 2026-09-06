@@ -359,6 +359,35 @@ pub enum MgmtRequest {
         scope: WireScope,
         entry: KnownHostEntry,
     },
+    /// Resolve a request currently parked in the pending-prompt
+    /// queue, without going through a GUI. This is the headless
+    /// approve/reject path behind `vet daemon approve` /
+    /// `vet daemon reject`: it is the only way to unblock a
+    /// prompt-class request on a host with no approval UI (a Linux
+    /// desktop before Phase 6b, or any platform over SSH).
+    ///
+    /// `id` may be a full 26-character ULID **or any unambiguous
+    /// prefix of one**. The ids are long and these commands are
+    /// hand-typed, so the daemon owns the prefix match rather than
+    /// making every admin client reimplement it — and it runs
+    /// against the daemon's own pending map, which is the only
+    /// authoritative view. Matching is case-insensitive: ULIDs are
+    /// Crockford base32 whose canonical form is uppercase.
+    ///
+    /// `decision` must be [`WireDecision::Allow`] or
+    /// [`WireDecision::Deny`]. [`WireDecision::AllowOnce`] is
+    /// refused — it is reserved for a future one-shot UI affordance
+    /// and the admin socket has no way to scope the "once".
+    ///
+    /// `reason` is an optional operator note. It never *replaces*
+    /// the audit reason (which always records that the decision
+    /// arrived over the admin socket); it is appended to it.
+    Resolve {
+        id: String,
+        decision: WireDecision,
+        #[serde(default)]
+        reason: Option<String>,
+    },
     /// Read-only query: report the current `[SMAppService.mainApp
     /// status]` (or the equivalent stub state on non-macOS). Used
     /// by `vet daemon autostart status` and by the popover when it
@@ -407,6 +436,16 @@ pub enum MgmtResponse {
     KnownHostAdded {
         pattern: String,
         scope: WireScope,
+    },
+    /// Result of [`MgmtRequest::Resolve`]. `id` is the **full**
+    /// ULID the daemon actually resolved, not the (possibly
+    /// abbreviated) id the caller sent — so a client that resolved
+    /// by prefix can echo the unambiguous id back to the operator
+    /// and know exactly which request it unblocked. `decision` is
+    /// echoed for the same reason.
+    Resolved {
+        id: String,
+        decision: WireDecision,
     },
     /// Result of [`MgmtRequest::GetAutostart`] and
     /// [`MgmtRequest::SetAutostart`]. `status` is the live OS

@@ -23,21 +23,20 @@ platforms; the data layer is unchanged.
 ## 0. TL;DR
 
 The **non-GUI half of vetter already works on Linux**, unmodified.
-It builds clean, the full test suite passes (618 tests, 0 failures),
+It builds clean, the full test suite passes (637 tests, 0 failures),
 and the daemon's socket / pidfile / audit / XDG path layer is
 correct. What is missing is the entire approval surface.
 
-**The one blocking gap:** on Linux there is no way for a human to
-approve a prompt-class request. The default notifier is `noop`, and
-the admin socket has no resolve verb — `MgmtRequest` exposes
-`ListPending`, `SuggestionsFor`, `AddRule`, `RemoveRule`,
-`AddKnownHost`, `GetAutostart`, `SetAutostart`, and nothing else.
-A prompt-class `vet curl …` on Linux parks forever and only unblocks
-(as a deny) when the daemon shuts down and calls `cancel_all`.
+**The one blocking gap — closed by Phase 6a on 2026-09-06.** It used
+to be that on Linux nothing could approve a prompt-class request: the
+default notifier is `noop` and the admin socket had no resolve verb,
+so a prompt-class `vet curl …` parked forever and only unblocked (as
+a deny) when the daemon shut down and called `cancel_all`.
+`MgmtRequest::Resolve` and `vet daemon approve` / `vet daemon reject`
+now close that loop, on every platform, with no new dependencies and
+no GUI — see §6a.
 
-Everything else in this plan is UI polish. **Phase 6a below is the
-one that turns vetter from unusable to usable on Linux, and it is
-about a day of work with no new dependencies.**
+Everything else in this plan is UI polish.
 
 ---
 
@@ -49,14 +48,14 @@ Wayland session, kernel 7.1.4.
 | Check | Result |
 |---|---|
 | `cargo build --release -p vetterd -p vet` | **OK** — clean, no cfg fallout, ~49 s cold |
-| `cargo test --workspace --all-features` | **OK** — 618 passed, 0 failed, 0 ignored |
+| `cargo test --workspace --all-features` | **OK** — 637 passed, 0 failed, 0 ignored |
 | `vet doctor` | **OK** — all rows resolve; correct XDG paths |
 | `vet daemon start` / `status` / `stop` | **OK** — pidfile, socket, clean teardown, no leftovers |
 | Socket path | `/run/user/1000/vetter/vetter.sock`, dir mode 0700, socket 0600 |
 | Audit log | `~/.local/state/vetter/audit.log`, mode 0600 |
 | `vet curl` → parse → render → policy → park | **OK** — request reaches the pending queue |
 | `vet daemon list` | **OK** — shows the parked request with its ULID |
-| **Resolve the parked request** | **MISSING — no mechanism exists** |
+| **Resolve the parked request** | **OK** — `vet daemon approve` / `reject` (Phase 6a, landed 2026-09-06) |
 | `vet doctor` row "code signing" | `SKIP macOS only` — no Linux equivalent yet |
 | `vet doctor` row "autostart" | `SKIP macOS only` — no Linux equivalent yet |
 
@@ -126,7 +125,7 @@ Linux stands.
 
 | macOS feature | Implementation | Linux status |
 |---|---|---|
-| **Resolve a prompt** | UI callbacks → `PendingQueue::resolve` | **MISSING — nothing can resolve** |
+| **Resolve a prompt** | UI callbacks → `PendingQueue::resolve` | **DONE (6a)** — `MgmtRequest::Resolve` + `vet daemon approve`/`reject` |
 | Notification with Approve/Reject | `UNUserNotificationCenter` (`notifier/mac.rs`) | **MISSING** — no `LinuxNotifier` |
 | Notification body click-through → detail UI | `runloop/mod.rs` | **MISSING** |
 | Banner coalescing (`NotifyHint::was_empty_before`) | `notifier/mac.rs` | Hint plumbing is portable; **no consumer** |
@@ -156,10 +155,11 @@ These appear in `AGENTS.md`, `plans/Overview.md`, `plans/Release.md`,
 `plans/TestingPlan.md`, and the deleted `UbuntuApp.md` as if they
 ship. They do not exist:
 
-- `vet daemon approve <id>` / `vet daemon reject <id>` — **the
-  documented headless escape hatch on every platform, including
-  macOS.** Not implemented. `vet daemon --help` lists only `start`,
-  `stop`, `status`, `list`, `autostart`.
+- ~~`vet daemon approve <id>` / `vet daemon reject <id>`~~ — was
+  **the documented headless escape hatch on every platform,
+  including macOS**, and was not implemented. **Landed in Phase 6a
+  (2026-09-06)**; `vet daemon --help` now lists `start`, `stop`,
+  `status`, `list`, `approve`, `reject`, `autostart`.
 - `VETTERD_NOTIFIER=linux` — not a valid value; `build_from_env`
   accepts only `mac` / `mock` / `noop`. The claim that the daemon
   "refuses to install if `$DBUS_SESSION_BUS_ADDRESS` is unset and
@@ -310,7 +310,7 @@ suppression rule (hide the button when the path does not exist).
 
 ## 6. Phased plan
 
-### Phase 6a — Headless resolve path `[ ]` **← start here**
+### Phase 6a — Headless resolve path `[x]` **done 2026-09-06**
 
 This is the unblocker, and it is platform-independent: **macOS is
 missing it too.** It costs no new dependencies and makes vetter
@@ -318,28 +318,28 @@ immediately usable on Linux from a terminal, well before any GUI
 lands. It also gives every later phase a resolve path to test
 against.
 
-- [ ] Add `MgmtRequest::Resolve { id: String, decision: …, reason: Option<String> }`
+- [x] Add `MgmtRequest::Resolve { id: String, decision: …, reason: Option<String> }`
       to [vetter-core/src/wire/mod.rs](../vetter-core/src/wire/mod.rs),
       plus the matching `MgmtResponse`. Reuse the existing
       allow/deny decision type rather than inventing a third.
-- [ ] Handle it in the daemon's admin loop
+- [x] Handle it in the daemon's admin loop
       ([vetterd/src/lib.rs](../vetterd/src/lib.rs)) by calling
       `PendingQueue::resolve`, exactly as the macOS UI callbacks do.
       Audit reason: `"approved via admin socket"` /
       `"rejected via admin socket"` — the strings the docs already
       promise.
-- [ ] `vet daemon approve <id>` / `vet daemon reject [--reason R] <id>`
+- [x] `vet daemon approve <id>` / `vet daemon reject [--reason R] <id>`
       in [vet/src/daemon.rs](../vet/src/daemon.rs). Accept a unique
       ULID prefix, not just the full 26 chars — the ids are long and
       this is a hand-typed command.
-- [ ] Decide and document whether an unknown / already-resolved id
+- [x] Decide and document whether an unknown / already-resolved id
       is an error or a no-op (recommend: error, exit non-zero).
-- [ ] Integration coverage in
+- [x] Integration coverage in
       [vetterd/tests/admin_ipc.rs](../vetterd/tests/admin_ipc.rs):
       approve unblocks the parked client with exit 0; reject
       unblocks with 77; both write the right audit reason;
       double-resolve is rejected.
-- [ ] Confirm this is reachable over SSH with no `$DISPLAY` /
+- [x] Confirm this is reachable over SSH with no `$DISPLAY` /
       `$DBUS_SESSION_BUS_ADDRESS` — that is the documented headless
       story and it should finally be true.
 
@@ -504,8 +504,8 @@ Per §4.3: tarball + `cargo install` only, for now.
 ## 7. Manual smoke test (Linux) — **target state, not yet runnable**
 
 Every step below depends on phases that are not written yet. Marked
-with the phase that unlocks it. Until 6a lands, only steps 1–3 and
-the headless step work.
+with the phase that unlocks it. With 6a landed, steps 1–4 work
+today; the rest wait on 6b–6e.
 
 1. Build: `cargo build --release -p vetterd -p vet`, then
    `export PATH="$PWD/target/release:$PATH"`. *(works today)*
@@ -516,7 +516,8 @@ the headless step work.
 4. **Headless resolve.** `vet daemon approve <id>` → the parked
    `vet` exec's curl and returns curl's exit code.
    `vet daemon reject <id>` → exit 77. Works over SSH with no
-   `$DISPLAY`. *(6a)*
+   `$DISPLAY`. A unique ULID prefix is accepted in place of the full
+   26 characters. *(6a — works today)*
 5. **Notification path.** A Plasma notification appears with
    **Approve** and **Reject**. Clicking either resolves the request
    and the banner clears. *(6b)*

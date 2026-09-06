@@ -53,7 +53,7 @@ model, and design rationale — read it before making non-trivial changes.
 | Threat model + hardening backlog | [plans/ThreatModel.md](plans/ThreatModel.md) |
 | Build / run / smoke-test the macOS app | [plans/MacOSApp.md](plans/MacOSApp.md) |
 | Sign, notarise, publish to the Homebrew tap | [plans/Release.md](plans/Release.md) |
-| Ubuntu desktop app design and operational target | [plans/UbuntuApp.md](plans/UbuntuApp.md) |
+| Linux desktop app: status, gaps vs macOS, plan | [plans/LinuxApp.md](plans/LinuxApp.md) |
 | Notification UI card catalogue | [plans/ApprovalUI.md](plans/ApprovalUI.md) |
 
 If you're picking up a fresh task: open [TODO.md](TODO.md) first, find
@@ -133,7 +133,7 @@ The daemon **expects** a graphical session: the default `VETTERD_NOTIFIER=linux`
 refuses to install if `$DBUS_SESSION_BUS_ADDRESS` is unset, and exits with
 code 78. For SSH / CI / container use, set `VETTERD_NOTIFIER=noop` (see below).
 
-See [plans/UbuntuApp.md](plans/UbuntuApp.md) for the full operational guide
+See [plans/LinuxApp.md](plans/LinuxApp.md) for the full operational guide
 and [plans/Release.md](plans/Release.md) §"Linux / Launchpad PPA" for the
 maintainer-side flow.
 

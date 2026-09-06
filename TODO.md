@@ -662,7 +662,7 @@ popover's `Allow path…` picker.
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §7 ("Linux"), §11.
 Operational notes + manual smoke procedure:
-[plans/UbuntuApp.md](plans/UbuntuApp.md). Distribution flow:
+[plans/LinuxApp.md](plans/LinuxApp.md). Distribution flow:
 [plans/Release.md](plans/Release.md) §"Linux / Launchpad PPA".
 
 End-state: `sudo add-apt-repository ppa:blevinstein/vetter && sudo

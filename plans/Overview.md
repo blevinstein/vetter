@@ -451,7 +451,7 @@ Operational guide: [MacOSApp.md](MacOSApp.md). Card catalogue:
   / `vet daemon reject <id>` to resolve. The admin protocol is
   the same `vetter-admin.sock` that backs `vet daemon status`.
 
-Operational guide: [UbuntuApp.md](UbuntuApp.md). Distribution flow:
+Operational guide: [LinuxApp.md](LinuxApp.md). Distribution flow:
 [Release.md](Release.md) §"Linux / Launchpad PPA".
 
 ### Other platforms

@@ -128,7 +128,7 @@ Both sets are merged by `extend` in the explain path (`vet/src/explain.rs`).
 | Threat model | `plans/ThreatModel.md` |
 | Testing plan | `plans/TestingPlan.md` |
 | macOS operational guide | `plans/MacOSApp.md` |
-| Ubuntu operational guide | `plans/UbuntuApp.md` |
+| Linux operational guide + plan | `plans/LinuxApp.md` |
 | Release / signing / packaging | `plans/Release.md` |
 | Current tasks | `TODO.md` |
 

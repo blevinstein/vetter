@@ -687,7 +687,7 @@ and for testing `UNUserNotificationCenter` integration (Phase 4+).
   a tray host on the bus. CI runs the *non-GTK* half (queue → card-data
   lowering, `ResolvePending` admin round-trip, mock-D-Bus `ActionInvoked`
   routing) headlessly; the popover-widget side stays manual via
-  [`plans/UbuntuApp.md`](UbuntuApp.md) §"Manual smoke test" until we
+  [`plans/LinuxApp.md`](LinuxApp.md) §"Manual smoke test" until we
   invest in a `Xvfb` + `dbus-run-session` harness.
 - **Windows tests**: Not needed until Phase 8; ensure the core library
   unit tests (no UI, no Unix sockets) compile and pass on Windows CI

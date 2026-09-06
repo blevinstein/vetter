@@ -7,7 +7,7 @@ supported platform: the Developer-ID signed + notarised + stapled
 
 The everyday developer build paths (ad-hoc signed `.app` on macOS;
 `cargo build` + `cargo deb` on Ubuntu) live in
-[MacOSApp.md](MacOSApp.md) and [UbuntuApp.md](UbuntuApp.md)
+[MacOSApp.md](MacOSApp.md) and [LinuxApp.md](LinuxApp.md)
 respectively; use those for local hacking, this for shipping.
 
 Both pipelines are intentionally **local-only** for now —
@@ -349,7 +349,7 @@ Phase 5*:
 Operational guide for cutting a distribution-quality `.deb` and
 publishing it to the project's Launchpad PPA so end users get
 `sudo apt-get install vetter` semantics. Source-build instructions
-for local development live in [UbuntuApp.md](UbuntuApp.md).
+for local development live in [LinuxApp.md](LinuxApp.md).
 
 ## Launchpad-side prerequisites (one-time)
 
@@ -510,7 +510,7 @@ not run — confirm with `sudo dpkg --configure -a` and re-check.
 - **`vetter.service` reports `condition failed`.** The unit's
   `ConditionUser` and `ConditionEnvironment` guards fired; this is
   expected on machines without a graphical session. See
-  [UbuntuApp.md](UbuntuApp.md) §"Headless / SSH path".
+  [LinuxApp.md](LinuxApp.md).
 
 ## What's not here yet (Linux)
 

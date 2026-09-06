@@ -28,6 +28,7 @@
 
 pub mod audit;
 pub mod autostart;
+pub mod cards;
 pub mod notifier;
 pub mod paths;
 pub mod pending;

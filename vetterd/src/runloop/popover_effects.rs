@@ -22,8 +22,7 @@
 
 #![cfg(target_os = "macos")]
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use objc2::rc::Retained;
 use objc2_app_kit::{
@@ -33,6 +32,8 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use vetter_core::render::sanitize_for_display;
 use vetter_core::{Auth, Body, Effect, FileRead, FileWrite, Header, ParsedCommand, ProcessSpawn};
+
+use crate::cards::effects as card_effects;
 
 /// Body / monospaced-label font size. Picked to read at the same
 /// optical weight as the URL row's tokens.
@@ -131,7 +132,7 @@ pub fn build_effect_views(
     mtm: MainThreadMarker,
     file_button_factory: &FileButtonFactory<'_>,
 ) -> EffectViews {
-    let body_file_paths = collect_body_file_paths(parsed);
+    let body_file_paths = card_effects::collect_body_file_paths(parsed);
     let mut out = EffectViews {
         file_inputs: Vec::new(),
         others: Vec::new(),
@@ -170,21 +171,6 @@ pub fn build_effect_views(
             Effect::FileWrite(fw) => out.others.push(build_file_write_row(fw, mtm)),
             Effect::ProcessSpawn(ps) => out.others.push(build_process_row(ps, mtm)),
             Effect::CredentialUse(_) | Effect::Network(_) => {}
-        }
-    }
-    out
-}
-
-/// Gather every `Body::FromFile` path across this parsed command's
-/// HttpRequest effects. Used by [`build_effect_views`] to suppress
-/// the duplicate `read` row the curl parser emits for `-d @file`.
-fn collect_body_file_paths(parsed: &ParsedCommand) -> HashSet<PathBuf> {
-    let mut out: HashSet<PathBuf> = HashSet::new();
-    for eff in &parsed.effects {
-        if let Effect::HttpRequest(req) = eff {
-            if let Body::FromFile { path } = &req.body {
-                out.insert(path.clone());
-            }
         }
     }
     out
@@ -242,21 +228,19 @@ fn build_body_section(
     mtm: MainThreadMarker,
     file_button_factory: &FileButtonFactory<'_>,
 ) -> Option<Retained<NSView>> {
-    let (meta, content): (String, Option<Retained<NSView>>) = match body {
-        Body::None => return None,
-        Body::Inline { bytes } => (
-            format!("inline, {} B", bytes.len()),
-            Some(inline_body_content(bytes, mtm)),
-        ),
-        Body::FromFile { path } => (
-            "from file".to_string(),
-            Some(file_glyph_row_with_open(
-                "doc.text",
-                path,
-                mtm,
-                file_button_factory,
-            )),
-        ),
+    // `body_meta_label` is the single source of truth for "does this
+    // body get a section at all?" — it returns `None` exactly for
+    // `Body::None`, so the match below never sees that variant.
+    let meta = card_effects::body_meta_label(body)?;
+    let content: Option<Retained<NSView>> = match body {
+        Body::None => None,
+        Body::Inline { bytes } => Some(inline_body_content(bytes, mtm)),
+        Body::FromFile { path } => Some(file_glyph_row_with_open(
+            "doc.text",
+            path,
+            mtm,
+            file_button_factory,
+        )),
         Body::Form { fields } => {
             let stack = NSStackView::new(mtm);
             stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
@@ -264,20 +248,13 @@ fn build_body_section(
             stack.setDistribution(NSStackViewDistribution::Fill);
             for f in fields {
                 let pair = NSTextField::labelWithString(
-                    &NSString::from_str(&format!(
-                        "{}={}",
-                        sanitize_for_display(&f.name),
-                        sanitize_for_display(&f.value)
-                    )),
+                    &NSString::from_str(&card_effects::form_field_text(f)),
                     mtm,
                 );
                 pair.setFont(Some(&monospaced(ROW_FONT_SIZE)));
                 stack.addArrangedSubview(&pair);
             }
-            (
-                format!("x-www-form-urlencoded, {} fields", fields.len()),
-                Some(stack.into_super()),
-            )
+            Some(stack.into_super())
         }
     };
 
@@ -299,22 +276,7 @@ fn build_body_section(
 /// "Show raw" and the future scroll-on-hover treatment is tracked
 /// in the design doc.
 fn inline_body_content(bytes: &[u8], mtm: MainThreadMarker) -> Retained<NSView> {
-    let text = match std::str::from_utf8(bytes) {
-        Ok(s) => sanitize_for_display(s).into_owned(),
-        Err(_) => {
-            let max = 64.min(bytes.len());
-            let hex: String = bytes[..max]
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            if max < bytes.len() {
-                format!("{hex} … ({} more bytes)", bytes.len() - max)
-            } else {
-                hex
-            }
-        }
-    };
+    let text = card_effects::inline_body_text(bytes);
     let label = NSTextField::labelWithString(&NSString::from_str(&text), mtm);
     label.setFont(Some(&monospaced(ROW_FONT_SIZE)));
     label.into_super().into_super()
@@ -334,18 +296,7 @@ fn inline_body_content(bytes: &[u8], mtm: MainThreadMarker) -> Retained<NSView> 
 /// is true.
 fn build_auth_row(auth: Option<&Auth>, mtm: MainThreadMarker) -> Option<Retained<NSView>> {
     let auth = auth?;
-    let (label, redacted) = match auth {
-        Auth::Basic {
-            user,
-            password_redacted,
-        } => (
-            format!("Basic user={} password=••••", sanitize_for_display(user)),
-            *password_redacted,
-        ),
-        Auth::Bearer { token_redacted } => ("Bearer ••••".to_string(), *token_redacted),
-        Auth::Header { name } => (format!("{}: ••••", sanitize_for_display(name)), true),
-        Auth::Netrc => ("from .netrc".to_string(), false),
-    };
+    let (label, redacted) = card_effects::auth_label(auth);
     let stack = vertical_section("auth", mtm);
     let value = NSTextField::labelWithString(&NSString::from_str(&label), mtm);
     value.setFont(Some(&monospaced(ROW_FONT_SIZE)));

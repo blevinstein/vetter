@@ -29,15 +29,15 @@ use vetter_core::render::sanitize_for_display;
 use vetter_core::{HttpMethod, HttpRequest};
 
 use super::popover_pills;
+use crate::cards::url::{self as card_url, MethodTone};
+
+// Re-exported so the trust classifier stays nameable at this path
+// after the lift into `crate::cards::url`.
+pub use crate::cards::url::{host_trust, is_loopback, HostTrust};
 
 /// Body font size for non-pill URL tokens. Picked to match the
 /// monospaced semibold header font we use elsewhere.
 const URL_FONT_SIZE: f64 = 13.0;
-
-/// "Standard" ports we silently drop instead of rendering as
-/// `:443`. 8080 / 8443 are listed because they're common in dev
-/// stacks and a non-default warning would be noisy.
-const QUIET_PORTS: &[u16] = &[80, 443, 8080, 8443];
 
 /// Upper bound on the width of the path/query wrapping label. The
 /// label sits inside a card that is ultimately width-pinned to
@@ -128,20 +128,19 @@ pub fn build_url_row(
         popover_pills::build_pill(&safe_host, &trust.fg(), &trust.bg(), trust.tooltip(), mtm);
     top.addArrangedSubview(&host_pill);
 
-    // 4. `:port` if present and non-quiet.
-    if let Some(port) = req.url.port() {
-        if !QUIET_PORTS.contains(&port) {
-            let port_label =
-                NSTextField::labelWithString(&NSString::from_str(&format!(":{port}")), mtm);
-            port_label.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
-                URL_FONT_SIZE,
-                0.0,
-            )));
-            // Non-standard ports are a soft "look here" cue; orange
-            // mirrors the `non-standard-port` Warn pill.
-            port_label.setTextColor(Some(&NSColor::systemOrangeColor()));
-            top.addArrangedSubview(&port_label);
-        }
+    // 4. `:port` if present and worth showing (`card_url::visible_port`
+    //    filters the boring ones).
+    if let Some(port) = card_url::visible_port(&req.url) {
+        let port_label =
+            NSTextField::labelWithString(&NSString::from_str(&format!(":{port}")), mtm);
+        port_label.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
+            URL_FONT_SIZE,
+            0.0,
+        )));
+        // Non-standard ports are a soft "look here" cue; orange
+        // mirrors the `non-standard-port` Warn pill.
+        port_label.setTextColor(Some(&NSColor::systemOrangeColor()));
+        top.addArrangedSubview(&port_label);
     }
 
     // Trailing flexible spacer so top-row tokens bunch left rather
@@ -150,41 +149,22 @@ pub fn build_url_row(
     top.addArrangedSubview(&top_spacer);
     outer.addArrangedSubview(&top);
 
-    // 5 + 6. Path + query on a second wrapping row. We fold both
-    //        into a single `wrappingLabelWithString` so the wrap
-    //        boundary can fall inside a long path *or* inside a
-    //        long query without needing two separate sizing passes.
-    //        The row is omitted entirely when the URL has no
-    //        meaningful path/query (`https://host` or
-    //        `https://host/` with no `?…`) — leaving just the
-    //        top-row tokens, which is what the single-line
-    //        variant showed before this refactor.
-    let path = req.url.path();
-    let query = req.url.query();
-    let has_path = !path.is_empty() && path != "/";
-    let has_query = query.is_some();
+    // 5 + 6. Path + query on a second wrapping row. Both fold into
+    //        a single `wrappingLabelWithString` so the wrap boundary
+    //        can fall inside a long path *or* inside a long query
+    //        without needing two separate sizing passes. The row is
+    //        omitted entirely when the URL has no meaningful
+    //        path/query (`https://host` or `https://host/` with no
+    //        `?…`), leaving just the top-row tokens.
+    //
+    //        `card_url::path_query` owns the folding rule (and
+    //        sanitises the result) so every approval surface shows
+    //        the same tail.
+    let tail_text = card_url::path_query(&req.url);
+    let has_path = tail_text.has_path;
 
-    // Build the path+query string. The root case (`path == "/"`)
-    // is kept visible as a dim `/` only when it's the full URL
-    // target (no query) — otherwise the query label leads with
-    // `?` and the `/` would be redundant.
-    let path_query = if has_path && has_query {
-        format!("{path}?{}", query.unwrap())
-    } else if has_path {
-        path.to_string()
-    } else if has_query {
-        format!("/?{}", query.unwrap())
-    } else if path == "/" {
-        "/".to_string()
-    } else {
-        String::new()
-    };
-
-    if !path_query.is_empty() {
-        let tail = NSTextField::wrappingLabelWithString(
-            &NSString::from_str(&sanitize_for_display(&path_query)),
-            mtm,
-        );
+    if !tail_text.text.is_empty() {
+        let tail = NSTextField::wrappingLabelWithString(&NSString::from_str(&tail_text.text), mtm);
         tail.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
             URL_FONT_SIZE,
             0.0,
@@ -223,14 +203,7 @@ pub fn build_fallback_row(
     primary_target: &str,
     mtm: MainThreadMarker,
 ) -> Retained<NSView> {
-    let safe_command = sanitize_for_display(command);
-    let safe_verb = sanitize_for_display(primary_verb);
-    let safe_target = sanitize_for_display(primary_target);
-    let text = if primary_verb.is_empty() {
-        format!("{safe_command}  {safe_target}")
-    } else {
-        format!("{safe_command}  {safe_verb} {safe_target}")
-    };
+    let text = card_url::fallback_text(command, primary_verb, primary_target);
     let label = NSTextField::wrappingLabelWithString(&NSString::from_str(&text), mtm);
     let semibold = unsafe { NSFontWeightSemibold };
     label.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
@@ -245,27 +218,17 @@ pub fn build_fallback_row(
 /// renderer uses `Style::Method(*)`; the popover repeats the same
 /// taxonomy so a glance reads the same colour on both surfaces.
 fn method_color(method: &HttpMethod) -> Retained<NSColor> {
-    match method {
-        HttpMethod::Get | HttpMethod::Head | HttpMethod::Options | HttpMethod::Trace => {
-            NSColor::systemGreenColor()
-        }
-        HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch => NSColor::systemYellowColor(),
-        HttpMethod::Delete => NSColor::systemRedColor(),
-        HttpMethod::Connect | HttpMethod::Other(_) => NSColor::systemPurpleColor(),
+    match card_url::method_tone(method) {
+        MethodTone::Read => NSColor::systemGreenColor(),
+        MethodTone::Write => NSColor::systemYellowColor(),
+        MethodTone::Destructive => NSColor::systemRedColor(),
+        MethodTone::Other => NSColor::systemPurpleColor(),
     }
 }
 
-/// One of the three host-trust classes used by the URL row's host
-/// pill. Loopback wins over store-known (any loopback host is
-/// always "trusted local" regardless of the store).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HostTrust {
-    /// Loopback (`localhost`, `127.0.0.1`, `[::1]`).
-    Loopback,
-    Known,
-    Unknown,
-}
-
+/// AppKit palette for the three host-trust classes. The
+/// classification itself (and the tooltip wording) lives in
+/// [`crate::cards::url`]; only the colours are AppKit's business.
 impl HostTrust {
     fn fg(&self) -> Retained<NSColor> {
         match self {
@@ -287,42 +250,6 @@ impl HostTrust {
         // and Dark system themes.
         popover_pills::pill_bg_for(&self.fg())
     }
-
-    fn tooltip(&self) -> &'static str {
-        match self {
-            HostTrust::Loopback => "loopback (trusted local)",
-            HostTrust::Known => "known host (matched known-hosts list)",
-            HostTrust::Unknown => "unknown host (not in known-hosts list)",
-        }
-    }
-}
-
-/// Classify `host` into one of three trust tiers. `host_known` is
-/// the daemon's pre-computed answer for "store recognised"; the
-/// loopback check is repeated here so a stale `host_known=false`
-/// for `localhost` still paints loopback.
-fn host_trust(host: &str, host_known: bool) -> HostTrust {
-    if is_loopback(host) {
-        HostTrust::Loopback
-    } else if host_known {
-        HostTrust::Known
-    } else {
-        HostTrust::Unknown
-    }
-}
-
-/// Loopback rule mirrors `policy::is_known_host` and
-/// `vetter_core::signals::is_loopback_host`.
-fn is_loopback(host: &str) -> bool {
-    use std::net::IpAddr;
-    use std::str::FromStr;
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    let stripped = host.trim_start_matches('[').trim_end_matches(']');
-    IpAddr::from_str(stripped)
-        .map(|ip| ip.is_loopback())
-        .unwrap_or(false)
 }
 
 #[cfg(test)]

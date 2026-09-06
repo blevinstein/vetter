@@ -22,6 +22,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 signal-hook = "0.3"
+# Already linked in via `vetter-core`'s public `HttpRequest::url`;
+# declared here so the platform-neutral card layer can name `Url` in
+# its own signatures. Adds nothing to the dependency graph.
+url = { workspace = true }
 
 # macOS approver UI (Phase 4). Pulled in only on macOS targets so the
 # crate still builds on Linux/CI workers; the daemon refuses to start
@@ -63,4 +67,3 @@ ksni = { version = "0.3.6", default-features = false, features = [
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
-url = { workspace = true }

@@ -1,0 +1,264 @@
+//! Tests for [`crate::cards::spans`].
+//!
+//! Lifted out of `crate::tests::popover_attr` when the parser moved
+//! into the shared card layer: these assertions never needed AppKit,
+//! and now they run on every target instead of only on macOS. The
+//! Foundation half (`spans_to_attributed`) keeps its smoke tests
+//! next to the AppKit translator that owns it.
+
+use super::*;
+
+#[test]
+fn empty_input_yields_no_spans() {
+    assert!(parse_ansi_spans("").is_empty());
+}
+
+#[test]
+fn plain_input_yields_one_default_span() {
+    let spans = parse_ansi_spans("hello world");
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].text, "hello world");
+    assert_eq!(spans[0].style, SpanStyle::default());
+}
+
+/// Mirrors `Style::Header` (bold).
+#[test]
+fn bold_open_close() {
+    let spans = parse_ansi_spans(" vet  \x1b[1mcurl\x1b[0m\n");
+    let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
+    assert_eq!(texts, vec![" vet  ", "curl", "\n"]);
+    assert!(!spans[0].style.bold);
+    assert!(spans[1].style.bold);
+    assert!(!spans[2].style.bold);
+}
+
+/// `Style::Method(Read)` = bold + green; the writer emits two CSI
+/// sequences (`\e[1m\e[32m`) before the text and a single reset after.
+#[test]
+fn bold_plus_green_compose_into_one_run() {
+    let spans = parse_ansi_spans("\x1b[1m\x1b[32mGET\x1b[0m");
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].text, "GET");
+    assert!(spans[0].style.bold);
+    assert_eq!(spans[0].style.color, Some(AnsiColor::Green));
+}
+
+/// `Style::Url` = cyan + underline.
+#[test]
+fn cyan_plus_underline_url_run() {
+    let spans = parse_ansi_spans("\x1b[4m\x1b[36mhttps://x.test/\x1b[0m");
+    assert_eq!(spans.len(), 1);
+    assert!(spans[0].style.underline);
+    assert_eq!(spans[0].style.color, Some(AnsiColor::Cyan));
+    assert!(!spans[0].style.dim);
+}
+
+/// `Style::Loopback` = cyan + dim. The AppKit translator collapses
+/// this into `secondaryLabelColor` (asserted in its own smoke test),
+/// but the parser preserves both bits so each surface can decide.
+#[test]
+fn cyan_plus_dim_loopback_run() {
+    let spans = parse_ansi_spans("\x1b[2m\x1b[36mhttp://localhost/\x1b[0m");
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].style.color, Some(AnsiColor::Cyan));
+    assert!(spans[0].style.dim);
+}
+
+/// One test per FG colour we recognise. Order mirrors the
+/// `ansi_for` match in `vetter-core::render`.
+#[test]
+fn each_recognised_foreground_colour() {
+    for (code, expected) in [
+        (31, AnsiColor::Red),
+        (32, AnsiColor::Green),
+        (33, AnsiColor::Yellow),
+        (35, AnsiColor::Magenta),
+        (36, AnsiColor::Cyan),
+        (90, AnsiColor::BrightBlack),
+        (94, AnsiColor::BrightBlue),
+    ] {
+        let s = format!("\x1b[{code}mx\x1b[0m");
+        let spans = parse_ansi_spans(&s);
+        assert_eq!(spans.len(), 1, "code {code}: {spans:?}");
+        assert_eq!(spans[0].style.color, Some(expected), "code {code}");
+    }
+}
+
+/// `Style::Badge(Danger)` = bold red. Verifies multi-flag
+/// accumulation across separate CSI sequences.
+#[test]
+fn bold_red_badge_run() {
+    let spans = parse_ansi_spans("\x1b[1m\x1b[31m[insecure: -k]\x1b[0m");
+    assert_eq!(spans.len(), 1);
+    assert!(spans[0].style.bold);
+    assert_eq!(spans[0].style.color, Some(AnsiColor::Red));
+}
+
+/// Reset (`0`) wipes every accumulated bit; the next span starts
+/// from `SpanStyle::default()`.
+#[test]
+fn reset_clears_accumulated_state() {
+    let spans = parse_ansi_spans("\x1b[1m\x1b[31mhot\x1b[0mcold");
+    assert_eq!(spans.len(), 2);
+    assert!(spans[0].style.bold);
+    assert_eq!(spans[0].style.color, Some(AnsiColor::Red));
+    assert_eq!(spans[1].style, SpanStyle::default());
+}
+
+/// Multiple codes in a single CSI sequence (`\e[1;31m`) compose just
+/// like adjacent CSIs do. `anstyle` doesn't currently emit this form
+/// for the writer, but supporting it costs nothing and protects
+/// against a future encoding change.
+#[test]
+fn semicolon_separated_codes_compose() {
+    let spans = parse_ansi_spans("\x1b[1;31mboom\x1b[0m");
+    assert_eq!(spans.len(), 1);
+    assert!(spans[0].style.bold);
+    assert_eq!(spans[0].style.color, Some(AnsiColor::Red));
+}
+
+/// Unknown SGR codes are silently ignored — surrounding text
+/// still appears, just unstyled. Protects against renderer changes
+/// adding a new `Style` variant we haven't taught the parser yet.
+#[test]
+fn unknown_codes_are_ignored() {
+    let spans = parse_ansi_spans("\x1b[99mmystery\x1b[0m");
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].text, "mystery");
+    assert_eq!(spans[0].style, SpanStyle::default());
+}
+
+/// Realistic snippet pulled from
+/// `vetter-core/tests/snapshots/curl_render_snapshot__insecure_ansi.snap`
+/// (with `\e` rendered as the actual byte 0x1B). This is the most
+/// important regression: if the snapshot's exact escape pattern
+/// stops parsing, every approval surface stops showing colours.
+#[test]
+fn parses_insecure_curl_snapshot_excerpt() {
+    let s = " vet  \x1b[1mcurl\x1b[0m\n\x1b[90m ───\x1b[0m\
+             \x1b[1m\x1b[32mGET\x1b[0m  \x1b[4m\x1b[36mhttps://x/\x1b[0m  \
+             \x1b[1m\x1b[31m[insecure: -k]\x1b[0m\n";
+    let spans = parse_ansi_spans(s);
+    // Reconstruct the visible text; that's the most useful invariant.
+    let visible: String = spans.iter().map(|s| s.text.as_str()).collect();
+    assert_eq!(visible, " vet  curl\n ───GET  https://x/  [insecure: -k]\n");
+    // Spot-check: there's exactly one bold-red span (the badge) and
+    // exactly one cyan-underlined span (the URL).
+    let bold_red = spans
+        .iter()
+        .filter(|s| s.style.bold && s.style.color == Some(AnsiColor::Red))
+        .count();
+    assert_eq!(bold_red, 1, "{spans:#?}");
+    let cyan_url = spans
+        .iter()
+        .filter(|s| s.style.underline && s.style.color == Some(AnsiColor::Cyan))
+        .count();
+    assert_eq!(cyan_url, 1, "{spans:#?}");
+}
+
+#[test]
+fn strip_ansi_removes_sgr_sequences() {
+    // Mirror of `render_detail`: bold command name, plain argv.
+    let input = "\x1b[1mcurl\x1b[0m https://example.com/foo";
+    assert_eq!(strip_ansi(input), "curl https://example.com/foo");
+}
+
+#[test]
+fn strip_ansi_preserves_unterminated_escape() {
+    // An unterminated CSI sequence is dropped by the scanner (see
+    // `parse_ansi_spans`). The preceding text survives; anything
+    // after the orphan escape is consumed as sequence bytes.
+    let input = "before\x1b[";
+    assert_eq!(strip_ansi(input), "before");
+}
+
+#[test]
+fn strip_ansi_passes_through_plain_text() {
+    assert_eq!(
+        strip_ansi("curl -X POST https://x"),
+        "curl -X POST https://x"
+    );
+}
+
+// -- Hardening §H2: render-time sanitisation closes the styling hole --
+
+/// Round-trip a `ParsedCommand` whose header value carries an
+/// argv-injected `\x1b[31m` (red) SGR through the full renderer
+/// (`AnsiWriter`) into the span parser. An approval surface must
+/// never paint a bold-red span that the *renderer* didn't itself
+/// emit — otherwise an attacker-controlled header value could
+/// visually impersonate the renderer's own colouring (e.g. fake a
+/// `[insecure]` badge or a "matched rule" line).
+///
+/// Two layers of defence keep that out: (1) `write_header_row`
+/// redacts every value to `••••<last4>` so almost none of the
+/// attacker bytes reach the writer, and (2) any control byte that
+/// happens to land in the surviving four-char tail is replaced by
+/// a `<U+XXXX>` placeholder via `sanitize_for_display`. This test
+/// is the parser-side regression check for both layers — the
+/// crucial assertion is the negative one, that no red span
+/// survives.
+#[test]
+fn argv_injected_sgr_in_header_does_not_open_a_style_span() {
+    use vetter_core::parsers::{
+        Body, DisplayHints, Effect, Header, HttpMethod, HttpRequest, ParsedCommand, TlsPolicy,
+    };
+    use vetter_core::{AnsiWriter, DefaultRenderer, Renderer};
+
+    let p = ParsedCommand {
+        command: "noop".into(),
+        argv: vec!["noop".into()],
+        cwd: None,
+        effects: vec![Effect::HttpRequest(HttpRequest {
+            method: HttpMethod::Get,
+            url: url::Url::parse("https://example.test/").unwrap(),
+            headers: vec![Header {
+                name: "X-Evil".into(),
+                value: "before\x1b[31mfake-red\x1b[0mafter".into(),
+            }],
+            body: Body::None,
+            auth: None,
+            tls: TlsPolicy::Strict,
+            follow_redirects: false,
+            proxy: None,
+        })],
+        signals: vec![],
+        display_hints: DisplayHints::default(),
+        extras: serde_json::Value::Null,
+    };
+
+    let mut buf = Vec::<u8>::new();
+    DefaultRenderer
+        .render(&p, None, &mut AnsiWriter(&mut buf))
+        .expect("render");
+    let rendered = String::from_utf8(buf).expect("utf-8");
+
+    let spans = parse_ansi_spans(&rendered);
+    let visible: String = spans.iter().map(|s| s.text.as_str()).collect();
+    // Unconditional redaction strips the bulk of the value down to
+    // `••••<last4>` ("after"'s last four chars are "fter" here), so
+    // neither the attacker SGR bytes nor the "fake-red" payload
+    // reach the card.
+    assert!(
+        !visible.contains("fake-red"),
+        "value payload leaked past redaction: {visible}"
+    );
+    assert!(
+        visible.contains("••••"),
+        "missing redaction marker: {visible}"
+    );
+
+    // The crucial property: no span carries `AnsiColor::Red` whose
+    // text contains the attacker's "fake-red" payload. The renderer
+    // itself legitimately emits a red run for the redacted header
+    // value (`Style::RedactedHeader`) — that span's text is the
+    // `••••<last4>` recipe, not the attacker's smuggled bytes.
+    let red_attacker_spans: Vec<&AnsiSpan> = spans
+        .iter()
+        .filter(|s| s.style.color == Some(AnsiColor::Red) && s.text.contains("fake-red"))
+        .collect();
+    assert!(
+        red_attacker_spans.is_empty(),
+        "argv-injected red span survived sanitisation: {red_attacker_spans:#?}"
+    );
+}

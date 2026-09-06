@@ -22,8 +22,14 @@
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSFont, NSTextField, NSView};
 use objc2_foundation::{MainThreadMarker, NSString};
-use vetter_core::render::signal_kind_label;
-use vetter_core::{BadgeSeverity, SignalKind};
+use vetter_core::SignalKind;
+
+use crate::cards::pills::{self, Tone};
+
+// Re-exported so `popover.rs` keeps calling
+// `popover_pills::signal_priority` after the lift into
+// `crate::cards::pills`.
+pub use crate::cards::pills::signal_priority;
 
 /// `CGFloat` is `f64` on Apple Silicon (and `f32` on the legacy
 /// 32-bit ABI we don't target). Aliased here so the `setCornerRadius:`
@@ -110,31 +116,19 @@ pub fn build_signal_pill(
     detail: &str,
     mtm: MainThreadMarker,
 ) -> Option<Retained<NSView>> {
-    // `AuthHeader` is special-cased to render as a *positive* pill:
-    // an auth header on a request is generally a good sign (the
-    // agent has credentials and we redacted them on the way in),
-    // not the "watch out, secret on the wire" alarm the orange
-    // Warn tier was reading as. Other Warn-tier signals stay
-    // orange. The vetter-core `ui_severity` classifier is left
-    // unchanged so the analyzer / CLI still treat AuthHeader as a
-    // signal worth surfacing in the body's `Risk signals:` list.
-    let fg = if kind == SignalKind::AuthHeader {
-        NSColor::systemGreenColor()
-    } else {
-        match kind.ui_severity() {
-            BadgeSeverity::Danger => NSColor::systemRedColor(),
-            BadgeSeverity::Warn => NSColor::systemOrangeColor(),
-            BadgeSeverity::Info => return None,
-        }
+    // Which chip (if any) this signal earns, what it says, and how
+    // urgent it reads are platform-neutral decisions — see
+    // `crate::cards::pills::signal_pill`, including why `AuthHeader`
+    // is special-cased to a positive tone. All that is left here is
+    // painting a tone in AppKit's palette.
+    let spec = pills::signal_pill(kind, detail)?;
+    let fg = match spec.tone {
+        Tone::Danger => NSColor::systemRedColor(),
+        Tone::Warn => NSColor::systemOrangeColor(),
+        Tone::Positive => NSColor::systemGreenColor(),
     };
     let bg = pill_bg_for(&fg);
-    let label = signal_kind_label(kind);
-    let tooltip = if detail.is_empty() {
-        label.to_string()
-    } else {
-        format!("{label}: {detail}")
-    };
-    Some(build_pill(label, &fg, &bg, &tooltip, mtm))
+    Some(build_pill(spec.label, &fg, &bg, &spec.tooltip, mtm))
 }
 
 /// Tint helper: returns `fg` faded to a low-alpha background suitable
@@ -143,34 +137,6 @@ pub fn build_signal_pill(
 /// same alpha and gets a consistent visual weight.
 pub fn pill_bg_for(fg: &NSColor) -> Retained<NSColor> {
     fg.colorWithAlphaComponent(0.22)
-}
-
-/// Triage priority for sorting signal pills left-to-right inside the
-/// pills row. Lower number sorts first (closer to the start of the
-/// row), so the user's eye lands on the most-urgent chips before
-/// scanning past the supportive ones:
-///
-/// | Priority | Tier                                  | Colour |
-/// |---------:|---------------------------------------|--------|
-/// |       0  | `Danger`                              | red    |
-/// |       1  | `Warn` (excluding `AuthHeader`)       | orange |
-/// |       2  | `AuthHeader` (special-cased positive) | green  |
-/// |       3  | `Info` (no pill — sorted last regardless) |    |
-///
-/// Centralising this next to the colour decision in
-/// [`build_signal_pill`] keeps the "what colour is this kind?" and
-/// "where in the row does it land?" answers in lockstep — flipping
-/// `AuthHeader` to a different colour later only requires updating
-/// one match arm in this file.
-pub fn signal_priority(kind: SignalKind) -> u8 {
-    if kind == SignalKind::AuthHeader {
-        return 2;
-    }
-    match kind.ui_severity() {
-        BadgeSeverity::Danger => 0,
-        BadgeSeverity::Warn => 1,
-        BadgeSeverity::Info => 3,
-    }
 }
 
 #[cfg(test)]

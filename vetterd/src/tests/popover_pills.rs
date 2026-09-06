@@ -1,19 +1,15 @@
 //! Tests for [`crate::runloop::popover_pills`].
 //!
-//! The pill builder is mostly Foundation/AppKit calls that need a
-//! main thread to run, so we keep the assertions modest:
+//! Only the AppKit half lives here now. Which signals earn a pill,
+//! what the chip says, and how the row sorts moved into the shared
+//! card layer along with their assertions — see
+//! `crate::tests::cards_pills`, which runs on every target.
 //!
-//! - Severity classification routes through `SignalKind::ui_severity`,
-//!   which has its own unit tests in `vetter-core`. Here we just
-//!   pin the `Info → None` branch so a future "raise to Warn"
-//!   doesn't silently start emitting pills.
-//! - Tooltip composition is pure-string and is tested without
-//!   touching AppKit so it runs in CI's headless mode too.
-//!
+//! What remains is Foundation/AppKit construction, which needs a
+//! main thread to run, so the assertions are modest smoke checks.
 //! AppKit-touching tests use `MainThreadMarker::new()` and `return`
 //! out when called from a worker thread (the cargo test runner
-//! occasionally schedules off-main); the assertions are
-//! best-effort smoke checks.
+//! occasionally schedules off-main).
 
 #![cfg(target_os = "macos")]
 
@@ -21,26 +17,18 @@ use super::*;
 use vetter_core::SignalKind;
 
 #[test]
-fn info_tier_kinds_return_no_pill() {
-    // `UnknownHost` is `Warn` today; if this flips back to `Info`
-    // somebody is opting it out of the chip surface and should
-    // explicitly update the design doc. This guards against an
-    // accidental regression.
-    let pill_for = |k: SignalKind| {
-        let mtm = match objc2_foundation::MainThreadMarker::new() {
-            Some(m) => m,
-            None => return None, // can't construct on a worker thread
-        };
-        build_signal_pill(k, "detail goes here", mtm)
-    };
-
-    // No current SignalKind is Info-tier (verified by
-    // `vetter-core::tests::signals::no_current_signal_is_info_tier`).
-    // Walk the canonical list and assert the inverse — every kind
-    // emits a pill on a main-thread runner.
+fn every_non_info_kind_builds_a_pill_view() {
+    // The tone classification is pinned in `cards_pills`; this is
+    // the AppKit-side counterpart, confirming the tone actually
+    // reaches a constructed `NSView` rather than falling off a
+    // match arm.
     if objc2_foundation::MainThreadMarker::new().is_none() {
         return;
     }
+    let pill_for = |k: SignalKind| {
+        let mtm = objc2_foundation::MainThreadMarker::new()?;
+        build_signal_pill(k, "detail goes here", mtm)
+    };
     for k in [
         SignalKind::InsecureFlag,
         SignalKind::InsecureTls,
@@ -63,72 +51,6 @@ fn info_tier_kinds_return_no_pill() {
         assert!(
             pill_for(k).is_some(),
             "expected pill for non-Info kind {k:?}"
-        );
-    }
-}
-
-#[test]
-fn signal_priority_orders_danger_warn_authheader() {
-    // Danger first (red), generic Warn second (orange), AuthHeader
-    // third (green — special-cased positive). Pinned here so a
-    // future re-tier of any signal can't silently shuffle the row
-    // order without somebody updating the test. Picks one
-    // representative kind per band — the per-kind tier mapping is
-    // owned by `vetter_core::SignalKind::ui_severity` and tested
-    // there.
-    assert_eq!(signal_priority(SignalKind::PipeToShell), 0); // Danger
-    assert_eq!(signal_priority(SignalKind::WriteMethod), 1); // Warn
-    assert_eq!(signal_priority(SignalKind::AuthHeader), 2); // green band
-    assert!(
-        signal_priority(SignalKind::PipeToShell) < signal_priority(SignalKind::WriteMethod),
-        "Danger must sort before Warn"
-    );
-    assert!(
-        signal_priority(SignalKind::WriteMethod) < signal_priority(SignalKind::AuthHeader),
-        "Warn must sort before AuthHeader (green)"
-    );
-}
-
-#[test]
-fn signal_priority_groups_match_ui_severity_buckets() {
-    // The three priority bands map 1:1 to `ui_severity` plus the
-    // AuthHeader override. Walk every current `SignalKind` and
-    // pin its band here so a re-tier in vetter-core forces the
-    // popover author to confirm the row reordering on purpose
-    // rather than discover it visually.
-    use vetter_core::BadgeSeverity;
-    for k in [
-        SignalKind::InsecureFlag,
-        SignalKind::InsecureTls,
-        SignalKind::CacertOverride,
-        SignalKind::ResolveOverride,
-        SignalKind::UnixSocket,
-        SignalKind::PipeToShell,
-        SignalKind::RawIpLiteral,
-        SignalKind::ClientCertificate,
-        SignalKind::WriteMethod,
-        SignalKind::AuthHeader,
-        SignalKind::NonStandardPort,
-        SignalKind::IdnHost,
-        SignalKind::FileOutsideCwd,
-        SignalKind::FileReadOutsideCwd,
-        SignalKind::UnknownHost,
-        SignalKind::RemoteHeaderName,
-        SignalKind::CreateDirs,
-    ] {
-        let want = if k == SignalKind::AuthHeader {
-            2
-        } else {
-            match k.ui_severity() {
-                BadgeSeverity::Danger => 0,
-                BadgeSeverity::Warn => 1,
-                BadgeSeverity::Info => 3,
-            }
-        };
-        assert_eq!(
-            signal_priority(k),
-            want,
-            "expected priority={want} for {k:?}"
         );
     }
 }

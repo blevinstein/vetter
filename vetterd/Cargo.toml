@@ -21,6 +21,10 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# Rule YAML preview in the allowlist picker (crate::cards::rules).
+# Shared rather than macOS-gated since Phase 6d: the GTK picker
+# shows the same pattern preview before persisting a rule.
+serde_yaml_ng = "0.10"
 signal-hook = "0.3"
 # Already linked in via `vetter-core`'s public `HttpRequest::url`;
 # declared here so the platform-neutral card layer can name `Url` in
@@ -37,7 +41,6 @@ objc2-app-kit = "0.3"
 objc2-user-notifications = "0.3"
 block2 = "0.6"
 dispatch2 = "0.3"
-serde_yaml_ng = "0.10"
 
 # Linux approver UI (Phase 6b). Gated to Linux targets the same way
 # the `objc2` stack above is gated to macOS, so the crate still builds

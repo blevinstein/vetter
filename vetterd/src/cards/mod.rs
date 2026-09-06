@@ -30,8 +30,10 @@
 //! - [`pills`] — risk signals → pill tone, label, tooltip, sort order.
 //! - [`url`] — URL row segmentation and host-trust classification.
 //! - [`effects`] — `parsed.effects` → per-row summary strings.
+//! - [`rules`] — allowlist duration ladder and rule YAML preview.
 
 pub mod effects;
 pub mod pills;
+pub mod rules;
 pub mod spans;
 pub mod url;

@@ -502,14 +502,15 @@ impl LinuxNotifier {
         // over the admin socket, an `AddRule` that auto-approved it,
         // or shutdown's `cancel_all`.
         //
-        // NOTE for Phase 6d: `set_change_listener` has a *single*
-        // listener slot, and the approval window will want it too.
-        // Whoever lands 6d needs to multiplex here rather than
-        // overwrite this registration — the macOS side has the same
-        // constraint and resolves it by having one runloop own the
-        // slot and fan out.
+        // Registered through `add_change_listener`, not
+        // `set_change_listener`: Phase 6c's tray item needs the same
+        // notifications and 6d's window will be a third consumer, so
+        // the queue appends rather than replacing. (Resolved in 6c —
+        // this used to be a note warning whoever landed 6d that they
+        // would silently disable banner-closing by overwriting the
+        // single slot that existed then.)
         let listener_tx = tx.clone();
-        shared.queue.set_change_listener(move || {
+        shared.queue.add_change_listener(move || {
             // Fire-and-forget: a full channel or a torn-down worker
             // must never propagate back into `PendingQueue::resolve`.
             let _ = listener_tx.send(Job::Reconcile);
@@ -711,9 +712,12 @@ impl Notifier for LinuxNotifier {
         let jobs = self.jobs.lock().expect("jobs sender poisoned");
         let _ = jobs.send(Job::Reconcile);
         let _ = jobs.send(Job::Stop);
-        // The queue outlives us; drop our listener so a late resolve
-        // doesn't post into a channel nobody is reading.
-        self.shared.queue.clear_change_listener();
+        // NOTE: deliberately *not* `clear_change_listener()` — that
+        // clears every slot, including the tray's (Phase 6c). Our own
+        // listener is already harmless once the jobs thread stops:
+        // it only does `tx.send(Job::Reconcile)`, whose failure is
+        // ignored, so a late resolve costs one dropped send rather
+        // than reaching into a torn-down worker.
     }
 }
 

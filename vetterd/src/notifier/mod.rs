@@ -102,9 +102,8 @@ pub fn boxed<N: Notifier + 'static>(n: N) -> Arc<dyn Notifier> {
 pub fn build_from_env(
     queue: Arc<PendingQueue>,
 ) -> Result<(Arc<dyn Notifier>, PlatformDriver), NotifierBuildError> {
-    let kind = std::env::var("VETTERD_NOTIFIER").ok();
-    let kind = kind.as_deref().unwrap_or(default_kind());
-    match kind {
+    let kind = resolved_kind();
+    match kind.as_str() {
         "mock" => {
             let sock = std::env::var_os("VETTERD_NOTIFIER_SOCKET").ok_or(
                 NotifierBuildError::MissingEnv("VETTERD_NOTIFIER_SOCKET (required for mock)"),
@@ -136,6 +135,19 @@ pub fn build_from_env(
         )),
         other => Err(NotifierBuildError::Unknown(other.to_string())),
     }
+}
+
+/// The notifier kind this process will actually use: the
+/// `VETTERD_NOTIFIER` override if set, else [`default_kind`].
+///
+/// Split out from [`build_from_env`] because the daemon needs the
+/// answer a second time, without building a notifier: the Linux tray
+/// (Phase 6c) is a *separate* surface from the notifier but belongs
+/// to the same "we have a desktop session" decision, and installing
+/// it under `mock` / `noop` would put a tray icon on the screen
+/// during every integration test.
+pub fn resolved_kind() -> String {
+    std::env::var("VETTERD_NOTIFIER").unwrap_or_else(|_| default_kind().to_string())
 }
 
 /// Default `VETTERD_NOTIFIER` value when the env var is unset.

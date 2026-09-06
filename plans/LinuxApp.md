@@ -23,7 +23,7 @@ platforms; the data layer is unchanged.
 ## 0. TL;DR
 
 The **non-GUI half of vetter already works on Linux**, unmodified.
-It builds clean, the full test suite passes (637 tests, 0 failures),
+It builds clean, the full test suite passes (684 tests, 0 failures),
 and the daemon's socket / pidfile / audit / XDG path layer is
 correct. What is missing is the entire approval surface.
 
@@ -48,7 +48,7 @@ Wayland session, kernel 7.1.4.
 | Check | Result |
 |---|---|
 | `cargo build --release -p vetterd -p vet` | **OK** — clean, no cfg fallout, ~49 s cold |
-| `cargo test --workspace --all-features` | **OK** — 637 passed, 0 failed, 0 ignored |
+| `cargo test --workspace --all-features` | **OK** — 684 passed, 0 failed, 0 ignored |
 | `cargo clippy --workspace --all-targets` | **OK** — both feature configurations; was red on two unused `PermissionsExt` imports until 2026-09-06 (TODO.md §"Build health") |
 | `vet doctor` | **OK** — all rows resolve; correct XDG paths |
 | `vet daemon start` / `status` / `stop` | **OK** — pidfile, socket, clean teardown, no leftovers |
@@ -381,32 +381,32 @@ At the end of 6b, Linux has a working approve/reject loop for the
 common case, without any GUI toolkit dependency at all. **This is a
 credible v0.2 ship point.**
 
-### Phase 6c — Tray icon (StatusNotifierItem) `[ ]`
+### Phase 6c — Tray icon (StatusNotifierItem) `[x]` **done 2026-09-06**
 
-- [ ] Evaluate `ksni` (0.3.6) vs. hand-rolling the SNI object on
+- [x] Evaluate `ksni` (0.3.6) vs. hand-rolling the SNI object on
       the `zbus` connection we already have in 6b. Hand-rolling
       avoids a second D-Bus stack and a possible zbus-version
       conflict — check `ksni`'s zbus dependency before committing.
-- [ ] Publish `StatusNotifierItem` with the shield icon; register
+- [x] Publish `StatusNotifierItem` with the shield icon; register
       with `org.kde.StatusNotifierWatcher`, falling back to
       `org.freedesktop.StatusNotifierWatcher`.
-- [ ] Pending-count badge. Note the SNI analogue of the macOS badge
+- [x] Pending-count badge. Note the SNI analogue of the macOS badge
       is either `IconName`/`IconPixmap` swapping, an `OverlayIcon`,
       or `ToolTip` text — Plasma renders overlay icons, GNOME's
       extension may not. Emit `NewIcon` / `NewToolTip` after every
       change; setting properties alone does not push state.
-- [ ] Wire the queue's change-listener to update the badge (macOS's
+- [x] Wire the queue's change-listener to update the badge (macOS's
       `set_pending_count` analogue).
-- [ ] `com.canonical.dbusmenu` context menu: **Open Vetter…**,
+- [x] `com.canonical.dbusmenu` context menu: **Open Vetter…**,
       **Pending: N**, **Quit Vetter** — plus per-request
       Approve/Reject items, which is genuinely useful on Wayland
       because the host positions the menu correctly (§5.1b).
-- [ ] Ship the icon: generate a symbolic/scalable SVG from
+- [x] Ship the icon: generate a symbolic/scalable SVG from
       `assets/vetter-logo.svg` into
       `share/icons/hicolor/scalable/apps/dev.vetter.daemon.svg`,
       and a `dev.vetter.daemon.desktop` entry (needed for the
       `desktop-entry` notification hint anyway, §5.2).
-- [ ] Daemon must start and stay useful when no watcher is present
+- [x] Daemon must start and stay useful when no watcher is present
       (§5.5).
 
 ### Phase 6d — Approval window (GTK4) `[ ]`
@@ -571,6 +571,18 @@ work today; the rest wait on 6c–6e.
   the wrapped command would run inside the sandbox, not on the
   host — which likely breaks the entire premise. Investigate before
   promising it anywhere.
+- **Allowlist affordance in the tray menu (deferred 2026-09-06).**
+  §5.1b writes DBusMenu off as good enough only for Approve /
+  Reject / Open Vetter… / Quit, but it does support submenus and
+  checkmarks — enough to express the duration radio group
+  (15m / 1h / 4h / session / Forever) as
+  `Allowlist this host ▸`. That would deliver GUI allowlisting in
+  6c rather than waiting for 6d, which matters if 6d slips. The
+  trade is real, not free: a menu cannot show the *rule preview*
+  the macOS picker puts in front of the user before persisting a
+  rule, so it trades reviewability for reach on a
+  security-relevant write. Considered and deliberately deferred —
+  6c stays as specced. Revisit if 6d slips.
 - **`ksni` vs. hand-rolled SNI.** Check `ksni` 0.3.6's zbus
   dependency against the zbus 5.x we'd pull in for 6b. Two D-Bus
   stacks in one process is a smell.

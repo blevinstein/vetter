@@ -43,6 +43,21 @@ serde_yaml_ng = "0.10"
 # runtime enters the dependency tree. See plans/LinuxApp.md §6b, §11.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5.19"
+# Tray icon (Phase 6c). `default-features = false` drops ksni's default
+# `tokio` feature. ksni requires exactly one executor backend, so we
+# pick `async-io` — the same one zbus already uses by default here —
+# and add `blocking` for the synchronous handle API. The result keeps a
+# general-purpose async runtime out of the tree entirely (verified:
+# `cargo tree -i tokio` matches nothing) and resolves ksni onto the
+# *same* zbus 5.19 we depend on directly, so there is one D-Bus crate
+# in the build even though ksni opens its own connection. Chosen over
+# hand-rolling because `com.canonical.dbusmenu` — layout revisions,
+# GetGroupProperties, AboutToShow — is the single most error-prone
+# surface in this phase. See plans/LinuxApp.md §6c.
+ksni = { version = "0.3.6", default-features = false, features = [
+    "async-io",
+    "blocking",
+] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

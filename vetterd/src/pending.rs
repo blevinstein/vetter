@@ -227,11 +227,22 @@ struct Entry {
     sender: Sender<PendingDecision>,
 }
 
-/// Single observer fired after every state-changing operation. Stored
+/// Observer fired after every state-changing operation. Stored
 /// behind the same mutex as the entries so registration / clearing is
 /// race-free, but invoked **after** the lock is dropped to avoid
 /// re-entrant deadlocks (a listener is typically `DispatchQueue::main`
 /// which itself synchronises against AppKit).
+///
+/// There are two registration slots, and the distinction is
+/// deliberate. [`PendingQueue::set_change_listener`] owns a single
+/// replace-on-write slot — the shape macOS has always used, where one
+/// runloop owns the UI and fans out internally.
+/// [`PendingQueue::add_change_listener`] appends instead, because
+/// Linux genuinely has *two* independent consumers that neither owns
+/// nor knows about the other: the D-Bus notifier (closing banners
+/// whose request was resolved elsewhere) and the tray item (badge +
+/// menu). Both fire on every change; ordering between them is
+/// unspecified and neither may assume it runs first.
 type ChangeListener = Arc<dyn Fn() + Send + Sync>;
 
 /// Thread-safe map of `id → (summary, rendered, sender)`. Owned by
@@ -247,7 +258,22 @@ struct Inner {
     /// Ring of recently-resolved requests, newest at index 0.
     /// Capped at [`RESOLVED_CAP`]; oldest entry is evicted when full.
     resolved: VecDeque<ResolvedEntry>,
+    /// Replace-on-write slot; see [`ChangeListener`].
     listener: Option<ChangeListener>,
+    /// Append-only listeners; see [`ChangeListener`].
+    listeners: Vec<ChangeListener>,
+}
+
+impl Inner {
+    /// Snapshot every registered listener. Callers take this *inside*
+    /// the lock and invoke the result after dropping it, so a
+    /// listener that re-enters the queue cannot deadlock.
+    fn listeners(&self) -> Vec<ChangeListener> {
+        let mut out = Vec::with_capacity(self.listeners.len() + 1);
+        out.extend(self.listener.iter().cloned());
+        out.extend(self.listeners.iter().cloned());
+        out
+    }
 }
 
 /// Maximum number of resolved entries retained in memory. Oldest
@@ -296,7 +322,7 @@ impl PendingQueue {
         rendered: String,
     ) -> (Receiver<PendingDecision>, NotifyHint) {
         let (tx, rx) = channel();
-        let (hint, listener) = {
+        let (hint, listeners) = {
             let mut g = self.inner.lock().expect("pending mutex poisoned");
             let hint = NotifyHint {
                 was_empty_before: g.entries.is_empty(),
@@ -309,9 +335,9 @@ impl PendingQueue {
                     sender: tx,
                 },
             );
-            (hint, g.listener.clone())
+            (hint, g.listeners())
         };
-        if let Some(cb) = listener {
+        for cb in listeners {
             cb();
         }
         (rx, hint)
@@ -327,7 +353,7 @@ impl PendingQueue {
     /// the [`RESOLVED_CAP`]-sized history ring so the popover can
     /// display recent decisions even when the pending queue is empty.
     pub fn resolve(&self, id: &str, decision: PendingDecision) -> bool {
-        let (entry, listener) = {
+        let (entry, listeners) = {
             let mut g = self.inner.lock().expect("pending mutex poisoned");
             let removed = g.entries.remove(id);
             if let Some(ref e) = removed {
@@ -342,12 +368,12 @@ impl PendingQueue {
                     g.resolved.pop_back();
                 }
             }
-            (removed, g.listener.clone())
+            (removed, g.listeners())
         };
         match entry {
             Some(e) => {
                 let sent = e.sender.send(decision).is_ok();
-                if let Some(cb) = listener {
+                for cb in listeners {
                     cb();
                 }
                 sent
@@ -375,7 +401,7 @@ impl PendingQueue {
         rule_id: Option<String>,
         rule_scope: Option<Scope>,
     ) {
-        let listener = {
+        let listeners = {
             let mut g = self.inner.lock().expect("pending mutex poisoned");
             g.resolved.push_front(ResolvedEntry {
                 summary,
@@ -387,9 +413,9 @@ impl PendingQueue {
             if g.resolved.len() > RESOLVED_CAP {
                 g.resolved.pop_back();
             }
-            g.listener.clone()
+            g.listeners()
         };
-        if let Some(cb) = listener {
+        for cb in listeners {
             cb();
         }
     }
@@ -407,7 +433,7 @@ impl PendingQueue {
     where
         I: IntoIterator<Item = ResolvedEntry>,
     {
-        let (added, listener) = {
+        let (added, listeners) = {
             let mut g = self.inner.lock().expect("pending mutex poisoned");
             let mut added = 0usize;
             for entry in entries {
@@ -417,10 +443,10 @@ impl PendingQueue {
                 g.resolved.push_back(entry);
                 added += 1;
             }
-            (added, g.listener.clone())
+            (added, g.listeners())
         };
         if added > 0 {
-            if let Some(cb) = listener {
+            for cb in listeners {
                 cb();
             }
         }
@@ -431,15 +457,15 @@ impl PendingQueue {
     /// so blocked workers don't hold connections open past the SIGTERM.
     /// Fires the change listener iff there were pending entries.
     pub fn cancel_all(&self) {
-        let (had_entries, listener) = {
+        let (had_entries, listeners) = {
             let mut g = self.inner.lock().expect("pending mutex poisoned");
             let had = !g.entries.is_empty();
             g.entries.clear();
             g.resolved.clear();
-            (had, g.listener.clone())
+            (had, g.listeners())
         };
         if had_entries {
-            if let Some(cb) = listener {
+            for cb in listeners {
                 cb();
             }
         }
@@ -534,7 +560,7 @@ impl PendingQueue {
     /// at least one entry — a fully-empty queue stays quiet so
     /// listener-side popover redraws don't run on no-op refreshes.
     pub fn refresh_with(&self, known_hosts: &vetter_core::known_hosts::KnownHostsStore) {
-        let listener = {
+        let listeners = {
             let mut g = self.inner.lock().expect("pending mutex poisoned");
             if g.entries.is_empty() && g.resolved.is_empty() {
                 return;
@@ -545,16 +571,22 @@ impl PendingQueue {
             for resolved in g.resolved.iter_mut() {
                 refresh_summary(&mut resolved.summary, known_hosts);
             }
-            g.listener.clone()
+            g.listeners()
         };
-        if let Some(cb) = listener {
+        for cb in listeners {
             cb();
         }
     }
 
     /// Install a single observer fired after every state change.
-    /// Replaces any previously-installed listener. Clear with
+    /// Replaces any previously-installed listener registered through
+    /// *this* method; listeners added via
+    /// [`Self::add_change_listener`] are untouched. Clear with
     /// [`Self::clear_change_listener`].
+    ///
+    /// This is the macOS shape: one AppKit runloop owns the UI and
+    /// fans out to the status item and popover internally, so a
+    /// single replace-on-write slot is the right model there.
     pub fn set_change_listener<F>(&self, cb: F)
     where
         F: Fn() + Send + Sync + 'static,
@@ -562,10 +594,42 @@ impl PendingQueue {
         self.inner.lock().expect("pending mutex poisoned").listener = Some(Arc::new(cb));
     }
 
-    /// Drop the change listener. Mainly useful in tests that share a
-    /// queue across iterations.
+    /// Append an observer fired after every state change, leaving
+    /// every previously-registered listener in place.
+    ///
+    /// Linux needs this because it has two independent UI surfaces
+    /// that are built separately and neither of which owns the other:
+    /// the D-Bus notifier (Phase 6b — closes a banner whose request
+    /// was resolved by the admin socket or a rule) and the tray item
+    /// (Phase 6c — pending-count badge and per-request menu). Phase
+    /// 6d's approval window will be a third. A replace-on-write slot
+    /// would mean whichever installed last silently disabled the
+    /// others, which is exactly the class of bug that shows up as
+    /// "banners stopped closing" long after the change that caused
+    /// it.
+    ///
+    /// Ordering between appended listeners is unspecified; none may
+    /// assume it runs before another, and each must be cheap and
+    /// non-blocking (they run on whatever thread resolved the
+    /// request, inline with the caller).
+    pub fn add_change_listener<F>(&self, cb: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.inner
+            .lock()
+            .expect("pending mutex poisoned")
+            .listeners
+            .push(Arc::new(cb));
+    }
+
+    /// Drop every change listener, from both registration slots.
+    /// Mainly useful in tests that share a queue across iterations,
+    /// and on the daemon's shutdown path.
     pub fn clear_change_listener(&self) {
-        self.inner.lock().expect("pending mutex poisoned").listener = None;
+        let mut g = self.inner.lock().expect("pending mutex poisoned");
+        g.listener = None;
+        g.listeners.clear();
     }
 }
 

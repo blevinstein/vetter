@@ -763,3 +763,96 @@ fn record_auto_fires_change_listener() {
     );
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
+
+// ── Listener multiplexing (Phase 6c) ────────────────────────────────────────
+//
+// Linux runs two independent UI surfaces off this queue — the D-Bus
+// notifier (closing banners resolved elsewhere) and the tray item
+// (badge + menu) — with a third to come in 6d. These pin the
+// behaviour that lets them coexist.
+
+#[test]
+fn added_listeners_all_fire() {
+    let q = PendingQueue::new();
+    let a = Arc::new(AtomicUsize::new(0));
+    let b = Arc::new(AtomicUsize::new(0));
+    let (ac, bc) = (Arc::clone(&a), Arc::clone(&b));
+    q.add_change_listener(move || {
+        ac.fetch_add(1, Ordering::SeqCst);
+    });
+    q.add_change_listener(move || {
+        bc.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let _rx = q.submit(summary("01A", "https://a.test/"));
+    assert_eq!(a.load(Ordering::SeqCst), 1);
+    assert_eq!(b.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn add_change_listener_does_not_displace_the_set_slot() {
+    // macOS installs its single listener via `set_change_listener`;
+    // a Linux surface appending its own must not silently disable it.
+    let q = PendingQueue::new();
+    let slot = Arc::new(AtomicUsize::new(0));
+    let appended = Arc::new(AtomicUsize::new(0));
+    let (sc, apc) = (Arc::clone(&slot), Arc::clone(&appended));
+    q.set_change_listener(move || {
+        sc.fetch_add(1, Ordering::SeqCst);
+    });
+    q.add_change_listener(move || {
+        apc.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let _rx = q.submit(summary("01A", "https://a.test/"));
+    assert_eq!(
+        slot.load(Ordering::SeqCst),
+        1,
+        "set_ listener was displaced"
+    );
+    assert_eq!(appended.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn set_change_listener_still_replaces_only_its_own_slot() {
+    let q = PendingQueue::new();
+    let first = Arc::new(AtomicUsize::new(0));
+    let second = Arc::new(AtomicUsize::new(0));
+    let appended = Arc::new(AtomicUsize::new(0));
+    let (f, s, ap) = (
+        Arc::clone(&first),
+        Arc::clone(&second),
+        Arc::clone(&appended),
+    );
+    q.add_change_listener(move || {
+        ap.fetch_add(1, Ordering::SeqCst);
+    });
+    q.set_change_listener(move || {
+        f.fetch_add(1, Ordering::SeqCst);
+    });
+    q.set_change_listener(move || {
+        s.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let _rx = q.submit(summary("01A", "https://a.test/"));
+    assert_eq!(first.load(Ordering::SeqCst), 0, "first set_ should be gone");
+    assert_eq!(second.load(Ordering::SeqCst), 1);
+    assert_eq!(appended.load(Ordering::SeqCst), 1, "append survived set_");
+}
+
+#[test]
+fn clear_change_listener_drops_both_slots() {
+    let q = PendingQueue::new();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (h1, h2) = (Arc::clone(&hits), Arc::clone(&hits));
+    q.set_change_listener(move || {
+        h1.fetch_add(1, Ordering::SeqCst);
+    });
+    q.add_change_listener(move || {
+        h2.fetch_add(1, Ordering::SeqCst);
+    });
+    q.clear_change_listener();
+
+    let _rx = q.submit(summary("01A", "https://a.test/"));
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+}

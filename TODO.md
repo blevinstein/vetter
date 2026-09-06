@@ -732,13 +732,13 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
 
 ### PR 3 — Tray (StatusNotifierItem)
 
-- [ ] `runloop/linux/status_item.rs` using `ksni`: shield icon,
+- [x] `runloop/linux/status_item.rs` using `ksni`: shield icon,
       pending-count badge, "Open vetter window…" / "Pending: N"
       / "Quit Vetter" menu.
-- [ ] Wire the queue change-listener to call `ksni::Handle::update`
+- [x] Wire the queue change-listener to call `ksni::Handle::update`
       on every state flip (mirrors
       `runloop/mac/status_item.rs::set_pending_count`).
-- [ ] Hicolor SVG asset under `vetterd/resources/icons/` with the
+- [x] Hicolor SVG asset under `vetterd/resources/icons/` with the
       same shield silhouette as macOS.
 
 ### PR 4 — GTK4 popover window

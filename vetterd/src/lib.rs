@@ -36,6 +36,8 @@ pub mod policy;
 pub mod runloop;
 pub mod socket;
 pub mod suggestions;
+#[cfg(target_os = "linux")]
+pub mod tray;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -273,6 +275,28 @@ pub fn run(
         allowlist_override: allowlist_override.clone(),
     });
 
+    // Tray item (Phase 6c). Linux only, and only when the real
+    // notifier is in play — under `mock` / `noop` we are in a test or
+    // a headless box and must not put an icon on anybody's panel.
+    //
+    // Failure is logged and swallowed on purpose: `plans/LinuxApp.md`
+    // §5.5. GNOME ships no StatusNotifierWatcher without an
+    // extension, so "no tray" is a supported steady state, and the
+    // daemon stays fully usable through notifications and
+    // `vet daemon approve`.
+    #[cfg(target_os = "linux")]
+    let tray = if notifier::resolved_kind() == "linux" {
+        match tray::install(Arc::clone(&pending), Arc::clone(&shutdown)) {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                eprintln!("vetterd: tray unavailable ({e}); continuing without it");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     eprintln!("vetterd: listening on {}", socket_path.display());
 
     // Admin accept loop runs on a background thread; it carries the
@@ -314,6 +338,14 @@ pub fn run(
              notifier::build_from_env should refuse this combination"
         ),
     };
+
+    // Withdraw the tray item before the notifier goes down so the
+    // icon disappears promptly rather than lingering until the
+    // process exits (§7 step 15 wants it gone inside ~250 ms).
+    #[cfg(target_os = "linux")]
+    if let Some(tray) = tray {
+        tray.shutdown();
+    }
 
     // Notifier shutdown hook (e.g. close mock control listeners).
     notifier.shutdown();

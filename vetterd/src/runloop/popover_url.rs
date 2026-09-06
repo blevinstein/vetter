@@ -33,7 +33,7 @@ use crate::cards::url::{self as card_url, MethodTone};
 
 // Re-exported so the trust classifier stays nameable at this path
 // after the lift into `crate::cards::url`.
-pub use crate::cards::url::{host_trust, is_loopback, HostTrust};
+pub use crate::cards::url::{host_trust, HostTrust};
 
 /// Body font size for non-pill URL tokens. Picked to match the
 /// monospaced semibold header font we use elsewhere.

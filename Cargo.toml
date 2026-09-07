@@ -10,7 +10,10 @@ license = "MIT"
 repository = "https://github.com/blevinstein/vetter"
 
 [workspace.dependencies]
-vetter-core = { path = "vetter-core" }
+# Version is required alongside path so cargo-deny does not treat
+# this as a wildcard when the consuming crates remain publishable
+# (crates.io rejects path-only deps).
+vetter-core = { path = "vetter-core", version = "0.2.4" }
 
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

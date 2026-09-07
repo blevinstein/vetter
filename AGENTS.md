@@ -121,7 +121,7 @@ distribution is built by [`tools/release.sh`](tools/release.sh) — see
 Source-build path for Ubuntu development:
 
 ```sh
-sudo apt-get install -y libgtk-4-dev libdbus-1-dev pkg-config build-essential
+tools/install-deps.sh --run    # system build deps; see the script for the list
 cargo build --release -p vetterd -p vet
 cargo install cargo-deb && cargo deb -p vetterd
 sudo dpkg -i target/debian/vetter_*.deb

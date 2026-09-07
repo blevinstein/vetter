@@ -701,8 +701,9 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
       [plans/LinuxApp.md](plans/LinuxApp.md) §6a; the wire field
       carries a reason for either decision if `approve` ever wants
       one.
-- [ ] CI: extend `.github/workflows/ci.yml` test job with
-      `apt-get install -y libgtk-4-dev libdbus-1-dev`.
+- [ ] CI: extend `.github/workflows/ci.yml` test job to run
+      `tools/install-deps.sh --run`, rather than hard-coding package
+      names in the workflow — the script is the canonical list.
 
 ### PR 2 — D-Bus notifications via zbus
 

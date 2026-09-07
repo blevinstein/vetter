@@ -413,9 +413,11 @@ credible v0.2 ship point.**
 
 The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
 
-- [ ] Add `gtk4` (0.11) gated to `target_os = "linux"`. Document
-      the build deps (`gtk4-devel glib2-devel` on Fedora;
-      `libgtk-4-dev libglib2.0-dev` on Debian/Ubuntu).
+- [ ] Add `gtk4` (0.11) gated to `target_os = "linux"`. Build deps
+      are declared once in
+      [tools/install-deps.sh](../tools/install-deps.sh) — `--check`
+      to verify, `--run` to install. Don't restate package names
+      here; that is how the list drifted last time.
 - [ ] Introduce `PlatformDriver::Gtk` alongside `None` / `AppKit`
       in [vetterd/src/lib.rs](../vetterd/src/lib.rs); `run_with_glib`
       drives the main loop on the main thread with the accept loop
@@ -493,7 +495,8 @@ Per §4.3: tarball + `cargo install` only, for now.
 - [ ] Linux job already runs fmt/clippy/tests. Extend it to build
       the new `target_os = "linux"` cfg paths — otherwise the
       notifier and GTK code never get compiled in CI.
-- [ ] Install `gtk4-devel` / `libgtk-4-dev` in the Linux job.
+- [ ] Run `tools/install-deps.sh --run` in the Linux job instead of
+      naming packages in the workflow.
 - [ ] Keep the `MockNotifier` as the automated-coverage workhorse;
       CI has no session bus, so 6b/6c/6d get manual smoke coverage
       only (§7) plus unit tests on the extracted pure functions.
@@ -629,7 +632,7 @@ The plan targets the common substrate. Known divergences:
 
 | | Fedora / Nobara (reference) | Debian / Ubuntu |
 |---|---|---|
-| Build deps | `gtk4-devel glib2-devel dbus-devel` | `libgtk-4-dev libglib2.0-dev libdbus-1-dev` |
+| Build deps | `tools/install-deps.sh --run` (resolves dnf names) | same script (resolves apt names) |
 | Rust | `dnf install rust cargo` (ignores `rust-toolchain.toml`) — prefer rustup | same caveat |
 | Packaging (deferred) | COPR / `.rpm` | PPA / `.deb` |
 

@@ -506,7 +506,9 @@ not run — confirm with `sudo dpkg --configure -a` and re-check.
   the most common offenders are `libgtk-4-dev` (jammy backports
   vs. noble main) and `librust-zbus-dev` (we usually link against
   the vendored crate, not the OS package, but `cargo-deb` can be
-  miscoaxed into adding it).
+  miscoaxed into adding it). The authoritative build-dep list is
+  [`tools/install-deps.sh`](../tools/install-deps.sh) — note it does
+  *not* include dbus headers, since zbus is pure Rust.
 - **`vetter.service` reports `condition failed`.** The unit's
   `ConditionUser` and `ConditionEnvironment` guards fired; this is
   expected on machines without a graphical session. See

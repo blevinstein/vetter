@@ -110,7 +110,7 @@ fn badge_asks_for_attention_only_when_something_is_pending() {
 
 #[test]
 fn empty_menu_still_offers_quit() {
-    let menu = menu_model(&[]);
+    let menu = menu_model(&[], false);
     assert_eq!(
         menu,
         vec![
@@ -124,7 +124,7 @@ fn empty_menu_still_offers_quit() {
 #[test]
 fn menu_lists_one_submenu_per_pending_request() {
     let cards = vec![card("01A", "curl GET a"), card("01B", "curl GET b")];
-    let menu = menu_model(&cards);
+    let menu = menu_model(&cards, false);
     assert_eq!(menu[0], MenuEntry::Header("Pending: 2".into()));
     assert_eq!(
         menu[1],
@@ -148,7 +148,7 @@ fn menu_caps_the_request_list_and_says_how_many_were_elided() {
     let cards: Vec<PendingCard> = (0..MAX_MENU_REQUESTS + 4)
         .map(|i| card(&format!("01{i:02}"), "curl GET x"))
         .collect();
-    let menu = menu_model(&cards);
+    let menu = menu_model(&cards, false);
 
     let requests = menu
         .iter()
@@ -166,7 +166,7 @@ fn menu_at_exactly_the_cap_has_no_elision_header() {
     let cards: Vec<PendingCard> = (0..MAX_MENU_REQUESTS)
         .map(|i| card(&format!("01{i:02}"), "curl GET x"))
         .collect();
-    let menu = menu_model(&cards);
+    let menu = menu_model(&cards, false);
     assert!(
         !menu
             .iter()
@@ -230,4 +230,44 @@ fn embedded_pixmaps_are_not_fully_transparent() {
             icon.height
         );
     }
+}
+
+#[test]
+fn open_window_entry_appears_only_when_a_window_exists() {
+    // On a display-less box the driver stays on `PlatformDriver::None`
+    // and no window is ever built, so offering "Open Vetter…" would
+    // be a menu item that silently does nothing — the reason 6c
+    // omitted it entirely rather than shipping it disabled.
+    let cards = vec![PendingCard {
+        id: "01A".into(),
+        label: "curl GET https://example.com/".into(),
+    }];
+
+    let without = menu_model(&cards, false);
+    assert!(
+        !without.iter().any(|e| matches!(e, MenuEntry::OpenWindow)),
+        "no window means no Open Vetter… entry"
+    );
+
+    let with = menu_model(&cards, true);
+    assert!(
+        with.iter().any(|e| matches!(e, MenuEntry::OpenWindow)),
+        "a window should be reachable from the tray"
+    );
+}
+
+#[test]
+fn open_window_sits_above_quit() {
+    // Quit stays the last item: it is destructive and users reach for
+    // the bottom of a menu for it.
+    let entries = menu_model(&[], true);
+    let open = entries
+        .iter()
+        .position(|e| matches!(e, MenuEntry::OpenWindow))
+        .expect("Open Vetter… present");
+    let quit = entries
+        .iter()
+        .position(|e| matches!(e, MenuEntry::Quit))
+        .expect("Quit present");
+    assert!(open < quit, "Open Vetter… must precede Quit");
 }

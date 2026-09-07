@@ -139,6 +139,10 @@ pub(crate) enum MenuEntry {
         label: String,
     },
     Separator,
+    /// Raise the approval window (Phase 6d). Present only when a
+    /// window exists — on a display-less box the daemon runs without
+    /// one, and a menu item that does nothing is worse than none.
+    OpenWindow,
     Quit,
 }
 
@@ -200,7 +204,7 @@ pub(crate) fn badge_for(pending: usize) -> Badge {
 }
 
 /// Build the menu shape for a set of pending requests.
-pub(crate) fn menu_model(pending: &[PendingCard]) -> Vec<MenuEntry> {
+pub(crate) fn menu_model(pending: &[PendingCard], window_available: bool) -> Vec<MenuEntry> {
     let mut out = Vec::with_capacity(pending.len() + 3);
     if pending.is_empty() {
         out.push(MenuEntry::Header("No pending approvals".into()));
@@ -220,9 +224,10 @@ pub(crate) fn menu_model(pending: &[PendingCard]) -> Vec<MenuEntry> {
             out.push(MenuEntry::Header(format!("…and {extra} more")));
         }
     }
-    // NOTE for Phase 6d: "Open Vetter…" belongs here, above the
-    // separator. Omitted until there is a window to open — a menu
-    // item that does nothing is worse than none.
+    if window_available {
+        out.push(MenuEntry::Separator);
+        out.push(MenuEntry::OpenWindow);
+    }
     out.push(MenuEntry::Separator);
     out.push(MenuEntry::Quit);
     out
@@ -255,6 +260,10 @@ struct VetterTray {
     queue: Arc<PendingQueue>,
     shutdown: Arc<AtomicBool>,
     cards: Vec<PendingCard>,
+    /// Whether this daemon has an approval window to raise. False on
+    /// a display-less box, where the driver stayed on
+    /// `PlatformDriver::None` and "Open Vetter…" would be a dead item.
+    window_available: bool,
 }
 
 impl VetterTray {
@@ -324,8 +333,27 @@ impl Tray for VetterTray {
         }
     }
 
+    /// Left-click on the tray icon. The SNI host calls `Activate`;
+    /// the spec leaves the meaning to us, and raising the approval
+    /// window is the only thing a user plausibly means by clicking a
+    /// shield that says "1 request waiting".
+    ///
+    /// Gated on [`Self::window_available`] for the same reason the
+    /// "Open Vetter…" menu item is: on a display-less box the driver
+    /// stayed on `PlatformDriver::None`, there is no window to raise,
+    /// and silently doing nothing beats pretending otherwise.
+    ///
+    /// Runs on the ksni thread. `request_show` hops to the GTK thread
+    /// itself, so nothing GTK-owned is touched here — same contract
+    /// as the menu item's activate closure below.
+    fn activate(&mut self, _x: i32, _y: i32) {
+        if self.window_available {
+            crate::runloop::request_show();
+        }
+    }
+
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        menu_model(&self.cards)
+        menu_model(&self.cards, self.window_available)
             .into_iter()
             .map(|entry| match entry {
                 MenuEntry::Header(label) => StandardItem {
@@ -362,6 +390,17 @@ impl Tray for VetterTray {
                     .into()
                 }
                 MenuEntry::Separator => MenuItem::Separator,
+                MenuEntry::OpenWindow => StandardItem {
+                    label: "Open Vetter…".into(),
+                    activate: Box::new(|_: &mut Self| {
+                        // Runs on the ksni thread. `request_show`
+                        // hops to the GTK thread itself; nothing
+                        // GTK-owned is touched here.
+                        crate::runloop::request_show();
+                    }),
+                    ..Default::default()
+                }
+                .into(),
                 MenuEntry::Quit => StandardItem {
                     label: "Quit Vetter".into(),
                     activate: Box::new(|t: &mut Self| {
@@ -443,11 +482,13 @@ impl TrayHandle {
 pub fn install(
     queue: Arc<PendingQueue>,
     shutdown: Arc<AtomicBool>,
+    window_available: bool,
 ) -> Result<TrayHandle, TrayError> {
     let tray = VetterTray {
         cards: snapshot(&queue),
         queue: Arc::clone(&queue),
         shutdown,
+        window_available,
     };
 
     // `assume_sni_available(true)`: do not fail when no watcher has

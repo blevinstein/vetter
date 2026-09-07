@@ -127,7 +127,24 @@ pub fn build_from_env(
         #[cfg(target_os = "linux")]
         "linux" => {
             let n: Arc<dyn Notifier> = Arc::new(linux::LinuxNotifier::install(queue)?);
-            Ok((n, PlatformDriver::None))
+            // Two independent preconditions. The notifier needs a
+            // session bus (checked above, fails closed); the approval
+            // window needs a display, which an SSH session with bus
+            // forwarding or a headless user service will not have.
+            // Missing display is a supported steady state, not a
+            // startup failure: notifications, the tray and
+            // `vet daemon approve` all still work, so degrade to the
+            // accept-loop-on-main-thread driver and say so once.
+            if crate::runloop::display_available() {
+                Ok((n, PlatformDriver::Gtk))
+            } else {
+                eprintln!(
+                    "vetterd: no $WAYLAND_DISPLAY or $DISPLAY; running without the \
+                     approval window — notifications and `vet daemon approve` are \
+                     unaffected"
+                );
+                Ok((n, PlatformDriver::None))
+            }
         }
         #[cfg(not(target_os = "linux"))]
         "linux" => Err(NotifierBuildError::Unsupported(

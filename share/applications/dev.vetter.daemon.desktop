@@ -7,9 +7,12 @@ Icon=dev.vetter.daemon
 Exec=vetterd
 Terminal=false
 Categories=Utility;Security;
-# The daemon owns its own lifecycle (`vet daemon start`) and has no
-# launchable window before Phase 6d, so this entry exists for identity,
-# not for launching: it is what makes `desktop-entry=dev.vetter.daemon`
-# on a notification resolve to the Vetter name and shield icon instead
-# of a generic placeholder. See plans/LinuxApp.md §5.2.
+# The daemon owns its own lifecycle (`vet daemon start`), so this entry
+# exists for identity rather than for launching — hence NoDisplay. It
+# does two jobs: it makes `desktop-entry=dev.vetter.daemon` on a
+# notification resolve to the Vetter name and shield icon instead of a
+# generic placeholder (§5.2), and it supplies the approval window's
+# icon on Wayland, where the compositor matches the toplevel's app_id
+# against an installed entry rather than reading a window property.
+# Install it with tools/install-desktop.sh.
 NoDisplay=true

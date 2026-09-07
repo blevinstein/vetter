@@ -413,16 +413,16 @@ credible v0.2 ship point.**
 
 The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
 
-- [ ] Add `gtk4` (0.11) gated to `target_os = "linux"`. Build deps
+- [x] Add `gtk4` (0.11) gated to `target_os = "linux"`. Build deps
       are declared once in
       [tools/install-deps.sh](../tools/install-deps.sh) — `--check`
       to verify, `--run` to install. Don't restate package names
       here; that is how the list drifted last time.
-- [ ] Introduce `PlatformDriver::Gtk` alongside `None` / `AppKit`
+- [x] Introduce `PlatformDriver::Gtk` alongside `None` / `AppKit`
       in [vetterd/src/lib.rs](../vetterd/src/lib.rs); `run_with_glib`
       drives the main loop on the main thread with the accept loop
       on a background thread, mirroring `run_with_appkit`.
-- [ ] `vetterd/src/runloop/linux/` — window + card assembly. Follow
+- [x] `vetterd/src/runloop/linux/` — window + card assembly. Follow
       the macOS split: keep the pure lowering functions
       (queue → card data, effects → rows, signals → pills, URL
       segmentation) **shared and unit-tested**, and let the
@@ -434,7 +434,7 @@ The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
       prerequisite, not an afterthought.**
 - [ ] Cards: §8.5 detail disclosure, raw-command disclosure + copy,
       signal pills, host-trust palette, `Open file` via `xdg-open`.
-- [ ] Per-card **Approve** / **Reject**.
+- [x] Per-card **Approve** / **Reject**.
 - [ ] `Allowlist…` and `Trust host…` pickers including the duration
       radio group (15m / 1h / 4h / this terminal session / Forever).
       These drive `AddRule` / `AddKnownHost`, which already work.
@@ -445,7 +445,11 @@ The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
 - [ ] Notification click-through opens the window scrolled to the
       matching card, using the activation token (§5.6).
 - [ ] Single-instance / raise-existing entry point (§5.5).
-- [ ] Threading discipline: GObject is single-threaded. The queue's
+      *(Partial: the tray's `Open Vetter…` raises it, and
+      `IS_SERVICE` gives single-instance. GNOME ships no tray,
+      so those users still have no way to open the window —
+      needs the non-tray entry point §5.5 asks for.)*
+- [x] Threading discipline: GObject is single-threaded. The queue's
       change-listener fires on whatever worker thread resolved the
       request and must hop to the GTK thread via
       `glib::idle_add_local` / `MainContext::invoke` before touching

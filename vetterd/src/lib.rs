@@ -35,6 +35,15 @@ pub mod pending;
 pub mod policy;
 #[cfg(target_os = "macos")]
 pub mod runloop;
+// Same module path, different driver: `runloop` is the AppKit loop on
+// macOS and the GLib/GTK4 loop on Linux. The `#[path]` mapping reaches
+// `runloop/linux/` directly rather than nesting under
+// `runloop/mod.rs`, which is `#![cfg(target_os = "macos")]` at file
+// scope. The alternative — the `runloop/mac/` move TODO Phase 6 PR 1
+// describes — edits macOS-gated code that cannot be compiled here.
+#[cfg(target_os = "linux")]
+#[path = "runloop/linux/mod.rs"]
+pub mod runloop;
 pub mod socket;
 pub mod suggestions;
 #[cfg(target_os = "linux")]
@@ -142,6 +151,13 @@ pub enum PlatformDriver {
     /// macOS `UNUserNotificationCenter` notifier; the main thread
     /// must drive `NSApplication`.
     AppKit,
+    /// Linux notifier *and* a reachable display; the main thread must
+    /// drive the GLib main loop so the approval window can paint.
+    ///
+    /// Selected only when both preconditions hold. A Linux daemon with
+    /// a session bus but no display stays on [`Self::None`] with the
+    /// notifier fully active — see `runloop::display_available`.
+    Gtk,
 }
 
 /// Start the daemon. Blocks until SIGTERM / SIGINT, then cleans up
@@ -287,7 +303,11 @@ pub fn run(
     // `vet daemon approve`.
     #[cfg(target_os = "linux")]
     let tray = if notifier::resolved_kind() == "linux" {
-        match tray::install(Arc::clone(&pending), Arc::clone(&shutdown)) {
+        match tray::install(
+            Arc::clone(&pending),
+            Arc::clone(&shutdown),
+            matches!(driver, PlatformDriver::Gtk),
+        ) {
             Ok(handle) => Some(handle),
             Err(e) => {
                 eprintln!("vetterd: tray unavailable ({e}); continuing without it");
@@ -336,6 +356,20 @@ pub fn run(
         #[cfg(not(target_os = "macos"))]
         PlatformDriver::AppKit => unreachable!(
             "PlatformDriver::AppKit can only be selected on macOS — \
+             notifier::build_from_env should refuse this combination"
+        ),
+        #[cfg(target_os = "linux")]
+        PlatformDriver::Gtk => run_with_glib(
+            listener,
+            Arc::clone(&ctx),
+            Arc::clone(&shutdown),
+            Arc::clone(&pending),
+            Arc::clone(&inflight),
+            max_inflight,
+        ),
+        #[cfg(not(target_os = "linux"))]
+        PlatformDriver::Gtk => unreachable!(
+            "PlatformDriver::Gtk can only be selected on Linux — \
              notifier::build_from_env should refuse this combination"
         ),
     };
@@ -392,6 +426,60 @@ fn run_with_appkit(
     runloop::run_app_kit(Arc::clone(&ctx), Arc::clone(&shutdown));
 
     // AppKit returned: signal the accept loop to wind down and join.
+    shutdown.store(true, Ordering::SeqCst);
+    pending.cancel_all();
+    match accept_handle.join() {
+        Ok(r) => r,
+        Err(_) => Err(DaemonError::Socket(std::io::Error::other(
+            "vetterd-accept thread panicked",
+        ))),
+    }
+}
+
+/// Linux-only main loop. Mirrors [`run_with_appkit`]: accept loop on a
+/// background thread, GLib main loop on the main thread.
+///
+/// Differs in one respect. AppKit is guaranteed to come up once the
+/// notifier installed, but GTK can still fail against a display that
+/// advertised itself and then refused the connection. Rather than
+/// killing a daemon whose notifier, tray and admin socket all work, we
+/// fall back to running the accept loop right here — the same shape
+/// `PlatformDriver::None` would have taken.
+#[cfg(target_os = "linux")]
+fn run_with_glib(
+    listener: std::os::unix::net::UnixListener,
+    ctx: Arc<Context>,
+    shutdown: Arc<AtomicBool>,
+    pending: Arc<PendingQueue>,
+    inflight: Arc<AtomicUsize>,
+    max_inflight: usize,
+) -> Result<(), DaemonError> {
+    let accept_ctx = Arc::clone(&ctx);
+    let accept_shutdown = Arc::clone(&shutdown);
+    let accept_inflight = Arc::clone(&inflight);
+    let accept_handle = std::thread::Builder::new()
+        .name("vetterd-accept".into())
+        .spawn(move || {
+            accept_loop(
+                listener,
+                accept_ctx,
+                accept_shutdown,
+                accept_inflight,
+                max_inflight,
+            )
+        })
+        .map_err(DaemonError::Socket)?;
+
+    if runloop::run_glib(Arc::clone(&pending), Arc::clone(&shutdown)).is_err() {
+        // GTK never came up. The accept thread is already serving, so
+        // park this thread on the shutdown flag instead of racing it
+        // for the listener; everything except the window still works.
+        while !shutdown.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    // Main loop returned: signal the accept loop to wind down and join.
     shutdown.store(true, Ordering::SeqCst);
     pending.cancel_all();
     match accept_handle.join() {

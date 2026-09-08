@@ -515,6 +515,44 @@ Per §4.3: tarball + `cargo install` only, for now.
       end-to-end approve could genuinely be automated. Worth
       prototyping — this would be better coverage than macOS has.
 
+### Phase 6h — Visual polish `[ ]`
+
+Deferred deliberately. 6d steps 1–3 optimise for *correct* — the right
+rows, the right suppression rules, no markup injection — and the
+result works but reads noticeably rougher than the AppKit popover.
+Polish is cheaper as one deliberate pass over a finished surface than
+as guesswork spread across three feature steps, so it lives here.
+
+The reference is [ApprovalUI.md](ApprovalUI.md): its element catalogue
+is normative for both platforms, and the honest test of this phase is
+a side-by-side screenshot against the macOS popover.
+
+- [ ] Audit each element against `ApprovalUI.md` — tinted pill recipe,
+      signal pills, URL row, effect rows, show-raw disclosure, body
+      colouring, dry-run wrapper, card chrome — and record where GTK
+      diverges and whether the divergence is deliberate (GNOME HIG,
+      platform idiom) or accidental (nobody chose it).
+- [ ] Spacing, padding, corner radii and card separation. AppKit's
+      defaults did a lot of unearned work here that GTK does not.
+- [ ] Typography: monospace face and size for URL / raw body, label
+      weights, and the optical match between the URL row and the
+      pills that sit beside it.
+- [ ] Palette fidelity in **both** light and dark. The host-trust and
+      signal tones are semantic in `cards::` and mapped per platform,
+      so this is a mapping review, not a redesign.
+- [ ] Live theme switching. The palette is currently selected once per
+      refresh via `gtk_application_prefer_dark_theme`, so a theme
+      change only repaints on the next queue change. Fix is roughly
+      two lines: `connect_gtk_application_prefer_dark_theme_notify` →
+      `request_refresh`. Left out of 6d step 2 as out of scope.
+- [ ] Window sizing: sensible default and minimum, scroll behaviour
+      with many cards, and what an empty queue should look like.
+- [ ] Decide whether to ship a `.css` provider and, if so, whether to
+      honour a user override. `~/.config/vetter/icon.css` appears in
+      the old docs as a path that never existed (§3.3) — if we add a
+      style hook, add it deliberately and document it, rather than
+      resurrecting that ghost.
+
 ---
 
 ## 7. Manual smoke test (Linux) — **steps 1–7 runnable; 8–15 target state**

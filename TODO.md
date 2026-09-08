@@ -766,6 +766,24 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
       notification body opens it scrolled to the matching id
       (mirrors macOS `focused_id` flow).
 
+### PR 4b — GTK visual polish
+
+Deferred from PR 4 on 2026-09-08 after driving the card catalogue on
+Plasma: the surface is functionally right but reads rougher than the
+AppKit popover. Full checklist in
+[plans/LinuxApp.md](plans/LinuxApp.md) §6h; the acceptance test is a
+side-by-side screenshot against macOS.
+
+- [ ] Audit every element against
+      [plans/ApprovalUI.md](plans/ApprovalUI.md) and record which
+      divergences are deliberate and which are accidental.
+- [ ] Spacing / padding / radii / card separation.
+- [ ] Typography and the URL-row-to-pill optical match.
+- [ ] Light **and** dark palette fidelity (semantic tones already
+      live in `cards::`; this is the per-platform mapping).
+- [ ] Repaint on live theme switch (~2 lines, noted in §6h).
+- [ ] Window default/minimum size, scrolling, empty-queue state.
+
 ### PR 5 — `.deb` packaging + systemd user service
 
 - [ ] `[package.metadata.deb]` block in

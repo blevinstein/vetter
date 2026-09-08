@@ -131,12 +131,23 @@ pub(crate) enum MenuEntry {
     /// Non-interactive status line ("Pending: 3", "No pending
     /// approvals", "…and 4 more").
     Header(String),
-    /// One request, rendered as a submenu holding Approve / Reject.
-    /// A submenu rather than two flat items so the top level stays
-    /// short and each pair is unambiguously bound to its request.
+    /// One request, rendered as a submenu holding Open / Approve /
+    /// Reject. A submenu rather than flat items so the top level
+    /// stays short and each group is unambiguously bound to its
+    /// request.
     Request {
         id: String,
         label: String,
+        /// Whether to offer **Open** alongside the two decisions
+        /// (§6i). Tracks `window_available` for the same reason
+        /// [`MenuEntry::OpenWindow`] does: on a display-less box
+        /// there is no window to raise, and a dead item is worse
+        /// than an absent one.
+        ///
+        /// Without this the tray can only *decide* a request, never
+        /// inspect it — which means deciding blind whenever the
+        /// banner has already been dismissed.
+        open: bool,
     },
     Separator,
     /// Raise the approval window (Phase 6d). Present only when a
@@ -214,6 +225,7 @@ pub(crate) fn menu_model(pending: &[PendingCard], window_available: bool) -> Vec
             out.push(MenuEntry::Request {
                 id: card.id.clone(),
                 label: card.label.clone(),
+                open: window_available,
             });
         }
         if let Some(extra) = pending
@@ -362,29 +374,55 @@ impl Tray for VetterTray {
                     ..Default::default()
                 }
                 .into(),
-                MenuEntry::Request { id, label } => {
+                MenuEntry::Request { id, label, open } => {
+                    let open_id = id.clone();
                     let approve_id = id.clone();
                     let reject_id = id;
+                    let mut submenu: Vec<MenuItem<Self>> = Vec::with_capacity(4);
+                    if open {
+                        submenu.push(
+                            StandardItem {
+                                label: "Open".into(),
+                                activate: Box::new(move |_: &mut Self| {
+                                    // Runs on the ksni thread.
+                                    // `request_show_card` hops to the
+                                    // GTK thread itself; nothing
+                                    // GTK-owned is touched here.
+                                    crate::runloop::request_show_card(open_id.clone());
+                                }),
+                                ..Default::default()
+                            }
+                            .into(),
+                        );
+                        // Separated so a mis-aimed click lands on a
+                        // separator rather than on Approve. The two
+                        // decisions are irreversible from here; Open
+                        // is not.
+                        submenu.push(MenuItem::Separator);
+                    }
+                    submenu.push(
+                        StandardItem {
+                            label: "Approve".into(),
+                            activate: Box::new(move |t: &mut Self| {
+                                t.resolve(&approve_id, PendingDecision::allow(REASON_APPROVED));
+                            }),
+                            ..Default::default()
+                        }
+                        .into(),
+                    );
+                    submenu.push(
+                        StandardItem {
+                            label: "Reject".into(),
+                            activate: Box::new(move |t: &mut Self| {
+                                t.resolve(&reject_id, PendingDecision::deny(REASON_REJECTED));
+                            }),
+                            ..Default::default()
+                        }
+                        .into(),
+                    );
                     SubMenu {
                         label,
-                        submenu: vec![
-                            StandardItem {
-                                label: "Approve".into(),
-                                activate: Box::new(move |t: &mut Self| {
-                                    t.resolve(&approve_id, PendingDecision::allow(REASON_APPROVED));
-                                }),
-                                ..Default::default()
-                            }
-                            .into(),
-                            StandardItem {
-                                label: "Reject".into(),
-                                activate: Box::new(move |t: &mut Self| {
-                                    t.resolve(&reject_id, PendingDecision::deny(REASON_REJECTED));
-                                }),
-                                ..Default::default()
-                            }
-                            .into(),
-                        ],
+                        submenu,
                         ..Default::default()
                     }
                     .into()

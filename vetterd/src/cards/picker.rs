@@ -14,6 +14,23 @@ use vetter_core::{RiskSignal, SignalKind};
 
 use super::rules::{self, DurationChoice};
 
+/// Which of the two pickers a surface is asking for.
+///
+/// Exists because a picker can now be requested from somewhere that
+/// cannot draw it. A notification action and a tray item both mean
+/// "open this picker on that card", and the window is what actually
+/// opens it, so the request has to survive as *data* on the way
+/// across. macOS reaches the same two sheets from its banner, where
+/// the equivalent distinction is the action identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerKind {
+    /// "Allowlist…" — pick a generalisation tier and a duration.
+    Allowlist,
+    /// "Trust host…" — mark the host known. Only meaningful while
+    /// [`show_trust_host`] holds for the card.
+    TrustHost,
+}
+
 /// One radio row in a picker: the tier headline and the YAML the user
 /// would be persisting.
 ///

@@ -128,7 +128,7 @@ Linux stands.
 |---|---|---|
 | **Resolve a prompt** | UI callbacks → `PendingQueue::resolve` | **DONE (6a)** — `MgmtRequest::Resolve` + `vet daemon approve`/`reject` |
 | Notification with Approve/Reject | `UNUserNotificationCenter` (`notifier/mac.rs`) | **DONE (6b)** — `notifier/linux.rs` over `org.freedesktop.Notifications` |
-| — notification `Allowlist…` / `Trust host…` actions | `runloop/mod.rs` registers **four** actions, plus a second category so `Trust host…` shows only for unknown hosts | **MISSING (6i)** — Linux registers approve / reject / default only |
+| — notification `Allowlist…` / `Trust host…` actions | `runloop/mod.rs` registers **four** actions, plus a second category so `Trust host…` shows only for unknown hosts | **DONE (6i)** — same four, gated the same way |
 | Notification body click-through → detail UI | `runloop/mod.rs` | **DONE (6d step 4)** — `default` action → window, scrolled to the card |
 | Banner coalescing (`NotifyHint::was_empty_before`) | `notifier/mac.rs` | **DONE (6b)** — consumed by `notifier/linux.rs` |
 | Banner dismissal on resolve | `removeDeliveredNotificationsWithIdentifiers:` | **DONE (6b)** — `CloseNotification`, driven off the queue change listener so *every* resolve path closes |
@@ -529,7 +529,7 @@ Per §4.3: tarball + `cargo install` only, for now.
       end-to-end approve could genuinely be automated. Worth
       prototyping — this would be better coverage than macOS has.
 
-### Phase 6i — Notification and tray parity `[ ]`
+### Phase 6i — Notification and tray parity `[x]` **done 2026-09-08**
 
 Found on 2026-09-08 by using the finished surface: if you miss the
 banner, the tray can only *decide* a request, never open it — and the
@@ -544,18 +544,24 @@ function, not rough styling.
 Both are cheap now that 6d step 4 built the open-window-scrolled-to-a-
 card plumbing and step 3 built the pickers.
 
-- [ ] Add `Allowlist…` and `Trust host…` actions to the Linux
+- [x] Add `Allowlist…` and `Trust host…` actions to the Linux
       notification. A freedesktop notification cannot host a picker,
       so — exactly as macOS does — the action opens the window with
       that card's picker raised and leaves the request pending.
-- [ ] Offer `Trust host…` only when the host is unknown, mirroring
+- [x] Offer `Trust host…` only when the host is unknown, mirroring
       macOS's second notification category.
       `cards::picker::show_trust_host` already answers this.
-- [ ] Check how Plasma renders four action buttons before committing
+- [x] Check how Plasma renders four action buttons before committing
       to four. macOS condenses the overflow under an "Options"
       dropdown; the freedesktop spec has no equivalent, so this may
       need to degrade to two buttons plus the body click.
-- [ ] Add **Open** to the tray's per-request submenu alongside
+      **Answered by screenshot on Plasma 6.7.3:** all four render
+      inline, untruncated — the banner simply widens — and the
+      reserved `default` key correctly draws no button. Four kept.
+      Caveat: measured on a 4480px-wide display; a narrow screen may
+      still wrap, and the array is ordered so a truncating server
+      drops the shortcuts rather than Approve/Reject.
+- [x] Add **Open** to the tray's per-request submenu alongside
       Approve / Reject, so a request can be inspected from the tray
       rather than only decided blind. `request_show(Some(id))` from
       6d step 4 is the call.

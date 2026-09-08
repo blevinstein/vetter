@@ -66,7 +66,7 @@ use vetter_core::wire::WireScope;
 
 use super::model::{self, CardAction, Disclosure, MarkupPalette};
 use crate::cards::card::{self, CardView, HttpUrlView, UrlView};
-use crate::cards::picker::{self, PickerRow};
+use crate::cards::picker::{self, PickerKind, PickerRow};
 use crate::cards::pills::{PillSpec, Tone};
 use crate::cards::resolved::{self, ResolvedCardView, RuleAttribution};
 use crate::cards::rows::{BodyContent, EffectRow, FilePath};
@@ -220,15 +220,21 @@ static PENDING_SHOW: Mutex<Option<ShowRequest>> = Mutex::new(None);
 
 /// What a raise request carries beyond "become visible".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ShowRequest {
+pub(crate) struct ShowRequest {
     /// Request id to scroll into view, when the raise came from a
-    /// notification body click. `None` for the tray, the footer and
+    /// notification click or a tray entry for one specific request.
+    /// `None` for the tray's "Open Vetter…", the footer and
     /// `vet daemon open`, which mean "show the window" and nothing
     /// more specific.
-    card_id: Option<String>,
+    pub card_id: Option<String>,
     /// XDG activation token from the notification server, if it sent
     /// one. See [`apply_activation_token`].
-    token: Option<String>,
+    pub token: Option<String>,
+    /// Picker to raise once the card is on screen (§6i). `Some` only
+    /// for the two notification picker actions, and only alongside a
+    /// `card_id` — a picker generalises one specific request, so
+    /// there is nothing it could mean without one.
+    pub picker: Option<PickerKind>,
 }
 
 /// A one-line outcome banner: what happened after a picker action.
@@ -1613,18 +1619,28 @@ fn revoke_rule(ctx: Arc<Context>, scope: WireScope, rule_id: String) {
 /// A notification body click passes an activation token and the id of
 /// the card that was clicked; see [`request_show_for`].
 pub(crate) fn request_show() {
-    request_show_for(None, None);
+    request_show_with(ShowRequest::default());
 }
 
-/// Raise the window, optionally scrolled to `card_id` and using
-/// `token` to claim focus.
+/// Raise the window, scrolled to a card and/or with a picker open.
 ///
 /// Safe to call from any thread. The payload is parked in
 /// [`PENDING_SHOW`] rather than captured, because the closure handed
 /// to `MainContext::invoke` must capture nothing — see that static.
-pub(crate) fn request_show_for(card_id: Option<String>, token: Option<String>) {
-    *PENDING_SHOW.lock().expect("show queue poisoned") = Some(ShowRequest { card_id, token });
+pub(crate) fn request_show_with(request: ShowRequest) {
+    *PENDING_SHOW.lock().expect("show queue poisoned") = Some(request);
     glib::MainContext::default().invoke(drain_show_requests);
+}
+
+/// Raise the window scrolled to one request, with no picker.
+///
+/// The tray's per-request **Open** item (§6i) and anything else that
+/// means "show me this one".
+pub(crate) fn request_show_card(card_id: String) {
+    request_show_with(ShowRequest {
+        card_id: Some(card_id),
+        ..ShowRequest::default()
+    });
 }
 
 /// Collect a parked raise request and act on it. Capture-free so it
@@ -1655,8 +1671,25 @@ fn drain_show_requests() {
         }
     });
 
-    if let Some(id) = request.card_id {
+    if let Some(id) = request.card_id.clone() {
         scroll_to_card(id);
+    }
+
+    // A picker asked for from a banner (§6i). Raised after the
+    // present so the sheet has a mapped parent to sit over, and after
+    // the scroll so the card it refers to is behind it rather than
+    // somewhere off-screen. Both picker functions already answer the
+    // "that request is gone" case with a toast, so a request resolved
+    // between the click and this drain degrades to an explanation
+    // rather than an empty sheet.
+    if let (Some(kind), Some(id)) = (request.picker, request.card_id) {
+        let ctx = WINDOW.with(|cell| cell.borrow().as_ref().map(|s| Arc::clone(&s.ctx)));
+        if let Some(ctx) = ctx {
+            match kind {
+                PickerKind::Allowlist => open_allowlist_picker(ctx, id),
+                PickerKind::TrustHost => open_host_picker(ctx, id),
+            }
+        }
     }
 }
 

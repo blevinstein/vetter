@@ -130,14 +130,16 @@ fn menu_lists_one_submenu_per_pending_request() {
         menu[1],
         MenuEntry::Request {
             id: "01A".into(),
-            label: "curl GET a".into()
+            label: "curl GET a".into(),
+            open: false,
         }
     );
     assert_eq!(
         menu[2],
         MenuEntry::Request {
             id: "01B".into(),
-            label: "curl GET b".into()
+            label: "curl GET b".into(),
+            open: false,
         }
     );
     assert_eq!(menu[menu.len() - 1], MenuEntry::Quit);
@@ -270,4 +272,33 @@ fn open_window_sits_above_quit() {
         .position(|e| matches!(e, MenuEntry::Quit))
         .expect("Quit present");
     assert!(open < quit, "Open Vetter… must precede Quit");
+}
+
+// ── Per-request Open (§6i) ──────────────────────────────────────────────────
+
+#[test]
+fn each_request_offers_open_when_a_window_exists() {
+    // Without it the tray can only *decide* a request, never inspect
+    // it — so a user who missed the banner is deciding blind.
+    let menu = menu_model(&[card("01A", "curl GET a")], true);
+    assert_eq!(
+        menu[1],
+        MenuEntry::Request {
+            id: "01A".into(),
+            label: "curl GET a".into(),
+            open: true,
+        }
+    );
+}
+
+#[test]
+fn a_display_less_daemon_offers_no_per_request_open() {
+    // Same rule as the top-level "Open Vetter…" entry: there is no
+    // window to raise, and a dead menu item is worse than none.
+    let menu = menu_model(&[card("01A", "curl GET a")], false);
+    let MenuEntry::Request { open, .. } = &menu[1] else {
+        panic!("expected a request entry, got {:?}", menu[1]);
+    };
+    assert!(!open);
+    assert!(!menu.contains(&MenuEntry::OpenWindow));
 }

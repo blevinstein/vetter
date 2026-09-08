@@ -336,7 +336,8 @@ fn a_body_click_carries_the_request_id_as_the_scroll_target() {
     assert_eq!(
         click_outcome("default", Some("R1")),
         ClickOutcome::Show {
-            card: Some("R1".to_string())
+            card: Some("R1".to_string()),
+            picker: None,
         }
     );
 }
@@ -357,7 +358,10 @@ fn a_body_click_still_opens_the_window_with_no_request_to_point_at() {
     // Vetter, and the card list is the honest answer.
     assert_eq!(
         click_outcome("default", None),
-        ClickOutcome::Show { card: None }
+        ClickOutcome::Show {
+            card: None,
+            picker: None,
+        }
     );
 }
 
@@ -376,4 +380,121 @@ fn parked_tokens_are_dropped_once_the_map_is_implausibly_large() {
         tokens.is_empty(),
         "at the cap the map is cleared rather than growing without bound"
     );
+}
+
+// ── Picker actions (§6i) ────────────────────────────────────────────────────
+
+/// A summary whose host the known-hosts store did not recognise,
+/// which is what gates `Trust host…` on both surfaces.
+fn unknown_host_summary() -> PromptSummary {
+    let mut s = summary("GET", "https://unknown.test/");
+    s.signals = vec![vetter_core::RiskSignal {
+        kind: vetter_core::SignalKind::UnknownHost,
+        detail: "unknown.test".into(),
+        effect_idx: Some(0),
+    }];
+    s
+}
+
+#[test]
+fn picker_actions_open_a_picker_and_never_resolve() {
+    // The whole contract of these two buttons. A banner that said
+    // "Allowlist…" and silently approved instead would be a worse
+    // betrayal than the stray-body-click case, because the label
+    // promised a choice.
+    assert_eq!(
+        action_intent("allowlist"),
+        ActionIntent::OpenPicker(PickerKind::Allowlist)
+    );
+    assert_eq!(
+        action_intent("trust_host"),
+        ActionIntent::OpenPicker(PickerKind::TrustHost)
+    );
+    assert!(decision_for_action("allowlist").is_none());
+    assert!(decision_for_action("trust_host").is_none());
+}
+
+#[test]
+fn a_picker_click_carries_both_the_card_and_which_picker() {
+    assert_eq!(
+        click_outcome("allowlist", Some("R1")),
+        ClickOutcome::Show {
+            card: Some("R1".to_string()),
+            picker: Some(PickerKind::Allowlist),
+        }
+    );
+    assert_eq!(
+        click_outcome("trust_host", Some("R1")),
+        ClickOutcome::Show {
+            card: Some("R1".to_string()),
+            picker: Some(PickerKind::TrustHost),
+        }
+    );
+}
+
+#[test]
+fn a_picker_click_on_an_unmapped_banner_opens_the_window_without_the_picker() {
+    // A picker generalises one specific request. With that request
+    // gone there is nothing to generalise, and a sheet offering tiers
+    // for a command the user can no longer see would be asking them
+    // to sign something blank.
+    assert_eq!(
+        click_outcome("allowlist", None),
+        ClickOutcome::Show {
+            card: None,
+            picker: None,
+        }
+    );
+}
+
+// ── Per-request action array ────────────────────────────────────────────────
+
+#[test]
+fn no_actions_are_sent_to_a_server_that_cannot_render_them() {
+    let caps = Capabilities::from_list(&["body"]);
+    assert!(actions_for(&unknown_host_summary(), caps).is_empty());
+}
+
+#[test]
+fn trust_host_is_offered_only_when_the_host_is_unknown() {
+    let caps = Capabilities::from_list(&["actions"]);
+    // Same predicate that gates the button on the card, so a banner
+    // cannot offer a picker the window would then render empty.
+    assert!(actions_for(&unknown_host_summary(), caps).contains(&"trust_host"));
+    assert!(!actions_for(&summary("GET", "https://known.test/"), caps).contains(&"trust_host"));
+}
+
+#[test]
+fn every_banner_offers_the_decisions_and_the_allowlist_shortcut() {
+    let caps = Capabilities::from_list(&["actions"]);
+    let actions = actions_for(&summary("GET", "https://known.test/"), caps);
+    for key in ["default", "approve", "reject", "allowlist"] {
+        assert!(actions.contains(&key), "missing `{key}` in {actions:?}");
+    }
+}
+
+#[test]
+fn decisions_are_registered_ahead_of_the_picker_shortcuts() {
+    // Positional: a server that truncates a long action list should
+    // drop the shortcuts, never Approve or Reject.
+    let caps = Capabilities::from_list(&["actions"]);
+    let actions = actions_for(&unknown_host_summary(), caps);
+    let at = |key: &str| actions.iter().position(|a| *a == key).expect("key present");
+    assert!(at("approve") < at("allowlist"));
+    assert!(at("reject") < at("allowlist"));
+    assert!(at("allowlist") < at("trust_host"));
+}
+
+#[test]
+fn the_action_array_stays_key_label_paired() {
+    // The spec is positional — `[key, label, key, label, …]`. An odd
+    // length means some server renders a label as a key.
+    let caps = Capabilities::from_list(&["actions"]);
+    for summary in [
+        unknown_host_summary(),
+        summary("GET", "https://known.test/"),
+    ] {
+        let actions = actions_for(&summary, caps);
+        assert_eq!(actions.len() % 2, 0, "unpaired: {actions:?}");
+    }
 }

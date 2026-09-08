@@ -55,7 +55,9 @@ use zbus::blocking::{fdo::DBusProxy, Connection, Proxy};
 use zbus::zvariant::Value;
 
 use crate::cards::markup::escape_markup as escape_body_markup;
+use crate::cards::picker::PickerKind;
 use crate::pending::{NotifyHint, PendingDecision, PendingQueue, PromptSummary};
+use crate::runloop::ShowRequest;
 
 use super::{Notifier, NotifierBuildError};
 
@@ -81,6 +83,15 @@ const DESKTOP_ENTRY: &str = "dev.vetter.daemon";
 /// `ActionInvoked`.
 const ACTION_APPROVE: &str = "approve";
 const ACTION_REJECT: &str = "reject";
+
+/// The two picker actions (§6i). Neither resolves anything: a
+/// freedesktop notification cannot host a radio group any more than a
+/// macOS banner can, so — exactly as `runloop/mod.rs` does with its
+/// `vetter.allowlist` / `vetter.trust_host` identifiers — the action
+/// raises the window with that card's picker open and leaves the
+/// request parked.
+const ACTION_ALLOWLIST: &str = "allowlist";
+const ACTION_TRUST_HOST: &str = "trust_host";
 
 /// The spec's reserved key for "the user clicked the banner body".
 ///
@@ -157,6 +168,13 @@ pub(crate) enum ActionIntent {
     /// the worst failure this surface could have. Opening a window
     /// costs the user a moment; approving costs them the decision.
     OpenWindow,
+    /// A picker button. Open the approval window on that card with
+    /// the picker raised, and leave the request **pending** — same
+    /// contract as [`Self::OpenWindow`], and for the same reason: a
+    /// button that says "Allowlist…" promises a choice, so silently
+    /// deciding on the user's behalf would be a worse betrayal than
+    /// the stray-click case.
+    OpenPicker(PickerKind),
     /// A key we do not recognise. Servers are free to invent them,
     /// and a future action added here would arrive at old daemons.
     Ignore,
@@ -167,13 +185,51 @@ pub(crate) enum ActionIntent {
 /// Split from [`decision_for_action`] so the "never resolves" half of
 /// the body-click contract is stated once and testable on its own.
 pub(crate) fn action_intent(key: &str) -> ActionIntent {
-    if key == ACTION_DEFAULT {
-        return ActionIntent::OpenWindow;
+    match key {
+        ACTION_DEFAULT => ActionIntent::OpenWindow,
+        ACTION_ALLOWLIST => ActionIntent::OpenPicker(PickerKind::Allowlist),
+        ACTION_TRUST_HOST => ActionIntent::OpenPicker(PickerKind::TrustHost),
+        _ => match decision_for_action(key) {
+            Some(decision) => ActionIntent::Resolve(decision),
+            None => ActionIntent::Ignore,
+        },
     }
-    match decision_for_action(key) {
-        Some(decision) => ActionIntent::Resolve(decision),
-        None => ActionIntent::Ignore,
+}
+
+/// The `actions` array for one banner.
+///
+/// Two things decide it. The server must advertise `actions` at all
+/// (§5.4), and `Trust host…` is offered only when the host is
+/// actually unknown — `cards::picker::show_trust_host` is the same
+/// predicate that gates the button on the card, so a banner cannot
+/// offer a picker the window would then render empty. macOS expresses
+/// this by registering a second `UNNotificationCategory`; the
+/// freedesktop equivalent is simply a different array per `Notify`.
+///
+/// Order is deliberate. `default` is registered first because servers
+/// skip the reserved key when laying buttons out, so Approve stays
+/// leftmost; the two decisions come before the two pickers so that a
+/// server which truncates drops the shortcuts rather than the
+/// decisions.
+pub(crate) fn actions_for(summary: &PromptSummary, caps: Capabilities) -> Vec<&'static str> {
+    if !caps.actions {
+        return Vec::new();
     }
+    let mut actions = vec![
+        ACTION_DEFAULT,
+        "Open Vetter",
+        ACTION_APPROVE,
+        "Approve",
+        ACTION_REJECT,
+        "Reject",
+        ACTION_ALLOWLIST,
+        "Allowlist…",
+    ];
+    if crate::cards::picker::show_trust_host(&summary.signals) {
+        actions.push(ACTION_TRUST_HOST);
+        actions.push("Trust host…");
+    }
+    actions
 }
 
 /// What the signal thread does with one `ActionInvoked`, given the
@@ -193,8 +249,11 @@ pub(crate) enum ClickOutcome {
         decision: PendingDecision,
     },
     /// Raise the window, scrolled to `card` when there is still one
-    /// to scroll to.
-    Show { card: Option<String> },
+    /// to scroll to, with `picker` open when the click asked for one.
+    Show {
+        card: Option<String>,
+        picker: Option<PickerKind>,
+    },
     /// Nothing to do.
     Nothing,
 }
@@ -216,6 +275,21 @@ pub(crate) fn click_outcome(key: &str, request: Option<&str>) -> ClickOutcome {
         // list is the honest answer to that.
         (ActionIntent::OpenWindow, card) => ClickOutcome::Show {
             card: card.map(str::to_string),
+            picker: None,
+        },
+        // A picker button on a banner whose request is gone opens the
+        // window but *not* the picker. The picker exists to write a
+        // rule generalising one specific request; with that request
+        // resolved there is nothing to generalise, and a sheet
+        // offering tiers for a command the user can no longer see
+        // would be asking them to sign something blank.
+        (ActionIntent::OpenPicker(_), None) => ClickOutcome::Show {
+            card: None,
+            picker: None,
+        },
+        (ActionIntent::OpenPicker(kind), Some(card)) => ClickOutcome::Show {
+            card: Some(card.to_string()),
+            picker: Some(kind),
         },
     }
 }
@@ -428,27 +502,9 @@ impl Shared {
         let caps = self.capabilities();
         let (title, body) = banner_text(summary, caps);
 
-        // Only offer buttons the server will actually render. Sending
-        // actions to a server without the capability is harmless but
-        // misleading in a bus trace.
-        // `default` is registered first because the spec's ordering
-        // is positional for *rendered* buttons and servers skip the
-        // reserved key when laying them out — Approve stays the
-        // leftmost visible button. Registering it at all is what
-        // makes a body click arrive as `ActionInvoked`; without it
-        // the click is swallowed by the server.
-        let actions: Vec<&str> = if caps.actions {
-            vec![
-                ACTION_DEFAULT,
-                "Open Vetter",
-                ACTION_APPROVE,
-                "Approve",
-                ACTION_REJECT,
-                "Reject",
-            ]
-        } else {
-            Vec::new()
-        };
+        // Which buttons this particular request gets, and whether the
+        // server will render any at all — see `actions_for`.
+        let actions = actions_for(summary, caps);
 
         // Re-read the preference on every banner rather than caching
         // it: this fires at human-approval rate, not in a hot path,
@@ -791,10 +847,14 @@ fn on_action_invoked(shared: &Arc<Shared>, notification: u32, key: &str) {
             // close here.
             shared.queue.resolve(&request, decision);
         }
-        ClickOutcome::Show { card } => {
+        ClickOutcome::Show { card, picker } => {
             // Deliberately *not* a resolve: the request stays parked
             // and its banner stays up. See [`ActionIntent`].
-            crate::runloop::request_show_for(card, token);
+            crate::runloop::request_show_with(ShowRequest {
+                card_id: card,
+                token,
+                picker,
+            });
         }
     }
 }

@@ -63,11 +63,12 @@ use vetter_core::known_hosts::KnownHostEntry;
 use vetter_core::matcher::Rule;
 use vetter_core::wire::WireScope;
 
-use super::model::{
-    self, BodyContent, CardAction, CardView, Disclosure, EffectRow, FilePath, HttpUrlView,
-    MarkupPalette, PickerRow, ResolvedCardView, UrlView,
-};
+use super::model::{self, CardAction, Disclosure, MarkupPalette};
+use crate::cards::card::{self, CardView, HttpUrlView, UrlView};
+use crate::cards::picker::{self, PickerRow};
 use crate::cards::pills::{PillSpec, Tone};
+use crate::cards::resolved::{self, ResolvedCardView, RuleAttribution};
+use crate::cards::rows::{BodyContent, EffectRow, FilePath};
 use crate::cards::rules::DurationChoice;
 use crate::cards::url::{HostTrust, MethodTone};
 use crate::pending::PendingQueue;
@@ -432,8 +433,8 @@ fn refresh() {
         // One lock acquisition for both sections, so the two can
         // never disagree about a request that resolved between them.
         let (pending_entries, resolved_entries) = state.ctx.pending.all_entries();
-        let pending = model::snapshot(&pending_entries);
-        let resolved = model::resolved_snapshot(&resolved_entries);
+        let pending = card::snapshot(&pending_entries);
+        let resolved = resolved::resolved_snapshot(&resolved_entries);
         EXPANDED.with(|e| {
             e.borrow_mut()
                 .retain_live(&model::live_ids(&pending, &resolved))
@@ -581,7 +582,7 @@ fn card_head(card: &CardView, badge: Option<&str>) -> GtkBox {
         // buttons a pending card carries.
         let pill = Label::new(Some(badge));
         pill.add_css_class("vetter-pill");
-        pill.add_css_class(if badge == model::Outcome::Allowed.label() {
+        pill.add_css_class(if badge == resolved::Outcome::Allowed.label() {
             "positive"
         } else {
             "danger"
@@ -604,7 +605,8 @@ fn card_body(card: &CardView, state: &WindowState, palette: MarkupPalette) -> Gt
     // Pending cards show their effect rows inline rather than behind
     // a disclosure: someone deciding *right now* should not have to
     // go looking for what the command actually does.
-    for row in &card.rows {
+    let rows = card.all_rows();
+    for row in &rows {
         frame.append(&effect_row(row));
     }
 
@@ -654,7 +656,7 @@ fn resolved_widget(
 
     if !card.rows.is_empty() {
         let rows = GtkBox::new(Orientation::Vertical, 6);
-        for row in &card.rows {
+        for row in &card.all_rows() {
             rows.append(&effect_row(row));
         }
         frame.append(&disclosure(
@@ -683,7 +685,7 @@ fn resolved_widget(
 /// take the rule back.
 fn approval_reason(
     card: &CardView,
-    attribution: &model::RuleAttribution,
+    attribution: &RuleAttribution,
     state: &WindowState,
 ) -> Expander {
     let body = GtkBox::new(Orientation::Vertical, 6);
@@ -1202,7 +1204,7 @@ fn open_allowlist_picker(ctx: Arc<Context>, request_id: String) {
     blurb.set_xalign(0.0);
     content.append(&blurb);
 
-    let rows = model::rule_picker_rows(&rules);
+    let rows = picker::rule_picker_rows(&rules);
     let (tier_box, tier_radios) = radio_group(&rows, 0);
     content.append(&tier_box);
 
@@ -1263,7 +1265,7 @@ fn open_allowlist_picker(ctx: Arc<Context>, request_id: String) {
         let choice = selected(&duration_radios)
             .and_then(|i| DurationChoice::ALL.get(i).copied())
             .unwrap_or(DurationChoice::Forever);
-        let rule = model::rule_with_duration(
+        let rule = picker::rule_with_duration(
             rule,
             choice,
             vetter_core::matcher::now_epoch_secs(),
@@ -1303,7 +1305,7 @@ fn open_host_picker(ctx: Arc<Context>, request_id: String) {
     blurb.set_xalign(0.0);
     content.append(&blurb);
 
-    let rows = model::host_picker_rows(&hosts);
+    let rows = picker::host_picker_rows(&hosts);
     let (host_box, radios) = radio_group(&rows, 0);
     content.append(&host_box);
 

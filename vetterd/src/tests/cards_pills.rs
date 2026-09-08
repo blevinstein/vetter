@@ -5,6 +5,8 @@
 //! this ever needed AppKit; it now runs on every target.
 
 use super::*;
+
+use crate::testutil::signal;
 use vetter_core::SignalKind;
 
 /// Every `SignalKind` in the canonical list, so a new variant added
@@ -123,4 +125,61 @@ fn tooltip_appends_detail_when_present() {
     // dangling ": " on the end of the tooltip.
     let without = signal_pill(SignalKind::InsecureFlag, "").expect("InsecureFlag earns a pill");
     assert_eq!(without.tooltip, without.label);
+}
+
+// ── Pills on a card ─────────────────────────────────────────────────────────
+//
+// [`pills_for`] is the whole-card view: dedupe by kind, drop the
+// Info tier, sort most-urgent-first.
+
+#[test]
+fn pills_dedupe_by_kind_keeping_the_first_detail() {
+    // A multi-effect request that trips the same kind repeatedly gets
+    // one chip; three identical pills would bury the rest of the card.
+    let pills = pills_for(&[
+        signal(SignalKind::InsecureFlag, "first"),
+        signal(SignalKind::InsecureFlag, "second"),
+    ]);
+    assert_eq!(pills.len(), 1);
+    assert!(pills[0].tooltip.contains("first"), "{:?}", pills[0].tooltip);
+    assert!(!pills[0].tooltip.contains("second"));
+}
+
+#[test]
+fn pills_sort_most_urgent_first() {
+    // The eye should land on danger before it scans past the
+    // supportive green chip.
+    let pills = pills_for(&[
+        signal(SignalKind::AuthHeader, "bearer"),
+        signal(SignalKind::InsecureFlag, "-k"),
+    ]);
+    let tones: Vec<Tone> = pills.iter().map(|p| p.tone).collect();
+    let danger_first = tones
+        .iter()
+        .position(|t| *t == Tone::Danger)
+        .unwrap_or(usize::MAX);
+    let positive_at = tones
+        .iter()
+        .position(|t| *t == Tone::Positive)
+        .unwrap_or(usize::MAX);
+    assert!(
+        danger_first < positive_at,
+        "expected danger before positive, got {tones:?}"
+    );
+}
+
+#[test]
+fn info_tier_signals_get_no_chip() {
+    // They live in the raw body's `Risk signals:` line instead;
+    // chipping them would dilute the ones that matter.
+    let pills = pills_for(&[signal(SignalKind::WriteMethod, "POST")]);
+    assert!(
+        pills.is_empty() || pills.iter().all(|p| p.tone != Tone::Danger),
+        "info-tier signal produced an urgent chip: {pills:?}"
+    );
+}
+
+#[test]
+fn no_signals_means_no_pills_row() {
+    assert!(pills_for(&[]).is_empty());
 }

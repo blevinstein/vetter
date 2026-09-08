@@ -111,6 +111,32 @@ pub fn signal_priority(kind: SignalKind) -> u8 {
     }
 }
 
+/// Every pill a card shows: one chip per [`SignalKind`], most urgent
+/// first.
+///
+/// Dedupe is by kind, keeping the *first* signal's detail for the
+/// tooltip — a multi-effect request that trips the same kind three
+/// times gets one chip, not three, so the pills row cannot bury the
+/// rest of the card. `Info`-tier kinds yield no chip at all and live
+/// only in the raw body's `Risk signals:` line.
+///
+/// The sort is stable, so within a tone the analyzer's emission order
+/// survives; only the tone tiers move.
+pub fn pills_for(signals: &[vetter_core::RiskSignal]) -> Vec<PillSpec> {
+    let mut seen: std::collections::HashSet<SignalKind> = std::collections::HashSet::new();
+    let mut out: Vec<(u8, PillSpec)> = Vec::new();
+    for sig in signals {
+        if !seen.insert(sig.kind) {
+            continue;
+        }
+        if let Some(spec) = signal_pill(sig.kind, &sig.detail) {
+            out.push((signal_priority(sig.kind), spec));
+        }
+    }
+    out.sort_by_key(|(priority, _)| *priority);
+    out.into_iter().map(|(_, spec)| spec).collect()
+}
+
 #[cfg(test)]
 #[path = "../tests/cards_pills.rs"]
 mod tests;

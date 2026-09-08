@@ -29,14 +29,23 @@
 //! - [`spans`] — ANSI SGR → styled spans, for the §8.5 detail body.
 //! - [`pills`] — risk signals → pill tone, label, tooltip, sort order.
 //! - [`url`] — URL row segmentation and host-trust classification.
-//! - [`effects`] — `parsed.effects` → per-row summary strings.
+//! - [`effects`] — one effect → its summary strings.
+//! - [`rows`] — `parsed.effects` → which rows exist, in what order.
+//! - [`card`] — the whole aggregation: summary → `CardView`.
+//! - [`resolved`] — resolved-history entries, outcome and rule
+//!   attribution.
+//! - [`picker`] — allowlist / trust-host picker rows.
 //! - [`rules`] — allowlist duration ladder and rule YAML preview.
 //! - [`markup`] — XML-entity escaping for the markup-bearing
 //!   surfaces (Pango, and notification `body-markup`).
 
+pub mod card;
 pub mod effects;
 pub mod markup;
+pub mod picker;
 pub mod pills;
+pub mod resolved;
+pub mod rows;
 pub mod rules;
 pub mod spans;
 pub mod url;

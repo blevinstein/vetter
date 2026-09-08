@@ -128,7 +128,8 @@ Linux stands.
 |---|---|---|
 | **Resolve a prompt** | UI callbacks → `PendingQueue::resolve` | **DONE (6a)** — `MgmtRequest::Resolve` + `vet daemon approve`/`reject` |
 | Notification with Approve/Reject | `UNUserNotificationCenter` (`notifier/mac.rs`) | **DONE (6b)** — `notifier/linux.rs` over `org.freedesktop.Notifications` |
-| Notification body click-through → detail UI | `runloop/mod.rs` | **MISSING** |
+| — notification `Allowlist…` / `Trust host…` actions | `runloop/mod.rs` registers **four** actions, plus a second category so `Trust host…` shows only for unknown hosts | **MISSING (6i)** — Linux registers approve / reject / default only |
+| Notification body click-through → detail UI | `runloop/mod.rs` | **DONE (6d step 4)** — `default` action → window, scrolled to the card |
 | Banner coalescing (`NotifyHint::was_empty_before`) | `notifier/mac.rs` | **DONE (6b)** — consumed by `notifier/linux.rs` |
 | Banner dismissal on resolve | `removeDeliveredNotificationsWithIdentifiers:` | **DONE (6b)** — `CloseNotification`, driven off the queue change listener so *every* resolve path closes |
 | Notification sound setting | `UNNotificationSound::defaultSound()` | **DONE (6b)** — `sound-name` hint |
@@ -353,7 +354,8 @@ against.
       [vetterd/Cargo.toml](../vetterd/Cargo.toml), mirroring how the
       `objc2` stack is gated for macOS.
 - [x] `vetterd/src/notifier/linux.rs` implementing `Notifier`:
-      `Notify` with `actions = ["approve", "Approve", "reject", "Reject"]`,
+      `Notify` with `actions = ["approve", "Approve", "reject", "Reject"]`
+      (**this spec was short** — macOS registers four; see §6i),
       `desktop-entry` hint, `urgency = critical`, `expire_timeout = 0`
       (never auto-expire — a prompt must not silently vanish).
 - [x] Subscribe to `ActionInvoked`, `NotificationClosed`, and
@@ -456,9 +458,13 @@ The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
       **Start at login** ships insensitive with a tooltip — the
       non-macOS `autostart` stub still answers `Unsupported`, and the
       real XDG entry is Phase 6e (§5.3).
-- [ ] Notification click-through opens the window scrolled to the
-      matching card, using the activation token (§5.6).
-- [ ] Single-instance / raise-existing entry point (§5.5).
+- [x] Notification click-through opens the window scrolled to the
+      matching card, using the activation token (§5.6). The body
+      click is registered as the spec's `default` action and never
+      resolves — it opens the window and leaves the request pending.
+- [x] Single-instance / raise-existing entry point (§5.5), as
+      `MgmtRequest::OpenWindow` + `vet daemon open`. GNOME ships no
+      StatusNotifierHost, so the tray cannot be the only way in.
       *(Partial: the tray's `Open Vetter…` raises it, and
       `IS_SERVICE` gives single-instance. GNOME ships no tray,
       so those users still have no way to open the window —
@@ -522,6 +528,37 @@ Per §4.3: tarball + `cargo install` only, for now.
       `LinuxNotifier` for real. `dunst` supports `actions`, so an
       end-to-end approve could genuinely be automated. Worth
       prototyping — this would be better coverage than macOS has.
+
+### Phase 6i — Notification and tray parity `[ ]`
+
+Found on 2026-09-08 by using the finished surface: if you miss the
+banner, the tray can only *decide* a request, never open it — and the
+banner itself offers two of the four actions macOS does.
+
+Both gaps trace to this document under-describing macOS. §3.2 said
+"Notification with Approve/Reject" and §6b's checklist specified
+exactly two action keys, so 6b met its spec and the shortfall was
+invisible. Recorded here rather than folded into 6h: this is missing
+function, not rough styling.
+
+Both are cheap now that 6d step 4 built the open-window-scrolled-to-a-
+card plumbing and step 3 built the pickers.
+
+- [ ] Add `Allowlist…` and `Trust host…` actions to the Linux
+      notification. A freedesktop notification cannot host a picker,
+      so — exactly as macOS does — the action opens the window with
+      that card's picker raised and leaves the request pending.
+- [ ] Offer `Trust host…` only when the host is unknown, mirroring
+      macOS's second notification category.
+      `cards::picker::show_trust_host` already answers this.
+- [ ] Check how Plasma renders four action buttons before committing
+      to four. macOS condenses the overflow under an "Options"
+      dropdown; the freedesktop spec has no equivalent, so this may
+      need to degrade to two buttons plus the body click.
+- [ ] Add **Open** to the tray's per-request submenu alongside
+      Approve / Reject, so a request can be inspected from the tray
+      rather than only decided blind. `request_show(Some(id))` from
+      6d step 4 is the call.
 
 ### Phase 6h — Visual polish `[ ]`
 

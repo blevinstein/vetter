@@ -432,8 +432,14 @@ The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
       `#![cfg(target_os = "macos")]` but are substantially
       platform-independent logic — **lifting the pure half out is a
       prerequisite, not an afterthought.**
-- [ ] Cards: §8.5 detail disclosure, raw-command disclosure + copy,
+- [x] Cards: §8.5 detail disclosure, raw-command disclosure + copy,
       signal pills, host-trust palette, `Open file` via `xdg-open`.
+      *(The structured effect rows render inline on pending cards,
+      matching macOS — a user deciding now should not have to open a
+      disclosure. The "Show raw" disclosure carries the §8.5 body and
+      the copy button. A "▸ Details" disclosure over the structured
+      rows is resolved-card behaviour on macOS and lands with the
+      Recent section.)*
 - [x] Per-card **Approve** / **Reject**.
 - [ ] `Allowlist…` and `Trust host…` pickers including the duration
       radio group (15m / 1h / 4h / this terminal session / Forever).

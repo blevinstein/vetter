@@ -744,14 +744,20 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
 
 ### PR 4 — GTK4 popover window
 
-- [ ] `runloop/linux/popover.rs` (and per-section helpers
-      `popover_url.rs`, `popover_pills.rs`, `popover_effects.rs`,
-      `popover_picker.rs` — same module split as macOS so the
-      port stays diff-reviewable).
-- [ ] Translate the `Style` SGR taxonomy from
+- [x] `runloop/linux/` window + card assembly. The split landed
+      differently and better than this bullet assumed: rather than
+      per-section GTK helpers mirroring the macOS file names, the
+      *pure* half of those helpers was lifted into `vetterd/src/cards/`
+      (shared with macOS, unit-tested on every platform) and the GTK
+      module owns only widget assembly. See `plans/LinuxApp.md` §6d.
+- [x] Translate the `Style` SGR taxonomy from
       [plans/ApprovalUI.md](plans/ApprovalUI.md) §"Body colouring"
-      into `pango::AttrList`. Add a port of the macOS
-      `popover_attr.rs` ANSI parser.
+      into Pango markup. The ANSI parser was not ported — it was
+      lifted to `cards::spans` and is now shared with macOS. Markup
+      is emitted rather than an `AttrList` because a `Label` takes it
+      directly; every span's text is escaped through
+      `cards::markup::escape_markup` first, since Pango parses its
+      input as markup and the text is argv-derived.
 - [ ] Reuse `vetter-core::suggest` and `vetterd::suggestions`
       unchanged for the Allowlist… / Trust host… picker sheets;
       replace `NSAlert + accessoryView` with `gtk::Dialog` +

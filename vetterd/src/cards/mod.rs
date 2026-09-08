@@ -31,8 +31,11 @@
 //! - [`url`] — URL row segmentation and host-trust classification.
 //! - [`effects`] — `parsed.effects` → per-row summary strings.
 //! - [`rules`] — allowlist duration ladder and rule YAML preview.
+//! - [`markup`] — XML-entity escaping for the markup-bearing
+//!   surfaces (Pango, and notification `body-markup`).
 
 pub mod effects;
+pub mod markup;
 pub mod pills;
 pub mod rules;
 pub mod spans;

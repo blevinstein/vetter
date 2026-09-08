@@ -54,6 +54,7 @@ use std::sync::{Arc, Mutex};
 use zbus::blocking::{fdo::DBusProxy, Connection, Proxy};
 use zbus::zvariant::Value;
 
+use crate::cards::markup::escape_markup as escape_body_markup;
 use crate::pending::{NotifyHint, PendingDecision, PendingQueue, PromptSummary};
 
 use super::{Notifier, NotifierBuildError};
@@ -147,25 +148,6 @@ pub(crate) fn should_raise_banner(hint: NotifyHint) -> bool {
 /// `sound-name` hint for the user's `notification_sound` preference.
 pub(crate) fn sound_name_for(play_sound: bool) -> Option<&'static str> {
     play_sound.then_some(SOUND_NAME)
-}
-
-/// Escape the five XML entities the freedesktop body-markup subset
-/// recognises. Applied only when the server advertises `body-markup`
-/// — servers without it render the body literally and would show the
-/// escapes verbatim.
-pub(crate) fn escape_body_markup(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 /// Build the `(summary, body)` pair for a banner.

@@ -47,6 +47,7 @@
 //! CSS classes on separate labels instead.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -164,6 +165,33 @@ thread_local! {
     /// double-borrow reason as [`EXPANDED`]: its Dismiss button
     /// mutates it while `refresh` holds `WINDOW`.
     static TOAST: RefCell<Option<Toast>> = const { RefCell::new(None) };
+    /// Card widget per request id, rebuilt by every [`refresh`].
+    ///
+    /// Exists only so a notification click can scroll its card into
+    /// view: the id arrives from the bus, and this is what turns it
+    /// into a widget whose position the scroller can be pointed at.
+    /// A separate cell again — `refresh` populates it while holding a
+    /// shared borrow of [`WINDOW`].
+    static CARD_WIDGETS: RefCell<HashMap<String, gtk4::Widget>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Set once the window exists, and readable from any thread.
+///
+/// [`WINDOW`] is a thread-local, so a non-GTK thread asking it "is
+/// there a window?" would always be told no. The admin socket's
+/// handler needs a truthful answer from its own thread — a
+/// display-less daemon must report that `vet daemon open` has nothing
+/// to open rather than silently succeeding — so the fact is mirrored
+/// here.
+static WINDOW_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+/// Is there an approval window for [`request_show`] to raise?
+///
+/// False on a daemon that came up without a display, where the driver
+/// stayed on [`crate::PlatformDriver::None`].
+pub(crate) fn window_available() -> bool {
+    WINDOW_INSTALLED.load(Ordering::SeqCst)
 }
 
 /// Results handed back from background persist threads.
@@ -176,6 +204,32 @@ thread_local! {
 /// [`TOAST`] cell. Nothing GTK-owned is ever reachable from the
 /// worker.
 static PENDING_TOASTS: Mutex<Vec<Toast>> = Mutex::new(Vec::new());
+
+/// A pending "raise the window" request from another thread.
+///
+/// Same constraint as [`PENDING_TOASTS`] and the same answer: the
+/// closure handed to `MainContext::invoke` must capture nothing, and
+/// an activation token plus a card id are payloads. They are parked
+/// here and collected by the capture-free [`drain_show_requests`].
+///
+/// Only the newest survives. These arrive at human-click rate, and
+/// two clicks in flight mean the user wants the second one — showing
+/// the window twice and scrolling to the older card would be wrong in
+/// both halves.
+static PENDING_SHOW: Mutex<Option<ShowRequest>> = Mutex::new(None);
+
+/// What a raise request carries beyond "become visible".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ShowRequest {
+    /// Request id to scroll into view, when the raise came from a
+    /// notification body click. `None` for the tray, the footer and
+    /// `vet daemon open`, which mean "show the window" and nothing
+    /// more specific.
+    card_id: Option<String>,
+    /// XDG activation token from the notification server, if it sent
+    /// one. See [`apply_activation_token`].
+    token: Option<String>,
+}
 
 /// A one-line outcome banner: what happened after a picker action.
 ///
@@ -198,6 +252,9 @@ struct WindowState {
     window: ApplicationWindow,
     /// Container the cards are rebuilt into on every refresh.
     list: GtkBox,
+    /// The viewport [`list`](Self::list) scrolls inside. Held so a
+    /// notification click can point it at one card.
+    scroller: ScrolledWindow,
     /// Full daemon context: the pickers call
     /// [`crate::suggestions`] directly rather than round-tripping
     /// through the admin socket, exactly as the macOS popover does.
@@ -262,10 +319,12 @@ pub(super) fn install(app: &Application, ctx: Arc<Context>, shutdown: Arc<Atomic
         *cell.borrow_mut() = Some(WindowState {
             window,
             list,
+            scroller,
             ctx,
             sound,
         });
     });
+    WINDOW_INSTALLED.store(true, Ordering::SeqCst);
 
     sync_sound_checkbox();
     refresh();
@@ -429,6 +488,11 @@ fn refresh() {
         while let Some(child) = state.list.first_child() {
             state.list.remove(&child);
         }
+        // Rebuilt alongside the cards: every widget in the old map
+        // has just been removed from the list, so keeping any of it
+        // would hand `scroll_to_card` a detached widget whose bounds
+        // are meaningless.
+        CARD_WIDGETS.with(|cell| cell.borrow_mut().clear());
 
         // One lock acquisition for both sections, so the two can
         // never disagree about a request that resolved between them.
@@ -462,7 +526,9 @@ fn refresh() {
             if idx > 0 {
                 state.list.append(&Separator::new(Orientation::Horizontal));
             }
-            state.list.append(&card_widget(card, state, palette));
+            let widget = card_widget(card, state, palette);
+            state.list.append(&widget);
+            remember_card_widget(&card.id, &widget);
         }
 
         if !resolved.is_empty() {
@@ -475,9 +541,23 @@ fn refresh() {
 
             for card in &resolved {
                 state.list.append(&Separator::new(Orientation::Horizontal));
-                state.list.append(&resolved_widget(card, state, palette));
+                let widget = resolved_widget(card, state, palette);
+                state.list.append(&widget);
+                // Resolved cards are addressable too: a banner click
+                // can arrive after the request was approved from
+                // somewhere else, and scrolling to where it went is
+                // more useful than ignoring the click.
+                remember_card_widget(&card.card.id, &widget);
             }
         }
+    });
+}
+
+/// Record the widget a card was painted into, so a notification
+/// click can find it again.
+fn remember_card_widget(id: &str, widget: &gtk4::Widget) {
+    CARD_WIDGETS.with(|cell| {
+        cell.borrow_mut().insert(id.to_string(), widget.clone());
     });
 }
 
@@ -519,6 +599,94 @@ fn drain_toasts() {
         TOAST.with(|cell| *cell.borrow_mut() = Some(latest));
     }
     refresh();
+}
+
+// ── Activation tokens ───────────────────────────────────────────────────────
+
+// GDK's *setters* for the startup-notification id are per-backend
+// (`gdk_wayland_display_set_startup_notification_id`,
+// `gdk_x11_display_set_startup_notification_id`); only the getter is
+// on the generic `GdkDisplay`. Reaching them from Rust would
+// otherwise mean the `gdk4-wayland` **and** `gdk4-x11` crates, which
+// also drag in `wayland-client` and the matching pkg-config modules —
+// three new dependencies and two new build deps for a focus hint.
+//
+// Both symbols are already exported from the `libgtk-4` we link, so
+// `dlsym` reaches them with no new dependency and covers *both*
+// backends through one mechanism, which is what §8's "don't let the
+// Wayland-first design regress X11" asks for. Declaring a libc
+// function directly follows the precedent in `vet/src/daemon.rs`,
+// which declares `setsid` and `kill` the same way.
+//
+// This degrades at every step: unknown backend, symbol absent (a GTK
+// built without that backend), or no token at all, and the window
+// still opens — just possibly without focus.
+unsafe extern "C" {
+    fn dlsym(
+        handle: *mut std::ffi::c_void,
+        symbol: *const std::ffi::c_char,
+    ) -> *mut std::ffi::c_void;
+}
+
+/// `RTLD_DEFAULT` on glibc: search every object already loaded into
+/// the process, which includes the `libgtk-4` we are linked against.
+const RTLD_DEFAULT: *mut std::ffi::c_void = std::ptr::null_mut();
+
+/// Hand the compositor the activation token the notification server
+/// gave us, so presenting the window is treated as a continuation of
+/// the user's click rather than as an app stealing focus.
+///
+/// On Wayland a client cannot raise itself unprompted; the token is
+/// the whole mechanism (`plans/LinuxApp.md` §5.6). GDK consumes the
+/// id on the next present and clears it, so this must be called
+/// immediately before [`gtk4::prelude::GtkWindowExt::present`].
+///
+/// Returns whether the token was actually handed over, for logging —
+/// a silent no-op here shows up as "the window opened behind
+/// something" much later, which is hard to trace back.
+fn apply_activation_token(token: &str) -> bool {
+    let Some(display) = Display::default() else {
+        return false;
+    };
+    // The generic `GdkDisplay` has no setter, so pick the backend's
+    // by type name. Asking glib rather than guessing from
+    // `$WAYLAND_DISPLAY` keeps this honest under XWayland, where both
+    // env vars are set but the display is X11.
+    let symbol: &[u8] = match display.type_().name() {
+        "GdkWaylandDisplay" => b"gdk_wayland_display_set_startup_notification_id\0",
+        "GdkX11Display" => b"gdk_x11_display_set_startup_notification_id\0",
+        other => {
+            eprintln!("vetterd: window: unknown GDK backend `{other}`; not applying token");
+            return false;
+        }
+    };
+
+    let Ok(token) = std::ffi::CString::new(token) else {
+        // A token with an interior NUL is malformed; the server sent
+        // something we cannot pass through the C boundary.
+        return false;
+    };
+
+    // SAFETY: `symbol` is a NUL-terminated literal. `dlsym` with
+    // `RTLD_DEFAULT` searches loaded objects and returns null when
+    // the symbol is absent, which is checked before the call. The
+    // resolved function's signature is fixed by GTK's public headers
+    // (`GdkDisplay*`, `const char*`), the display pointer is borrowed
+    // from a live `Display` that outlives the call, and the string
+    // outlives it too — GDK copies both.
+    use gtk4::glib::translate::ToGlibPtr;
+    unsafe {
+        let sym = dlsym(RTLD_DEFAULT, symbol.as_ptr().cast());
+        if sym.is_null() {
+            // GTK built without this backend. Nothing to do, and not
+            // worth a message: the window still opens.
+            return false;
+        }
+        let set: unsafe extern "C" fn(*mut gtk4::gdk::ffi::GdkDisplay, *const std::ffi::c_char) =
+            std::mem::transmute(sym);
+        set(display.to_glib_none().0, token.as_ptr());
+    }
+    true
 }
 
 /// Queue a result banner from any thread.
@@ -1442,22 +1610,91 @@ fn revoke_rule(ctx: Arc<Context>, scope: WireScope, rule_id: String) {
 /// surface the window unfocused or merely flag it in the taskbar when
 /// the request did not originate from user input.
 ///
-/// NOTE for step 4: the notification click-through passes an XDG
-/// activation token (`ActivationToken` / the `activation-token`
-/// hint), which is what lets the compositor grant focus. It also
-/// wants to scroll the matching card into view.
+/// A notification body click passes an activation token and the id of
+/// the card that was clicked; see [`request_show_for`].
 pub(crate) fn request_show() {
-    glib::MainContext::default().invoke(|| {
-        // Re-read the preference on the way up: `settings.yaml` can
-        // be edited by hand or by a future CLI while the window sits
-        // hidden, and a checkbox showing a stale value is worse than
-        // one that lags.
-        sync_sound_checkbox();
+    request_show_for(None, None);
+}
+
+/// Raise the window, optionally scrolled to `card_id` and using
+/// `token` to claim focus.
+///
+/// Safe to call from any thread. The payload is parked in
+/// [`PENDING_SHOW`] rather than captured, because the closure handed
+/// to `MainContext::invoke` must capture nothing — see that static.
+pub(crate) fn request_show_for(card_id: Option<String>, token: Option<String>) {
+    *PENDING_SHOW.lock().expect("show queue poisoned") = Some(ShowRequest { card_id, token });
+    glib::MainContext::default().invoke(drain_show_requests);
+}
+
+/// Collect a parked raise request and act on it. Capture-free so it
+/// can be handed straight to [`glib::MainContext::invoke`].
+fn drain_show_requests() {
+    let Some(request) = PENDING_SHOW.lock().expect("show queue poisoned").take() else {
+        return;
+    };
+
+    // Re-read the preference on the way up: `settings.yaml` can be
+    // edited by hand or by a future CLI while the window sits hidden,
+    // and a checkbox showing a stale value is worse than one that
+    // lags.
+    sync_sound_checkbox();
+
+    // The token has to be handed over *before* the present it
+    // authorises: GDK consumes the id on the next present and clears
+    // it. Failure is not fatal — the window opens either way, just
+    // possibly without focus (§5.6).
+    if let Some(token) = request.token.as_deref() {
+        apply_activation_token(token);
+    }
+
+    WINDOW.with(|cell| {
+        if let Some(state) = cell.borrow().as_ref() {
+            state.window.set_visible(true);
+            state.window.present();
+        }
+    });
+
+    if let Some(id) = request.card_id {
+        scroll_to_card(id);
+    }
+}
+
+/// Scroll the card for `id` into view, if it is on screen.
+///
+/// Deferred to an idle callback because widget bounds are only
+/// meaningful once GTK has allocated them, and the present above may
+/// have just made the window visible for the first time.
+///
+/// A miss is silent and correct: the request may have been resolved
+/// by someone else between the click and its delivery, in which case
+/// the card has moved to Recent or fallen out of the ring entirely.
+/// The window still opens — which is the useful half of the click —
+/// and scrolling to a card that no longer exists is not a thing to
+/// report.
+fn scroll_to_card(id: String) {
+    glib::idle_add_local_once(move || {
+        let Some(widget) = CARD_WIDGETS.with(|cell| cell.borrow().get(&id).cloned()) else {
+            return;
+        };
         WINDOW.with(|cell| {
-            if let Some(state) = cell.borrow().as_ref() {
-                state.window.set_visible(true);
-                state.window.present();
-            }
+            let borrowed = cell.borrow();
+            let Some(state) = borrowed.as_ref() else {
+                return;
+            };
+            // Bounds are relative to the list the cards are packed
+            // into, which is exactly the scroller's coordinate space.
+            let Some(bounds) = widget.compute_bounds(&state.list) else {
+                return;
+            };
+            let adjustment = state.scroller.vadjustment();
+            // Clamp rather than trusting the bounds: an unallocated
+            // widget can report a y beyond the scrollable range, and
+            // GTK would otherwise snap to the bottom.
+            let target = f64::from(bounds.y())
+                .min(adjustment.upper() - adjustment.page_size())
+                .max(adjustment.lower());
+            adjustment.set_value(target);
         });
     });
 }
@@ -1481,11 +1718,13 @@ pub(super) fn watch_shutdown(app: &Application, shutdown: Arc<AtomicBool>) {
         if shutdown.load(Ordering::SeqCst) {
             // Drop the window before quitting so its widgets are
             // destroyed on this thread rather than at process teardown.
+            WINDOW_INSTALLED.store(false, Ordering::SeqCst);
             WINDOW.with(|cell| {
                 if let Some(state) = cell.borrow_mut().take() {
                     state.window.destroy();
                 }
             });
+            CARD_WIDGETS.with(|cell| cell.borrow_mut().clear());
             app.quit();
             return glib::ControlFlow::Break;
         }

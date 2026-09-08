@@ -29,7 +29,7 @@ use crate::Context;
 pub(crate) mod model;
 mod window;
 
-pub(crate) use window::request_show;
+pub(crate) use window::{request_show, request_show_for, window_available};
 
 /// Why [`run_glib`] did not run a main loop.
 ///

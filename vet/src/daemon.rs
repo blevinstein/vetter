@@ -333,6 +333,38 @@ fn resolve(id: &str, decision: WireDecision, reason: Option<&str>) -> ExitCode {
     }
 }
 
+/// `vet daemon open` — raise the daemon's approval window.
+///
+/// The entry point that does not depend on a system tray. GNOME
+/// ships no `StatusNotifierHost` without an extension, so on that
+/// desktop the tray icon this would otherwise duplicate does not
+/// exist at all (`plans/LinuxApp.md` §5.5).
+///
+/// Exits non-zero when the daemon has no window to raise — a daemon
+/// started without a display, or a platform where the verb does not
+/// apply — rather than reporting a success the user would then go
+/// looking for on screen.
+pub fn open() -> ExitCode {
+    match query_admin(MgmtRequest::OpenWindow) {
+        Ok(MgmtResponse::WindowOpened) => {
+            println!("vet daemon open: approval window raised");
+            ExitCode::from(EXIT_OK)
+        }
+        Ok(MgmtResponse::Error { message }) => {
+            eprintln!("vet daemon open: daemon error: {message}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+        Ok(other) => {
+            eprintln!("vet daemon open: unexpected daemon response: {other:?}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+        Err(e) => {
+            eprintln!("vet daemon open: {e}");
+            ExitCode::from(EXIT_CONFIG)
+        }
+    }
+}
+
 /// `vet daemon autostart enable` — register Vetter.app as a macOS
 /// Login Item so the daemon comes back after every reboot.
 pub fn autostart_enable() -> ExitCode {

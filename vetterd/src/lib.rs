@@ -652,6 +652,7 @@ fn handle_admin_request(ctx: &Arc<Context>, req: MgmtRequest) -> MgmtResponse {
             decision,
             reason,
         } => handle_resolve(ctx, &id, decision, reason.as_deref()),
+        MgmtRequest::OpenWindow => handle_open_window(),
         MgmtRequest::GetAutostart => {
             // Read both: settings.yaml (the user's persisted
             // preference) and SMAppService (the live OS state). The
@@ -674,6 +675,43 @@ fn handle_admin_request(ctx: &Arc<Context>, req: MgmtRequest) -> MgmtResponse {
                 message: e.to_string(),
             },
         },
+    }
+}
+
+/// Raise the approval window — the daemon half of `vet daemon open`.
+///
+/// Split per platform rather than branched inside one body, so the
+/// macOS arm is a compile-time fact rather than a runtime check that
+/// happens never to fire.
+#[cfg(target_os = "linux")]
+fn handle_open_window() -> MgmtResponse {
+    if !runloop::window_available() {
+        // A daemon with a session bus but no display is a supported
+        // configuration (§5.5), and this is the honest answer for it.
+        // The alternative — succeeding and doing nothing — would send
+        // a GNOME user looking for a window that was never going to
+        // appear.
+        return MgmtResponse::Error {
+            message: "this daemon has no approval window (no display was available at \
+                      startup); approve with `vet daemon approve <id>` or from a \
+                      notification"
+                .into(),
+        };
+    }
+    runloop::request_show();
+    MgmtResponse::WindowOpened
+}
+
+/// Non-Linux stub. macOS has an approval surface, but it is an
+/// `NSPopover` anchored to the menu-bar item and raising it from the
+/// admin socket is a separate feature nobody has asked for — so this
+/// reports what is true rather than pretending.
+#[cfg(not(target_os = "linux"))]
+fn handle_open_window() -> MgmtResponse {
+    MgmtResponse::Error {
+        message: "`vet daemon open` is only implemented on Linux; on macOS use the \
+                  menu-bar item to open the approver"
+            .into(),
     }
 }
 

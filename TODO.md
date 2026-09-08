@@ -769,9 +769,17 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
       window list — so closing a sheet cannot end the main loop and
       take the accept-loop driver with it. Radios are grouped
       `CheckButton`s (GTK4 has no `RadioButton`).
-- [ ] Tray click opens the popover window; double-click on a
-      notification body opens it scrolled to the matching id
-      (mirrors macOS `focused_id` flow).
+- [x] Tray click opens the popover window; clicking a notification
+      body opens it scrolled to the matching id (mirrors macOS
+      `focused_id` flow). The body click is the spec's `default`
+      action and deliberately never resolves — a stray click on a
+      banner must not approve a command. Focus comes from the
+      `ActivationToken` the server emits alongside it (§5.6).
+- [x] `MgmtRequest::OpenWindow` + `vet daemon open`: the non-tray
+      entry point §5.5 asks for, since GNOME ships no
+      StatusNotifierHost. Errors honestly on a daemon that came up
+      without a display rather than reporting a raise that will not
+      happen.
 
 ### PR 4b — GTK visual polish
 

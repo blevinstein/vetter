@@ -82,6 +82,14 @@ const DESKTOP_ENTRY: &str = "dev.vetter.daemon";
 const ACTION_APPROVE: &str = "approve";
 const ACTION_REJECT: &str = "reject";
 
+/// The spec's reserved key for "the user clicked the banner body".
+///
+/// Servers only deliver it if the key is *registered* in the actions
+/// array like any other, even though most — Plasma included — render
+/// no button for it. The label is therefore rarely seen, but it is
+/// what a server that does render one would show.
+const ACTION_DEFAULT: &str = "default";
+
 /// `sound-name` hint value. An XDG sound-naming-spec name rather than
 /// a file path, so the server picks the theme's own sound.
 const SOUND_NAME: &str = "dialog-question";
@@ -124,15 +132,91 @@ impl Capabilities {
 }
 
 /// Map an `ActionInvoked` key onto the decision it stands for.
-/// `None` for anything else — including the spec's `"default"` key,
-/// which is the *body* click. Body clicks are the click-through into
-/// the approval window and land in Phase 6d; until then they are
-/// deliberately inert rather than being treated as an approval.
+/// `None` for anything that is not one of the two decision buttons —
+/// including the spec's `"default"` key, which is the *body* click
+/// and never resolves anything (see [`ActionIntent`]).
 pub(crate) fn decision_for_action(key: &str) -> Option<PendingDecision> {
     match key {
         ACTION_APPROVE => Some(PendingDecision::allow(REASON_APPROVED)),
         ACTION_REJECT => Some(PendingDecision::deny(REASON_REJECTED)),
         _ => None,
+    }
+}
+
+/// What the signal thread should do about an `ActionInvoked` key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ActionIntent {
+    /// One of the two buttons: resolve the request.
+    Resolve(PendingDecision),
+    /// The banner body was clicked. Open the approval window on that
+    /// card and leave the request **pending**.
+    ///
+    /// This distinction is the whole safety property of the body
+    /// click: a notification sitting on screen is easy to brush past,
+    /// and a stray click that silently approved a command would be
+    /// the worst failure this surface could have. Opening a window
+    /// costs the user a moment; approving costs them the decision.
+    OpenWindow,
+    /// A key we do not recognise. Servers are free to invent them,
+    /// and a future action added here would arrive at old daemons.
+    Ignore,
+}
+
+/// Route an `ActionInvoked` key.
+///
+/// Split from [`decision_for_action`] so the "never resolves" half of
+/// the body-click contract is stated once and testable on its own.
+pub(crate) fn action_intent(key: &str) -> ActionIntent {
+    if key == ACTION_DEFAULT {
+        return ActionIntent::OpenWindow;
+    }
+    match decision_for_action(key) {
+        Some(decision) => ActionIntent::Resolve(decision),
+        None => ActionIntent::Ignore,
+    }
+}
+
+/// What the signal thread does with one `ActionInvoked`, given the
+/// key and whichever request the notification id still maps to.
+///
+/// Pure so the awkward case is testable without a bus: the id may map
+/// to nothing by the time the click arrives. A banner outlives the
+/// request behind it whenever someone resolved it from another
+/// surface first — the window, `vet daemon approve`, a rule that
+/// auto-approved it — and the click is then racing a close that is
+/// already queued.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ClickOutcome {
+    /// Resolve `request`. Only a button can produce this.
+    Resolve {
+        request: String,
+        decision: PendingDecision,
+    },
+    /// Raise the window, scrolled to `card` when there is still one
+    /// to scroll to.
+    Show { card: Option<String> },
+    /// Nothing to do.
+    Nothing,
+}
+
+pub(crate) fn click_outcome(key: &str, request: Option<&str>) -> ClickOutcome {
+    match (action_intent(key), request) {
+        (ActionIntent::Ignore, _) => ClickOutcome::Nothing,
+        // A button click on a banner we no longer have a request for
+        // is dropped rather than guessed at: resolving the wrong
+        // request would be an unrequested decision on somebody's
+        // command.
+        (ActionIntent::Resolve(_), None) => ClickOutcome::Nothing,
+        (ActionIntent::Resolve(decision), Some(request)) => ClickOutcome::Resolve {
+            request: request.to_string(),
+            decision,
+        },
+        // A body click always opens the window, even with no request
+        // to point at: the user asked to see Vetter, and the card
+        // list is the honest answer to that.
+        (ActionIntent::OpenWindow, card) => ClickOutcome::Show {
+            card: card.map(str::to_string),
+        },
     }
 }
 
@@ -286,6 +370,18 @@ struct Shared {
     conn: Connection,
     map: Mutex<NotificationMap>,
     caps: Mutex<Capabilities>,
+    /// XDG activation tokens the server has handed us, keyed by
+    /// notification id.
+    ///
+    /// Plasma emits `ActivationToken` immediately *before* the
+    /// `ActionInvoked` it belongs to, so the token has to be parked
+    /// somewhere for the few microseconds between them (§5.6).
+    ///
+    /// Bounded by [`prune_tokens`]: a server may emit a token for an
+    /// interaction that never produces an `ActionInvoked` — a
+    /// long-press, a hover on some shells — and those would otherwise
+    /// accumulate for the daemon's lifetime.
+    tokens: Mutex<HashMap<u32, String>>,
     shutdown: AtomicBool,
 }
 
@@ -335,8 +431,21 @@ impl Shared {
         // Only offer buttons the server will actually render. Sending
         // actions to a server without the capability is harmless but
         // misleading in a bus trace.
+        // `default` is registered first because the spec's ordering
+        // is positional for *rendered* buttons and servers skip the
+        // reserved key when laying them out — Approve stays the
+        // leftmost visible button. Registering it at all is what
+        // makes a body click arrive as `ActionInvoked`; without it
+        // the click is swallowed by the server.
         let actions: Vec<&str> = if caps.actions {
-            vec![ACTION_APPROVE, "Approve", ACTION_REJECT, "Reject"]
+            vec![
+                ACTION_DEFAULT,
+                "Open Vetter",
+                ACTION_APPROVE,
+                "Approve",
+                ACTION_REJECT,
+                "Reject",
+            ]
         } else {
             Vec::new()
         };
@@ -469,6 +578,7 @@ impl LinuxNotifier {
             conn,
             map: Mutex::new(NotificationMap::default()),
             caps: Mutex::new(Capabilities::default()),
+            tokens: Mutex::new(HashMap::new()),
             shutdown: AtomicBool::new(false),
         });
         shared.refresh_capabilities();
@@ -571,18 +681,30 @@ fn spawn_signal_thread(shared: Arc<Shared>) {
                                 .lock()
                                 .expect("notification map poisoned")
                                 .forget_notification(notification);
+                            // Any token parked for this banner can
+                            // never be claimed now: the interaction
+                            // it authorised is over.
+                            shared
+                                .tokens
+                                .lock()
+                                .expect("token map poisoned")
+                                .remove(&notification);
                         }
                     }
                     "ActivationToken" => {
-                        // (id, token). Plasma emits this alongside
-                        // `ActionInvoked` so a client can raise a
-                        // window without tripping Wayland's
-                        // focus-stealing prevention (§5.6). Phase 6b
-                        // has no window to raise; Phase 6d consumes
-                        // it. Deliberately parsed-and-dropped rather
-                        // than ignored so the signal subscription and
-                        // its shape stay exercised.
-                        let _ = msg.body().deserialize::<(u32, String)>();
+                        // (id, token). Plasma emits this immediately
+                        // before the `ActionInvoked` it belongs to,
+                        // so park it for that handler to collect
+                        // (§5.6). Without it a window raised from a
+                        // banner click trips Wayland's focus-stealing
+                        // prevention and opens behind whatever the
+                        // user was looking at.
+                        if let Ok((notification, token)) = msg.body().deserialize::<(u32, String)>()
+                        {
+                            let mut tokens = shared.tokens.lock().expect("token map poisoned");
+                            prune_tokens(&mut tokens);
+                            tokens.insert(notification, token);
+                        }
                     }
                     _ => {}
                 }
@@ -644,25 +766,53 @@ fn spawn_name_watch_thread(shared: Arc<Shared>, jobs: Sender<Job>) {
 /// clicked. Runs on the signal thread; `PendingQueue::resolve` is
 /// thread-safe, so no hop is needed (§11).
 fn on_action_invoked(shared: &Arc<Shared>, notification: u32, key: &str) {
-    let Some(decision) = decision_for_action(key) else {
-        // Unknown key, or the spec's `"default"` body click. Phase 6d
-        // hooks the click-through-to-window here.
-        return;
-    };
+    // Claim any token the server parked for this interaction, whether
+    // or not we end up needing it: leaving it behind would keep a
+    // stale token for a banner that is about to be resolved and
+    // closed.
+    let token = shared
+        .tokens
+        .lock()
+        .expect("token map poisoned")
+        .remove(&notification);
+
     let request = shared
         .map
         .lock()
         .expect("notification map poisoned")
         .request_for(notification)
         .map(str::to_string);
-    let Some(request) = request else {
-        // The server outlived our record of this id — a restart, or a
-        // banner from a previous daemon run. Nothing to resolve.
-        return;
-    };
-    // The change listener fires from inside `resolve` and queues the
-    // `CloseNotification`, so there is nothing to close here.
-    shared.queue.resolve(&request, decision);
+
+    match click_outcome(key, request.as_deref()) {
+        ClickOutcome::Nothing => {}
+        ClickOutcome::Resolve { request, decision } => {
+            // The change listener fires from inside `resolve` and
+            // queues the `CloseNotification`, so there is nothing to
+            // close here.
+            shared.queue.resolve(&request, decision);
+        }
+        ClickOutcome::Show { card } => {
+            // Deliberately *not* a resolve: the request stays parked
+            // and its banner stays up. See [`ActionIntent`].
+            crate::runloop::request_show_for(card, token);
+        }
+    }
+}
+
+/// Keep the parked-token map from growing without bound.
+///
+/// A token is normally claimed microseconds later by the
+/// `ActionInvoked` it precedes, so the map holds at most one entry in
+/// steady state. The cases that leak are servers that emit a token
+/// for an interaction which never becomes an action. Rather than
+/// track wall-clock ages for something this small, drop everything
+/// once the map is implausibly large: any token still parked by then
+/// is long past the moment the compositor would have honoured it.
+fn prune_tokens(tokens: &mut HashMap<u32, String>) {
+    const MAX_PARKED_TOKENS: usize = 32;
+    if tokens.len() >= MAX_PARKED_TOKENS {
+        tokens.clear();
+    }
 }
 
 impl Notifier for LinuxNotifier {

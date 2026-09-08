@@ -388,6 +388,23 @@ pub enum MgmtRequest {
         #[serde(default)]
         reason: Option<String>,
     },
+    /// Raise the daemon's approval window.
+    ///
+    /// The addressable entry point `plans/LinuxApp.md` §5.5 asks
+    /// for. The tray icon is the obvious way to open the window, but
+    /// GNOME ships no `StatusNotifierHost` without an extension, so
+    /// on that desktop the tray does not exist and the window would
+    /// otherwise be unreachable. This gives every desktop a way in
+    /// that does not depend on a shell feature.
+    ///
+    /// Never resolves anything: it opens a window and returns.
+    ///
+    /// Answered with [`MgmtResponse::Error`] by a daemon that has no
+    /// window to raise — one that came up without a display, or a
+    /// platform where the verb does not apply. Reporting that
+    /// honestly matters more than a success the caller cannot
+    /// distinguish from a window opening on another workspace.
+    OpenWindow,
     /// Read-only query: report the current `[SMAppService.mainApp
     /// status]` (or the equivalent stub state on non-macOS). Used
     /// by `vet daemon autostart status` and by the popover when it
@@ -447,6 +464,15 @@ pub enum MgmtResponse {
         id: String,
         decision: WireDecision,
     },
+    /// Result of [`MgmtRequest::OpenWindow`]: the daemon has a window
+    /// and has asked it to present itself.
+    ///
+    /// Carries nothing. The raise is asynchronous — it crosses to the
+    /// UI thread — so there is no outcome to report beyond "a window
+    /// exists and the request was handed to it", and a compositor
+    /// that declines to focus it is not something the daemon can
+    /// observe.
+    WindowOpened,
     /// Result of [`MgmtRequest::GetAutostart`] and
     /// [`MgmtRequest::SetAutostart`]. `status` is the live OS
     /// state; `desired` is what the user's `~/.vet/settings.yaml`

@@ -136,6 +136,9 @@ enum DaemonAction {
         #[arg(long, value_name = "REASON")]
         reason: Option<String>,
     },
+    /// Open the approval window (Linux). Works without a system
+    /// tray, which GNOME does not provide by default.
+    Open,
     /// Register or unregister Vetter.app as a macOS Login Item so
     /// the daemon comes back automatically after every reboot.
     Autostart {
@@ -177,6 +180,7 @@ fn main() -> ExitCode {
             DaemonAction::List => daemon::list(),
             DaemonAction::Approve { id } => daemon::approve(&id),
             DaemonAction::Reject { id, reason } => daemon::reject(&id, reason.as_deref()),
+            DaemonAction::Open => daemon::open(),
             DaemonAction::Autostart { action } => match action {
                 AutostartAction::Enable => daemon::autostart_enable(),
                 AutostartAction::Disable => daemon::autostart_disable(),

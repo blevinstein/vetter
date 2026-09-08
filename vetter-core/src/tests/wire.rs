@@ -193,6 +193,25 @@ fn mgmt_rule_removed_response_round_trips_through_serde() {
 }
 
 #[test]
+fn mgmt_open_window_round_trips_through_serde() {
+    // A unit variant: the risk is not the payload but the tag, since
+    // a rename would leave an older `vet` unable to reach a newer
+    // daemon's window.
+    let json = serde_json::to_string(&MgmtRequest::OpenWindow).unwrap();
+    assert!(json.contains("open_window"), "unexpected tag: {json}");
+    let back: MgmtRequest = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back, MgmtRequest::OpenWindow));
+}
+
+#[test]
+fn mgmt_window_opened_response_round_trips_through_serde() {
+    let json = serde_json::to_string(&MgmtResponse::WindowOpened).unwrap();
+    assert!(json.contains("window_opened"), "unexpected tag: {json}");
+    let back: MgmtResponse = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back, MgmtResponse::WindowOpened));
+}
+
+#[test]
 fn from_match_maps_decisions_correctly() {
     use crate::matcher::Scope;
     assert_eq!(

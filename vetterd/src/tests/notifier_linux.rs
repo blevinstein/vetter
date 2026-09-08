@@ -280,3 +280,100 @@ fn every_banner_closes_when_the_queue_drains() {
     let held = vec!["A".to_string(), "B".to_string()];
     assert_eq!(banners_to_close(&held, &[]).len(), 2);
 }
+
+// ── Body click-through (Phase 6d step 4) ────────────────────────────────────
+
+#[test]
+fn the_two_buttons_still_resolve() {
+    // Guards the step-4 refactor: adding a third registered action
+    // must not disturb what the existing two mean.
+    assert_eq!(
+        action_intent("approve"),
+        ActionIntent::Resolve(PendingDecision::allow(REASON_APPROVED))
+    );
+    assert_eq!(
+        action_intent("reject"),
+        ActionIntent::Resolve(PendingDecision::deny(REASON_REJECTED))
+    );
+}
+
+#[test]
+fn the_body_click_opens_the_window_and_never_resolves() {
+    // The safety property of this surface. A banner is easy to brush
+    // past, and a body click that approved a command would be the
+    // worst failure available here.
+    assert_eq!(action_intent("default"), ActionIntent::OpenWindow);
+    assert!(
+        decision_for_action("default").is_none(),
+        "`default` must never map to a decision"
+    );
+}
+
+#[test]
+fn an_unknown_action_key_does_nothing() {
+    // Servers may invent keys, and a future action added here would
+    // reach daemons that predate it.
+    assert_eq!(action_intent("x-kde-something"), ActionIntent::Ignore);
+    assert_eq!(
+        click_outcome("x-kde-something", Some("R1")),
+        ClickOutcome::Nothing
+    );
+}
+
+#[test]
+fn a_button_click_resolves_the_request_the_banner_stands_for() {
+    assert_eq!(
+        click_outcome("approve", Some("R1")),
+        ClickOutcome::Resolve {
+            request: "R1".to_string(),
+            decision: PendingDecision::allow(REASON_APPROVED),
+        }
+    );
+}
+
+#[test]
+fn a_body_click_carries_the_request_id_as_the_scroll_target() {
+    assert_eq!(
+        click_outcome("default", Some("R1")),
+        ClickOutcome::Show {
+            card: Some("R1".to_string())
+        }
+    );
+}
+
+#[test]
+fn a_button_click_on_an_unmapped_banner_resolves_nothing() {
+    // The banner outlived our record of it — a server restart, or a
+    // banner from a previous daemon run. Guessing at a request would
+    // mean deciding somebody's command for them.
+    assert_eq!(click_outcome("approve", None), ClickOutcome::Nothing);
+    assert_eq!(click_outcome("reject", None), ClickOutcome::Nothing);
+}
+
+#[test]
+fn a_body_click_still_opens_the_window_with_no_request_to_point_at() {
+    // The request resolved between the click and its delivery, so
+    // there is no card to scroll to — but the user asked to see
+    // Vetter, and the card list is the honest answer.
+    assert_eq!(
+        click_outcome("default", None),
+        ClickOutcome::Show { card: None }
+    );
+}
+
+#[test]
+fn parked_tokens_are_dropped_once_the_map_is_implausibly_large() {
+    // Steady state holds at most one: a token is claimed microseconds
+    // later by the ActionInvoked it precedes. Growth means a server
+    // emitting tokens for interactions that never became actions.
+    let mut tokens: HashMap<u32, String> = (0..31).map(|i| (i, format!("t{i}"))).collect();
+    prune_tokens(&mut tokens);
+    assert_eq!(tokens.len(), 31, "below the cap nothing is dropped");
+
+    tokens.insert(99, "t99".to_string());
+    prune_tokens(&mut tokens);
+    assert!(
+        tokens.is_empty(),
+        "at the cap the map is cleared rather than growing without bound"
+    );
+}

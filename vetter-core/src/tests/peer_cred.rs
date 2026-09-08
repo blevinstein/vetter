@@ -48,6 +48,33 @@ fn stable_session_for_self_resolves_without_error() {
     stable_session_for(pid).expect("stable_session_for on the test process itself must resolve");
 }
 
+#[test]
+fn permission_denied_classification_matches_only_eperm_and_eacces() {
+    use std::io::Error;
+
+    // EPERM: `proc_pidinfo` on a platform binary once the walk climbs
+    // into `launchd` — the exact shape that broke macOS CI.
+    assert!(is_permission_denied(&WireError::Io(
+        Error::from_raw_os_error(1)
+    )));
+    // EACCES.
+    assert!(is_permission_denied(&WireError::Io(
+        Error::from_raw_os_error(13)
+    )));
+    // ESRCH: a process raced past exit mid-walk — still a hard error.
+    assert!(!is_permission_denied(&WireError::Io(
+        Error::from_raw_os_error(3)
+    )));
+    // A malformed `/proc` entry is not a permission problem.
+    assert!(!is_permission_denied(&WireError::Io(Error::other(
+        "malformed /proc entry"
+    ))));
+    assert!(!is_permission_denied(&WireError::PeerAuth {
+        expected: 0,
+        peer: 1
+    }));
+}
+
 /// Spawns a detached grandchild (its own session, no controlling
 /// tty — the same shape a fresh shell-tool invocation gets under the
 /// harness this was built against) and asserts its ancestor walk

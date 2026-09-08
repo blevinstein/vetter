@@ -114,31 +114,69 @@ const MAX_SESSION_WALK_DEPTH: usize = 32;
 /// [`peer_pid`]/[`assert_peer_is_self`], so it carries the same trust
 /// level — a client cannot forge its own ancestry.
 ///
-/// Returns `Err` if any step fails (a process in the chain exited
-/// mid-walk, a permission error, or the walk exceeds
-/// [`MAX_SESSION_WALK_DEPTH`] without finding a tty-anchored
-/// ancestor). Callers map `Err` to "session-scoped rules unavailable
-/// for this request" rather than propagating a hard failure.
+/// A hop that hits a process we have no permission to inspect
+/// (`proc_pidinfo` / `/proc` reads are denied for platform binaries
+/// and other users' processes — common once the walk climbs past the
+/// login session into `launchd`) is a *hard* boundary, not a
+/// transient failure: no retry sees past it. We stop there and return
+/// the last session id we did resolve. Everything above the
+/// connecting client's own ephemeral session leaders is shared
+/// ancestry, so a fresh invocation and a later one from the same
+/// terminal hit the identical boundary pid and land on the same id —
+/// the result stays stable, it just stops one hop short of a tty
+/// anchor. Callers already treat the id as advisory.
+///
+/// Returns `Err` only if a step fails for a reason other than
+/// permission (a process in the chain exited mid-walk, a malformed
+/// `/proc` entry) or the walk exceeds [`MAX_SESSION_WALK_DEPTH`]
+/// without resolving. Callers map `Err` to "session-scoped rules
+/// unavailable for this request" rather than propagating a hard
+/// failure.
 pub fn stable_session_for(pid: u32) -> Result<i32, WireError> {
     let mut current = i32::try_from(pid).map_err(|_| {
         WireError::Io(std::io::Error::other(format!(
             "pid {pid} does not fit in pid_t"
         )))
     })?;
+    let mut last_sid: Option<i32> = None;
     for _ in 0..MAX_SESSION_WALK_DEPTH {
-        let sid = getsid_checked(current)?;
-        if platform::has_controlling_tty(sid)? {
-            return Ok(sid);
+        let sid = match getsid_checked(current) {
+            Ok(sid) => sid,
+            Err(e) if is_permission_denied(&e) => match last_sid {
+                Some(sid) => return Ok(sid),
+                None => return Err(e),
+            },
+            Err(e) => return Err(e),
+        };
+        last_sid = Some(sid);
+        match platform::has_controlling_tty(sid) {
+            Ok(true) => return Ok(sid),
+            Ok(false) => {}
+            Err(e) if is_permission_denied(&e) => return Ok(sid),
+            Err(e) => return Err(e),
         }
-        match platform::ppid_of(sid)? {
-            Some(parent) if parent > 1 => current = parent,
-            _ => return Ok(sid),
+        match platform::ppid_of(sid) {
+            Ok(Some(parent)) if parent > 1 => current = parent,
+            Ok(_) => return Ok(sid),
+            Err(e) if is_permission_denied(&e) => return Ok(sid),
+            Err(e) => return Err(e),
         }
     }
     Err(WireError::Io(std::io::Error::other(format!(
         "stable_session_for({pid}): exceeded walk depth {MAX_SESSION_WALK_DEPTH} \
          without finding a tty-anchored ancestor session"
     ))))
+}
+
+/// True when `err` wraps an OS error the walk cannot recover from by
+/// retrying or climbing further: the kernel refused to let us read a
+/// process's session / parent / tty state. See the boundary note on
+/// [`stable_session_for`].
+fn is_permission_denied(err: &WireError) -> bool {
+    matches!(
+        err,
+        WireError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied
+    )
 }
 
 fn getsid_checked(pid: i32) -> Result<i32, WireError> {

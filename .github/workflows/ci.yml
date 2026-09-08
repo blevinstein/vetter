@@ -29,6 +29,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # GTK4 approval window (Linux only) links system libraries; the
+      # package list lives in one place — tools/install-deps.sh.
+      - run: sudo apt-get update && tools/install-deps.sh --run
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -43,6 +46,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # GTK4 approval window links system libraries on Linux; no-op on
+      # macOS (the script exits early there). See tools/install-deps.sh.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && tools/install-deps.sh --run
       - run: cargo build --workspace --all-targets --all-features
       - run: cargo test --workspace --all-features
 
@@ -55,6 +62,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv-1.95
+      # GTK4 approval window (Linux only) links system libraries; the
+      # package list lives in one place — tools/install-deps.sh.
+      - run: sudo apt-get update && tools/install-deps.sh --run
       - run: cargo build --workspace --all-targets --all-features
       - run: cargo test --workspace --all-features
 

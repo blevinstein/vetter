@@ -991,9 +991,12 @@ pub fn handle_connection(
     // matching an existing session rule below and for recording on
     // the popover card so "Allowlist… → for this terminal session"
     // has something to persist. Failure (process raced past exit, a
-    // permission error, or no tty-anchored ancestor found within the
-    // walk's depth cap) degrades to `None`: the request still gets a
-    // decision, it just can't use or offer session scope.
+    // malformed `/proc` entry, or no tty-anchored ancestor found
+    // within the walk's depth cap) degrades to `None`: the request
+    // still gets a decision, it just can't use or offer session
+    // scope. A permission boundary in the walk is *not* a failure —
+    // `stable_session_for` stops there and returns the last resolved
+    // session id (see its doc comment).
     let peer_sid = peer_pid(&stream)
         .ok()
         .and_then(|pid| vetter_core::peer_cred::stable_session_for(pid).ok());

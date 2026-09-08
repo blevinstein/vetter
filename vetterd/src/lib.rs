@@ -117,6 +117,15 @@ pub enum DaemonError {
     Allowlist(#[from] vetter_core::matcher::LoadError),
     #[error("known-hosts: {0}")]
     KnownHosts(#[from] vetter_core::known_hosts::KnownHostsError),
+    /// Another `vetterd` already owns this session's application id.
+    /// Distinct from the socket check `vet daemon start` performs, so
+    /// it catches the paths that get past it — a stale socket file, or
+    /// `vetterd` launched directly.
+    #[error(
+        "another vetterd is already running for this session ({0}); \
+         stop it with `vet daemon stop` before starting a new one"
+    )]
+    AlreadyRunning(String),
     #[error("notifier: {0}")]
     Notifier(#[from] notifier::NotifierBuildError),
     #[error("config: {0}")]
@@ -470,12 +479,25 @@ fn run_with_glib(
         })
         .map_err(DaemonError::Socket)?;
 
-    if runloop::run_glib(Arc::clone(&pending), Arc::clone(&shutdown)).is_err() {
-        // GTK never came up. The accept thread is already serving, so
-        // park this thread on the shutdown flag instead of racing it
-        // for the listener; everything except the window still works.
-        while !shutdown.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(100));
+    match runloop::run_glib(Arc::clone(&ctx), Arc::clone(&shutdown)) {
+        Ok(()) => {}
+        Err(runloop::GlibError::NoDisplay) => {
+            // GTK never came up. The accept thread is already serving,
+            // so park this thread on the shutdown flag instead of
+            // racing it for the listener; everything except the window
+            // still works.
+            while !shutdown.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        Err(runloop::GlibError::AlreadyRunning(detail)) => {
+            // A second daemon is already serving this session. Wind
+            // the accept thread down before returning so we do not
+            // leave it holding a listener the other daemon should own.
+            shutdown.store(true, Ordering::SeqCst);
+            pending.cancel_all();
+            let _ = accept_handle.join();
+            return Err(DaemonError::AlreadyRunning(detail));
         }
     }
 

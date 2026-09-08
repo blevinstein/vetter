@@ -138,9 +138,9 @@ Linux stands.
 | — raw-command disclosure + copy | `toggleRawDisclosure:`, `copyRawClicked:` | **MISSING** |
 | — signal pills | `popover_pills.rs` | **MISSING** |
 | — URL styling | `popover_url.rs` | **MISSING** |
-| — `Allowlist…` picker (with duration radios) | `popover_picker.rs` (760 ln) | **MISSING** |
-| — `Trust host…` picker | `popover_picker.rs` | **MISSING** |
-| — `See approval reason` + `Revoke rule` | `revokeRuleClicked:` | **MISSING** (wire verb exists) |
+| — `Allowlist…` picker (with duration radios) | `popover_picker.rs` (760 ln) | **DONE (6d step 3)** |
+| — `Trust host…` picker | `popover_picker.rs` | **DONE (6d step 3)** |
+| — `See approval reason` + `Revoke rule` | `revokeRuleClicked:` | **DONE (6d step 3)** |
 | — `Open file` button on FileRead rows | `openFileClicked:` → `NSWorkspace` | **MISSING** (`xdg-open` is the analogue) |
 | — Quit button | `requestShutdown:` | **MISSING** |
 | Autostart on login | `SMAppService.mainApp` (`autostart.rs`) | **STUB** — returns `Unsupported` on non-macOS |
@@ -441,13 +441,21 @@ The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
       rows is resolved-card behaviour on macOS and lands with the
       Recent section.)*
 - [x] Per-card **Approve** / **Reject**.
-- [ ] `Allowlist…` and `Trust host…` pickers including the duration
+- [x] `Allowlist…` and `Trust host…` pickers including the duration
       radio group (15m / 1h / 4h / this terminal session / Forever).
       These drive `AddRule` / `AddKnownHost`, which already work.
-- [ ] `See approval reason` + **Revoke rule** on auto-allow Recent
-      cards, driving the existing `RemoveRule`.
-- [ ] Footer: **Quit Vetter**, **Start at login**, **Play sound on
-      new request**.
+      *(Modal `gtk::Window` sheets, not `Dialog`: that type is
+      deprecated in GTK 4.10 and its replacement needs the gtk4
+      crate's `v4_10` feature, which would raise our floor above
+      Debian stable. The rule preview is mandatory and rendered with
+      `set_text`.)*
+- [x] `See approval reason` + **Revoke rule** on auto-allow Recent
+      cards, driving the existing `RemoveRule`. Needed the Recent
+      section, which landed alongside it.
+- [x] Footer: **Quit Vetter**, **Play sound on new request**.
+      **Start at login** ships insensitive with a tooltip — the
+      non-macOS `autostart` stub still answers `Unsupported`, and the
+      real XDG entry is Phase 6e (§5.3).
 - [ ] Notification click-through opens the window scrolled to the
       matching card, using the activation token (§5.6).
 - [ ] Single-instance / raise-existing entry point (§5.5).

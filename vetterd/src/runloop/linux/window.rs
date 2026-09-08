@@ -49,23 +49,29 @@
 use std::cell::RefCell;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gtk4::gdk::Display;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, Expander, Frame,
-    Label, Orientation, PolicyType, ScrolledWindow, Separator,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, CssProvider,
+    Expander, Frame, Label, Orientation, PolicyType, ScrolledWindow, Separator, Window,
 };
 
+use vetter_core::known_hosts::KnownHostEntry;
+use vetter_core::matcher::Rule;
+use vetter_core::wire::WireScope;
+
 use super::model::{
-    self, BodyContent, CardAction, CardView, EffectRow, FilePath, HttpUrlView, MarkupPalette,
-    UrlView,
+    self, BodyContent, CardAction, CardView, Disclosure, EffectRow, FilePath, HttpUrlView,
+    MarkupPalette, PickerRow, ResolvedCardView, UrlView,
 };
 use crate::cards::pills::{PillSpec, Tone};
+use crate::cards::rules::DurationChoice;
 use crate::cards::url::{HostTrust, MethodTone};
 use crate::pending::PendingQueue;
+use crate::{suggestions, Context};
 
 /// Window chrome sizing. Wide enough for a realistic URL without
 /// wrapping, tall enough for three cards before scrolling.
@@ -131,6 +137,9 @@ const CSS: &str = "
 .vetter-method.other       { color: @accent_color; }
 .vetter-dryrun { border: 1.5px solid @warning_color; border-radius: 6px; }
 .vetter-raw { font-family: monospace; font-size: 0.9em; }
+.vetter-toast { border-radius: 6px; padding: 8px 10px; }
+.vetter-toast.ok    { background: alpha(@success_color, 0.18); }
+.vetter-toast.error { background: alpha(@error_color, 0.20); }
 ";
 
 // GTK-thread-only handle to the live window.
@@ -149,6 +158,38 @@ thread_local! {
     /// `RefCell` double-borrow panic waiting to happen.
     static EXPANDED: RefCell<model::ExpandedState> =
         RefCell::new(model::ExpandedState::default());
+    /// Latest result banner, shown at the top of the list until
+    /// dismissed or superseded. Separate cell for the same
+    /// double-borrow reason as [`EXPANDED`]: its Dismiss button
+    /// mutates it while `refresh` holds `WINDOW`.
+    static TOAST: RefCell<Option<Toast>> = const { RefCell::new(None) };
+}
+
+/// Results handed back from background persist threads.
+///
+/// A plain `static` rather than a channel because of the constraint
+/// that shapes this whole module: the closure a worker thread gives
+/// to `MainContext::invoke` must capture **nothing**, so it cannot
+/// carry a payload. The worker parks its result here, then invokes a
+/// capture-free drain function that moves it into the GTK-thread-only
+/// [`TOAST`] cell. Nothing GTK-owned is ever reachable from the
+/// worker.
+static PENDING_TOASTS: Mutex<Vec<Toast>> = Mutex::new(Vec::new());
+
+/// A one-line outcome banner: what happened after a picker action.
+///
+/// The macOS picker surfaces this as a follow-up `NSAlert`. An
+/// in-window banner is the better fit here — a modal that appears
+/// *after* the work is done has nothing to ask, and stacking a second
+/// modal over a still-open picker on Wayland is a good way to lose a
+/// window behind its parent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Toast {
+    text: String,
+    /// Drives the banner tone. Errors have to be legible as failures;
+    /// a rule that silently did not get added is the worst outcome
+    /// this surface can produce.
+    error: bool,
 }
 
 /// Everything the refresh path needs, all of it GTK-thread-owned.
@@ -156,12 +197,24 @@ struct WindowState {
     window: ApplicationWindow,
     /// Container the cards are rebuilt into on every refresh.
     list: GtkBox,
-    queue: Arc<PendingQueue>,
+    /// Full daemon context: the pickers call
+    /// [`crate::suggestions`] directly rather than round-tripping
+    /// through the admin socket, exactly as the macOS popover does.
+    ctx: Arc<Context>,
+    /// Footer checkbox, re-synced from disk whenever the window is
+    /// shown so an external edit to `settings.yaml` is reflected.
+    sound: CheckButton,
+}
+
+impl WindowState {
+    fn queue(&self) -> &Arc<PendingQueue> {
+        &self.ctx.pending
+    }
 }
 
 /// Build the window and park it in the thread-local. Call once, on
 /// the GTK thread, before the main loop runs.
-pub(super) fn install(app: &Application, queue: Arc<PendingQueue>) {
+pub(super) fn install(app: &Application, ctx: Arc<Context>, shutdown: Arc<AtomicBool>) {
     install_css();
 
     let list = GtkBox::new(Orientation::Vertical, CARD_SPACING);
@@ -177,12 +230,21 @@ pub(super) fn install(app: &Application, queue: Arc<PendingQueue>) {
         .child(&list)
         .build();
 
+    let (footer, sound) = footer(Arc::clone(&shutdown));
+
+    // Footer sits outside the scroller so Quit and the settings stay
+    // reachable no matter how far down the card list the user is.
+    let root = GtkBox::new(Orientation::Vertical, 0);
+    root.append(&scroller);
+    root.append(&Separator::new(Orientation::Horizontal));
+    root.append(&footer);
+
     let window = ApplicationWindow::builder()
         .application(app)
         .title("Vetter")
         .default_width(WINDOW_WIDTH)
         .default_height(WINDOW_HEIGHT)
-        .child(&scroller)
+        .child(&root)
         .build();
 
     // Closing the window must not quit the daemon: the tray and the
@@ -199,11 +261,120 @@ pub(super) fn install(app: &Application, queue: Arc<PendingQueue>) {
         *cell.borrow_mut() = Some(WindowState {
             window,
             list,
-            queue,
+            ctx,
+            sound,
         });
     });
 
+    sync_sound_checkbox();
     refresh();
+}
+
+/// The fixed footer strip: settings on the left, Quit on the right.
+///
+/// Returns the strip and the sound checkbox, which the caller parks
+/// in [`WindowState`] so it can be re-synced from disk on show.
+fn footer(shutdown: Arc<AtomicBool>) -> (GtkBox, CheckButton) {
+    let row = GtkBox::new(Orientation::Horizontal, 12);
+    row.set_margin_top(8);
+    row.set_margin_bottom(8);
+    row.set_margin_start(GUTTER);
+    row.set_margin_end(GUTTER);
+
+    // "Start at login" ships **disabled**, not omitted. `autostart`
+    // on non-macOS is still the stub that answers `Unsupported`
+    // (`plans/LinuxApp.md` §5.3 / Phase 6e writes the real XDG
+    // autostart entry). Omitting it would leave the Linux footer
+    // quietly missing a control macOS has, and a user comparing the
+    // two would reasonably conclude autostart is unsupported forever
+    // rather than not-yet. Ticking a checkbox that silently fails
+    // would be worse still. Insensitive-with-a-reason is the honest
+    // middle, and 6e turns it on by deleting one line.
+    let autostart = CheckButton::with_label("Start at login");
+    autostart.set_sensitive(false);
+    autostart.set_tooltip_text(Some(
+        "Not yet available on Linux — arrives with the XDG autostart \
+         entry in Phase 6e. Until then, start the daemon with \
+         `vet daemon start`.",
+    ));
+    row.append(&autostart);
+
+    let sound = CheckButton::with_label("Play sound on new request");
+    sound.set_tooltip_text(Some(
+        "Ask the notification server to play a sound alongside each \
+         approval banner. Whether it does is up to your desktop's \
+         notification settings.",
+    ));
+    sound.connect_toggled(|button| set_notification_sound(button.is_active()));
+    row.append(&sound);
+
+    let spacer = GtkBox::new(Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    row.append(&spacer);
+
+    let quit = Button::with_label("Quit Vetter");
+    quit.add_css_class("destructive-action");
+    quit.set_tooltip_text(Some(
+        "Stop the daemon. Anything still waiting for a decision is denied.",
+    ));
+    quit.connect_clicked(move |_| {
+        // Flip the same flag SIGTERM sets and let the normal shutdown
+        // path run — the GLib timeout in `watch_shutdown` notices,
+        // destroys the window and quits the application, and
+        // `run_with_glib` then denies anything still parked and joins
+        // the accept thread. Never `exit()` from a callback: that
+        // would skip socket and pidfile cleanup. Same contract as the
+        // tray's Quit item.
+        shutdown.store(true, Ordering::SeqCst);
+    });
+    row.append(&quit);
+
+    (row, sound)
+}
+
+/// Re-read `settings.yaml` and set the checkbox without re-entering
+/// its own toggle handler.
+fn sync_sound_checkbox() {
+    let enabled = vetter_core::settings::load()
+        .map(|s| s.notification_sound)
+        .unwrap_or(true);
+    WINDOW.with(|cell| {
+        if let Some(state) = cell.borrow().as_ref() {
+            if state.sound.is_active() != enabled {
+                // `set_active` fires `toggled`, which would write the
+                // value straight back to disk. Harmless (it is the
+                // value we just read) but pointless IO, and it makes
+                // the handler reentrant for no reason — so only touch
+                // it when it actually differs.
+                state.sound.set_active(enabled);
+            }
+        }
+    });
+}
+
+/// Persist the notification-sound preference off the GTK thread.
+///
+/// A settings write is small, but it is still file IO on the thread
+/// painting the UI, and the failure path needs somewhere to go. The
+/// checkbox stays where the user put it; a failed write surfaces as
+/// an error banner and the next `sync_sound_checkbox` re-reads the
+/// truth from disk.
+fn set_notification_sound(enabled: bool) {
+    std::thread::spawn(move || {
+        let result = vetter_core::settings::load().and_then(|mut s| {
+            if s.notification_sound == enabled {
+                return Ok(());
+            }
+            s.notification_sound = enabled;
+            vetter_core::settings::store(&s)
+        });
+        if let Err(e) = result {
+            push_toast(Toast {
+                text: format!("Could not save the sound setting: {e}"),
+                error: true,
+            });
+        }
+    });
 }
 
 /// Install [`CSS`] once, at the display level so every widget we
@@ -258,23 +429,104 @@ fn refresh() {
             state.list.remove(&child);
         }
 
-        let cards = model::snapshot(&state.queue.pending_entries());
-        EXPANDED.with(|e| e.borrow_mut().retain_live(&cards));
+        // One lock acquisition for both sections, so the two can
+        // never disagree about a request that resolved between them.
+        let (pending_entries, resolved_entries) = state.ctx.pending.all_entries();
+        let pending = model::snapshot(&pending_entries);
+        let resolved = model::resolved_snapshot(&resolved_entries);
+        EXPANDED.with(|e| {
+            e.borrow_mut()
+                .retain_live(&model::live_ids(&pending, &resolved))
+        });
 
-        if cards.is_empty() {
+        if let Some(banner) = toast_banner() {
+            state.list.append(&banner);
+        }
+
+        if pending.is_empty() && resolved.is_empty() {
             state.list.append(&empty_state());
             return;
         }
-        for (idx, card) in cards.iter().enumerate() {
+
+        if pending.is_empty() {
+            // Recent has cards but pending does not. Say so, rather
+            // than opening straight onto resolved cards with no
+            // action buttons and leaving the user to infer why.
+            let note = Label::new(Some(model::NO_PENDING));
+            note.add_css_class("dim-label");
+            note.set_halign(Align::Center);
+            state.list.append(&note);
+        }
+        for (idx, card) in pending.iter().enumerate() {
             if idx > 0 {
                 state.list.append(&Separator::new(Orientation::Horizontal));
             }
-            let raw_open = EXPANDED.with(|e| e.borrow().is_raw_open(&card.id));
-            state
-                .list
-                .append(&card_widget(card, &state.queue, raw_open, palette));
+            state.list.append(&card_widget(card, state, palette));
+        }
+
+        if !resolved.is_empty() {
+            state.list.append(&Separator::new(Orientation::Horizontal));
+            let header = Label::new(Some(model::RECENT_TITLE));
+            header.set_halign(Align::Start);
+            header.add_css_class("dim-label");
+            header.add_css_class("caption-heading");
+            state.list.append(&header);
+
+            for card in &resolved {
+                state.list.append(&Separator::new(Orientation::Horizontal));
+                state.list.append(&resolved_widget(card, state, palette));
+            }
         }
     });
+}
+
+/// The result banner, when there is one to show.
+fn toast_banner() -> Option<GtkBox> {
+    let toast = TOAST.with(|cell| cell.borrow().clone())?;
+
+    let row = GtkBox::new(Orientation::Horizontal, 8);
+    row.add_css_class("vetter-toast");
+    row.add_css_class(if toast.error { "error" } else { "ok" });
+
+    let label = Label::new(Some(&toast.text));
+    label.set_wrap(true);
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    row.append(&label);
+
+    let dismiss = Button::with_label("Dismiss");
+    dismiss.add_css_class("flat");
+    dismiss.connect_clicked(|_| {
+        TOAST.with(|cell| *cell.borrow_mut() = None);
+        request_refresh();
+    });
+    row.append(&dismiss);
+    Some(row)
+}
+
+/// Move any results left by background threads onto the GTK thread
+/// and repaint. Capture-free so it can be handed to
+/// [`glib::MainContext::invoke`] directly.
+fn drain_toasts() {
+    let drained: Vec<Toast> = {
+        let mut g = PENDING_TOASTS.lock().expect("toast queue poisoned");
+        std::mem::take(&mut *g)
+    };
+    // Only the newest survives: these arrive one per user action, and
+    // a stack of stale banners would push the cards off-screen.
+    if let Some(latest) = drained.into_iter().next_back() {
+        TOAST.with(|cell| *cell.borrow_mut() = Some(latest));
+    }
+    refresh();
+}
+
+/// Queue a result banner from any thread.
+fn push_toast(toast: Toast) {
+    PENDING_TOASTS
+        .lock()
+        .expect("toast queue poisoned")
+        .push(toast);
+    glib::MainContext::default().invoke(drain_toasts);
 }
 
 /// Placeholder shown when nothing is pending.
@@ -295,22 +547,9 @@ fn empty_state() -> GtkBox {
     column
 }
 
-/// One approval card, optionally inside the dry-run wrapper.
-///
-/// NOTE for step 3: `Allowlist…` / `Trust host…` join the button row
-/// below, and `See approval reason` / `Revoke rule` arrive with the
-/// Recent (resolved) section, which this window does not yet show.
-/// When Recent lands, its structured rows belong behind a "▸ Details"
-/// disclosure — `EXPANDED` already has room for a second kind — while
-/// pending cards keep them inline as they are here, because a user
-/// deciding *now* should not have to go looking.
-fn card_widget(
-    card: &CardView,
-    queue: &Arc<PendingQueue>,
-    raw_open: bool,
-    palette: MarkupPalette,
-) -> gtk4::Widget {
-    let body = card_body(card, queue, raw_open, palette);
+/// One pending approval card, optionally inside the dry-run wrapper.
+fn card_widget(card: &CardView, state: &WindowState, palette: MarkupPalette) -> gtk4::Widget {
+    let body = card_body(card, state, palette);
 
     if !card.dry_run {
         return body.upcast();
@@ -323,12 +562,8 @@ fn card_widget(
     frame.upcast()
 }
 
-fn card_body(
-    card: &CardView,
-    queue: &Arc<PendingQueue>,
-    raw_open: bool,
-    palette: MarkupPalette,
-) -> GtkBox {
+/// Shared card chrome: title, URL row, pills.
+fn card_head(card: &CardView, badge: Option<&str>) -> GtkBox {
     let frame = GtkBox::new(Orientation::Vertical, 6);
     frame.add_css_class("card");
     frame.set_margin_top(GUTTER);
@@ -336,23 +571,47 @@ fn card_body(
     frame.set_margin_start(GUTTER);
     frame.set_margin_end(GUTTER);
 
+    let title_row = GtkBox::new(Orientation::Horizontal, 6);
     let title = Label::new(Some(&card.title));
     title.set_halign(Align::Start);
     title.add_css_class("heading");
-    frame.append(&title);
+    title_row.append(&title);
+    if let Some(badge) = badge {
+        // Outcome badge on resolved cards, in place of the action
+        // buttons a pending card carries.
+        let pill = Label::new(Some(badge));
+        pill.add_css_class("vetter-pill");
+        pill.add_css_class(if badge == model::Outcome::Allowed.label() {
+            "positive"
+        } else {
+            "danger"
+        });
+        title_row.append(&pill);
+    }
+    frame.append(&title_row);
 
     frame.append(&url_row(&card.url));
 
     if !card.pills.is_empty() {
         frame.append(&pills_row(&card.pills));
     }
+    frame
+}
 
+fn card_body(card: &CardView, state: &WindowState, palette: MarkupPalette) -> GtkBox {
+    let frame = card_head(card, None);
+
+    // Pending cards show their effect rows inline rather than behind
+    // a disclosure: someone deciding *right now* should not have to
+    // go looking for what the command actually does.
     for row in &card.rows {
         frame.append(&effect_row(row));
     }
 
-    frame.append(&raw_disclosure(card, raw_open, palette));
+    frame.append(&raw_disclosure(card, palette));
     frame.append(&Separator::new(Orientation::Horizontal));
+
+    frame.append(&picker_row(card, state));
 
     let buttons = GtkBox::new(Orientation::Horizontal, 6);
     buttons.set_halign(Align::End);
@@ -362,19 +621,149 @@ fn card_body(
         "Reject",
         CardAction::Reject,
         &card.id,
-        queue,
+        state.queue(),
         &["destructive-action"],
     ));
     buttons.append(&action_button(
         "Approve",
         CardAction::Approve,
         &card.id,
-        queue,
+        state.queue(),
         &["suggested-action"],
     ));
     frame.append(&buttons);
 
     frame
+}
+
+/// One card in the Recent section.
+///
+/// Differs from a pending card in three ways: an outcome badge
+/// instead of Approve/Reject, structured rows behind a "Details"
+/// disclosure rather than inline (the decision is already made, so
+/// the rows are reference material), and — on auto-allowed cards —
+/// the "See approval reason" disclosure carrying the rule
+/// attribution and the Revoke button.
+fn resolved_widget(
+    resolved: &ResolvedCardView,
+    state: &WindowState,
+    palette: MarkupPalette,
+) -> gtk4::Widget {
+    let card = &resolved.card;
+    let frame = card_head(card, Some(resolved.outcome.label()));
+
+    if !card.rows.is_empty() {
+        let rows = GtkBox::new(Orientation::Vertical, 6);
+        for row in &card.rows {
+            rows.append(&effect_row(row));
+        }
+        frame.append(&disclosure(
+            "Details",
+            Disclosure::Details,
+            &card.id,
+            rows.upcast_ref::<gtk4::Widget>(),
+        ));
+    }
+
+    frame.append(&raw_disclosure(card, palette));
+
+    if let Some(attribution) = &resolved.attribution {
+        frame.append(&approval_reason(card, attribution, state));
+    }
+
+    if resolved.show_pickers {
+        frame.append(&Separator::new(Orientation::Horizontal));
+        frame.append(&picker_row(card, state));
+    }
+
+    frame.upcast()
+}
+
+/// "See approval reason": why this was auto-allowed, and the offer to
+/// take the rule back.
+fn approval_reason(
+    card: &CardView,
+    attribution: &model::RuleAttribution,
+    state: &WindowState,
+) -> Expander {
+    let body = GtkBox::new(Orientation::Vertical, 6);
+
+    let summary = Label::new(Some(&attribution.summary));
+    summary.set_halign(Align::Start);
+    summary.set_wrap(true);
+    summary.set_xalign(0.0);
+    body.append(&summary);
+
+    match attribution.revoke {
+        Some(scope) => {
+            let revoke = Button::with_label("Revoke rule");
+            revoke.add_css_class("destructive-action");
+            revoke.set_halign(Align::Start);
+            let ctx = Arc::clone(&state.ctx);
+            let rule_id = attribution.rule_id.clone();
+            let scope_name = attribution.scope.as_str();
+            revoke.connect_clicked(move |_| {
+                confirm_revoke(Arc::clone(&ctx), rule_id.clone(), scope, scope_name);
+            });
+            body.append(&revoke);
+        }
+        None => {
+            // Built-in / project / denylist layers are not editable
+            // from here. Say why rather than showing a button that
+            // would only ever explain itself by failing.
+            let note = Label::new(Some(&format!(
+                "Rules in the {} layer are not editable from this window. \
+                 Use `vet allow rm` for project rules.",
+                attribution.scope.as_str()
+            )));
+            note.set_wrap(true);
+            note.set_xalign(0.0);
+            note.add_css_class("dim-label");
+            body.append(&note);
+        }
+    }
+
+    disclosure(
+        "See approval reason",
+        Disclosure::Reason,
+        &card.id,
+        body.upcast_ref::<gtk4::Widget>(),
+    )
+}
+
+/// The `Allowlist…` / `Trust host…` row.
+///
+/// `Trust host…` is gated on the card carrying an `UnknownHost`
+/// signal, mirroring the `host_suggestions` engine contract: when the
+/// host is already trusted there is nothing to suggest, and a button
+/// that opens an empty picker is worse than no button.
+fn picker_row(card: &CardView, state: &WindowState) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 8);
+    row.set_halign(Align::Start);
+
+    let allowlist = Button::with_label("Allowlist…");
+    allowlist.add_css_class("flat");
+    allowlist.set_tooltip_text(Some(
+        "Add a standing rule so requests like this are approved automatically.",
+    ));
+    let ctx = Arc::clone(&state.ctx);
+    let id = card.id.clone();
+    allowlist.connect_clicked(move |_| open_allowlist_picker(Arc::clone(&ctx), id.clone()));
+    row.append(&allowlist);
+
+    if card.show_trust_host {
+        let trust = Button::with_label("Trust host…");
+        trust.add_css_class("flat");
+        trust.set_tooltip_text(Some(
+            "Mark this host as known. Removes the unknown-host warning; \
+             does not approve anything on its own.",
+        ));
+        let ctx = Arc::clone(&state.ctx);
+        let id = card.id.clone();
+        trust.connect_clicked(move |_| open_host_picker(Arc::clone(&ctx), id.clone()));
+        row.append(&trust);
+    }
+    row
 }
 
 /// `[GET] https:// host :8080 /path?query`, one label per token so
@@ -575,9 +964,7 @@ fn open_path(path: &Path) {
 /// the structured rows have not caught up with a new parser, the raw
 /// body still shows exactly what will run. Collapsed by default;
 /// whether it is open for *this* card comes from [`EXPANDED`].
-fn raw_disclosure(card: &CardView, open: bool, palette: MarkupPalette) -> GtkBox {
-    let column = GtkBox::new(Orientation::Vertical, 4);
-
+fn raw_disclosure(card: &CardView, palette: MarkupPalette) -> Expander {
     let body = Label::new(None);
     // The one `set_markup` in this module. Its argument is built by
     // `spans_to_markup`, which escapes every span's text; see the
@@ -605,23 +992,35 @@ fn raw_disclosure(card: &CardView, open: bool, palette: MarkupPalette) -> GtkBox
     });
     inner.append(&copy);
 
+    disclosure(
+        "Show raw",
+        Disclosure::Raw,
+        &card.id,
+        inner.upcast_ref::<gtk4::Widget>(),
+    )
+}
+
+/// An `Expander` whose open/closed bit is owned by [`EXPANDED`]
+/// rather than by the widget.
+///
+/// The ordering here is load-bearing: `expanded` is set through the
+/// builder and the notify handler is connected *afterwards*, so
+/// restoring saved state during a rebuild cannot re-enter the handler
+/// and write back the value we just read.
+fn disclosure(label: &str, kind: Disclosure, id: &str, child: &gtk4::Widget) -> Expander {
+    let open = EXPANDED.with(|e| e.borrow().is_open(kind, id));
     let expander = Expander::builder()
-        .label("Show raw")
-        .child(&inner)
+        .label(label)
+        .child(child)
         .expanded(open)
         .build();
 
-    // Connect *after* setting `expanded`, so restoring saved state
-    // during a rebuild does not re-enter the handler and write back
-    // the value we just read.
-    let id = card.id.clone();
+    let id = id.to_string();
     expander.connect_expanded_notify(move |exp| {
         let open = exp.is_expanded();
-        EXPANDED.with(|e| e.borrow_mut().set_raw_open(&id, open));
+        EXPANDED.with(|e| e.borrow_mut().set_open(kind, &id, open));
     });
-
-    column.append(&expander);
-    column
+    expander
 }
 
 /// A titled vertical group: dim caption, then indented content.
@@ -678,6 +1077,363 @@ fn action_button(
     button
 }
 
+// ── Pickers ─────────────────────────────────────────────────────────────────
+
+/// Modal sheet width. Wide enough that a moderately verbose YAML
+/// preview (one method, one host, a path glob) does not wrap.
+const PICKER_WIDTH: i32 = 520;
+
+/// Build a modal sheet over the approval window.
+///
+/// A plain [`Window`], not an `ApplicationWindow` and not a `Dialog`.
+/// Not the latter because `gtk::Dialog` is deprecated in GTK 4.10 and
+/// its replacement (`AlertDialog`) needs the gtk4 crate's `v4_10`
+/// feature, which would raise our minimum GTK above what Debian
+/// stable ships for no gain here. Not the former because
+/// `gtk::Application` ends its main loop when its last *application*
+/// window closes: a sheet registered with the app would make closing
+/// it a coin-flip on whether the daemon's driver survives. A bare
+/// `Window` is never added to the application's window list, so
+/// closing it is inert.
+fn sheet(title: &str) -> (Window, GtkBox) {
+    let content = GtkBox::new(Orientation::Vertical, 12);
+    content.set_margin_top(GUTTER);
+    content.set_margin_bottom(GUTTER);
+    content.set_margin_start(GUTTER);
+    content.set_margin_end(GUTTER);
+
+    let window = Window::builder()
+        .title(title)
+        .modal(true)
+        .default_width(PICKER_WIDTH)
+        .child(&content)
+        .build();
+
+    WINDOW.with(|cell| {
+        if let Some(state) = cell.borrow().as_ref() {
+            window.set_transient_for(Some(&state.window));
+        }
+    });
+
+    (window, content)
+}
+
+/// A vertical radio group over `rows`, returning the buttons so the
+/// caller can read the selection back.
+///
+/// GTK4 has no `RadioButton`: grouped [`CheckButton`]s are the
+/// idiom, and joining every button to the first is what makes them
+/// mutually exclusive. The preview beneath each radio is set with
+/// `set_text` — it is argv-derived and must never be parsed as
+/// markup.
+fn radio_group(rows: &[PickerRow], default_idx: usize) -> (GtkBox, Vec<CheckButton>) {
+    let column = GtkBox::new(Orientation::Vertical, 10);
+    let mut buttons: Vec<CheckButton> = Vec::with_capacity(rows.len());
+
+    for (idx, row) in rows.iter().enumerate() {
+        let entry = GtkBox::new(Orientation::Vertical, 2);
+
+        let radio = CheckButton::with_label(&row.title);
+        if let Some(first) = buttons.first() {
+            radio.set_group(Some(first));
+        }
+        radio.set_active(idx == default_idx);
+        entry.append(&radio);
+
+        if !row.preview.is_empty() {
+            let preview = plain_mono(&row.preview);
+            preview.set_wrap(true);
+            preview.set_margin_start(24);
+            preview.add_css_class("dim-label");
+            entry.append(&preview);
+        }
+
+        buttons.push(radio);
+        column.append(&entry);
+    }
+    (column, buttons)
+}
+
+/// Index of the active radio, or `None` when somehow none is.
+fn selected(buttons: &[CheckButton]) -> Option<usize> {
+    buttons.iter().position(|b| b.is_active())
+}
+
+/// Cancel / confirm button row, confirm on the right.
+fn sheet_buttons(confirm_label: &str, destructive: bool) -> (GtkBox, Button, Button) {
+    let row = GtkBox::new(Orientation::Horizontal, 6);
+    row.set_halign(Align::End);
+    let cancel = Button::with_label("Cancel");
+    let confirm = Button::with_label(confirm_label);
+    confirm.add_css_class(if destructive {
+        "destructive-action"
+    } else {
+        "suggested-action"
+    });
+    row.append(&cancel);
+    row.append(&confirm);
+    (row, cancel, confirm)
+}
+
+/// "Allowlist…" — pick a generalisation tier and a duration.
+fn open_allowlist_picker(ctx: Arc<Context>, request_id: String) {
+    let Some((rules, _hosts, peer_sid)) = suggestions::suggestions_for(&ctx, &request_id) else {
+        push_toast(Toast {
+            text: "That request is no longer available to build a rule from.".into(),
+            error: true,
+        });
+        return;
+    };
+    if rules.is_empty() {
+        push_toast(Toast {
+            text: "No allowlist rule can be suggested for this request.".into(),
+            error: true,
+        });
+        return;
+    }
+
+    let (window, content) = sheet("Add to allowlist");
+
+    let blurb = Label::new(Some(
+        "Pick a generalisation tier and a duration. The rule is appended to your \
+         user allowlist; pending requests it covers are approved immediately.",
+    ));
+    blurb.set_wrap(true);
+    blurb.set_xalign(0.0);
+    content.append(&blurb);
+
+    let rows = model::rule_picker_rows(&rules);
+    let (tier_box, tier_radios) = radio_group(&rows, 0);
+    content.append(&tier_box);
+
+    let duration_label = Label::new(Some("Duration"));
+    duration_label.set_xalign(0.0);
+    duration_label.add_css_class("heading");
+    content.append(&duration_label);
+
+    let duration_rows: Vec<PickerRow> = DurationChoice::ALL
+        .iter()
+        .map(|d| PickerRow {
+            title: d.title().to_string(),
+            preview: String::new(),
+        })
+        .collect();
+    // Default to Forever, preserving the one-click "pick a tier, hit
+    // the button" flow for anyone who never touches this group.
+    let default_duration = DurationChoice::ALL
+        .iter()
+        .position(|d| *d == DurationChoice::Forever)
+        .unwrap_or(0);
+    let (duration_box, duration_radios) = radio_group(&duration_rows, default_duration);
+    // "For this terminal session" needs a session id to scope to. When
+    // the daemon never resolved one for this connection (headless or
+    // non-tty caller) the choice cannot be honoured, so disable it
+    // rather than silently writing a rule with no sid — which would
+    // behave like Forever.
+    if peer_sid.is_none() {
+        if let Some(idx) = DurationChoice::ALL
+            .iter()
+            .position(|d| *d == DurationChoice::ThisSession)
+        {
+            if let Some(radio) = duration_radios.get(idx) {
+                radio.set_sensitive(false);
+                radio.set_tooltip_text(Some(
+                    "This request has no terminal session recorded, so a \
+                     session-scoped rule could not be matched later.",
+                ));
+            }
+        }
+    }
+    content.append(&duration_box);
+
+    let (buttons, cancel, confirm) = sheet_buttons("Add to user allowlist", false);
+    content.append(&buttons);
+
+    let w = window.clone();
+    cancel.connect_clicked(move |_| w.close());
+
+    let w = window.clone();
+    confirm.connect_clicked(move |_| {
+        let Some(tier) = selected(&tier_radios) else {
+            return;
+        };
+        let Some(rule) = rules.get(tier).map(|s| s.rule.clone()) else {
+            return;
+        };
+        let choice = selected(&duration_radios)
+            .and_then(|i| DurationChoice::ALL.get(i).copied())
+            .unwrap_or(DurationChoice::Forever);
+        let rule = model::rule_with_duration(
+            rule,
+            choice,
+            vetter_core::matcher::now_epoch_secs(),
+            peer_sid,
+        );
+        w.close();
+        persist_rule(Arc::clone(&ctx), rule, choice.confirmation_note());
+    });
+
+    window.present();
+}
+
+/// "Trust host…" — pick a host pattern to mark as known.
+fn open_host_picker(ctx: Arc<Context>, request_id: String) {
+    let Some((_rules, hosts, _sid)) = suggestions::suggestions_for(&ctx, &request_id) else {
+        push_toast(Toast {
+            text: "That request is no longer available to build a host pattern from.".into(),
+            error: true,
+        });
+        return;
+    };
+    if hosts.is_empty() {
+        push_toast(Toast {
+            text: "This host is already trusted.".into(),
+            error: false,
+        });
+        return;
+    }
+
+    let (window, content) = sheet("Trust host");
+
+    let blurb = Label::new(Some(
+        "Pick a host pattern. Trusting a host clears the unknown-host warning on \
+         current and future cards; it does not approve any request.",
+    ));
+    blurb.set_wrap(true);
+    blurb.set_xalign(0.0);
+    content.append(&blurb);
+
+    let rows = model::host_picker_rows(&hosts);
+    let (host_box, radios) = radio_group(&rows, 0);
+    content.append(&host_box);
+
+    let (buttons, cancel, confirm) = sheet_buttons("Trust this host", false);
+    content.append(&buttons);
+
+    let w = window.clone();
+    cancel.connect_clicked(move |_| w.close());
+
+    let w = window.clone();
+    confirm.connect_clicked(move |_| {
+        let Some(idx) = selected(&radios) else {
+            return;
+        };
+        let Some(entry) = hosts.get(idx).map(|s| s.entry.clone()) else {
+            return;
+        };
+        w.close();
+        persist_host(Arc::clone(&ctx), entry);
+    });
+
+    window.present();
+}
+
+/// Confirm before revoking, then hand off to the background.
+///
+/// Cancel is the default action: an accidental Return on a sheet the
+/// user did not mean to open must not delete a rule.
+fn confirm_revoke(ctx: Arc<Context>, rule_id: String, scope: WireScope, scope_name: &'static str) {
+    let (window, content) = sheet("Remove rule?");
+
+    let heading = Label::new(Some(&format!("Remove rule `{rule_id}`?")));
+    heading.set_xalign(0.0);
+    heading.set_wrap(true);
+    heading.add_css_class("heading");
+    content.append(&heading);
+
+    let blurb = Label::new(Some(&format!(
+        "This deletes the rule from your user allowlist. Entries already in \
+         Recent stay as a record of what was approved while the rule was \
+         active; only future requests are re-prompted.\n\nScope: {scope_name}"
+    )));
+    blurb.set_wrap(true);
+    blurb.set_xalign(0.0);
+    content.append(&blurb);
+
+    let (buttons, cancel, confirm) = sheet_buttons("Remove rule", true);
+    content.append(&buttons);
+
+    let w = window.clone();
+    cancel.connect_clicked(move |_| w.close());
+    cancel.grab_focus();
+
+    let w = window.clone();
+    confirm.connect_clicked(move |_| {
+        w.close();
+        revoke_rule(Arc::clone(&ctx), scope, rule_id.clone());
+    });
+
+    window.present();
+}
+
+// ── Background persistence ──────────────────────────────────────────────────
+//
+// Every one of these does file IO and reloads an in-memory store, so
+// none of it may run on the thread painting the window. The result
+// comes back through `push_toast`, which is the capture-free hop
+// described at `PENDING_TOASTS`. The queue's own change listener
+// repaints the cards, so these threads never need to touch a widget.
+
+/// Persist a new allowlist rule.
+fn persist_rule(ctx: Arc<Context>, rule: Rule, duration_note: &'static str) {
+    std::thread::spawn(move || {
+        let toast = match suggestions::add_allowlist_rule(&ctx, WireScope::User, rule) {
+            Ok(added) => {
+                let approved = added.auto_approved_ids.len();
+                let tail = match approved {
+                    0 => String::new(),
+                    1 => " Approved 1 waiting request.".into(),
+                    n => format!(" Approved {n} waiting requests."),
+                };
+                Toast {
+                    text: format!("Added rule `{}`. {duration_note}{tail}", added.id),
+                    error: false,
+                }
+            }
+            Err(e) => Toast {
+                text: format!("Could not add the rule: {e}"),
+                error: true,
+            },
+        };
+        push_toast(toast);
+    });
+}
+
+/// Persist a new known-host entry.
+fn persist_host(ctx: Arc<Context>, entry: KnownHostEntry) {
+    std::thread::spawn(move || {
+        let pattern = entry.pattern.clone();
+        let toast = match suggestions::add_known_host(&ctx, WireScope::User, entry) {
+            Ok(()) => Toast {
+                text: format!("Now trusting `{pattern}`."),
+                error: false,
+            },
+            Err(e) => Toast {
+                text: format!("Could not trust the host: {e}"),
+                error: true,
+            },
+        };
+        push_toast(toast);
+    });
+}
+
+/// Remove a rule the user revoked.
+fn revoke_rule(ctx: Arc<Context>, scope: WireScope, rule_id: String) {
+    std::thread::spawn(move || {
+        let toast = match suggestions::remove_allowlist_rule(&ctx, scope, &rule_id) {
+            Ok(()) => Toast {
+                text: format!("Removed rule `{rule_id}`."),
+                error: false,
+            },
+            Err(e) => Toast {
+                text: format!("Could not remove the rule: {e}"),
+                error: true,
+            },
+        };
+        push_toast(toast);
+    });
+}
+
 /// Show and focus the window. Safe to call from any thread.
 ///
 /// On Wayland a client cannot raise itself unprompted, so this may
@@ -690,6 +1446,11 @@ fn action_button(
 /// wants to scroll the matching card into view.
 pub(crate) fn request_show() {
     glib::MainContext::default().invoke(|| {
+        // Re-read the preference on the way up: `settings.yaml` can
+        // be edited by hand or by a future CLI while the window sits
+        // hidden, and a checkbox showing a stale value is worse than
+        // one that lags.
+        sync_sound_checkbox();
         WINDOW.with(|cell| {
             if let Some(state) = cell.borrow().as_ref() {
                 state.window.set_visible(true);

@@ -758,10 +758,17 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
       directly; every span's text is escaped through
       `cards::markup::escape_markup` first, since Pango parses its
       input as markup and the text is argv-derived.
-- [ ] Reuse `vetter-core::suggest` and `vetterd::suggestions`
-      unchanged for the Allowlist… / Trust host… picker sheets;
-      replace `NSAlert + accessoryView` with `gtk::Dialog` +
-      `gtk::Box` of radio buttons.
+- [x] Reuse `vetter-core::suggest` and `vetterd::suggestions`
+      unchanged for the Allowlist… / Trust host… picker sheets.
+      Both engines are called directly, as macOS does. Not
+      `gtk::Dialog` as this bullet assumed: that type is deprecated
+      in GTK 4.10 and `AlertDialog` needs the gtk4 crate's `v4_10`
+      feature, which would raise our minimum GTK above Debian
+      stable. A modal `gtk::Window` is GTK-4.0 API and, unlike an
+      `ApplicationWindow`, is never added to the application's
+      window list — so closing a sheet cannot end the main loop and
+      take the accept-loop driver with it. Radios are grouped
+      `CheckButton`s (GTK4 has no `RadioButton`).
 - [ ] Tray click opens the popover window; double-click on a
       notification body opens it scrolled to the matching id
       (mirrors macOS `focused_id` flow).

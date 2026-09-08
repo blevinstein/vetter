@@ -24,10 +24,15 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use vetter_core::matcher::{Rule, Scope};
+use vetter_core::suggest::{HostSuggestion, RuleSuggestion};
+use vetter_core::wire::{WireDecision, WireScope};
 use vetter_core::{Auth, Body, Effect, ParsedCommand, RiskSignal, SignalKind};
 
-use crate::cards::{self, markup::escape_markup, pills::PillSpec, spans::AnsiColor};
-use crate::pending::{PendingDecision, PromptSummary};
+use crate::cards::{
+    self, markup::escape_markup, pills::PillSpec, rules::DurationChoice, spans::AnsiColor,
+};
+use crate::pending::{PendingDecision, PromptSummary, ResolvedEntry};
 
 /// Audit reasons written when a decision comes from the window.
 ///
@@ -58,6 +63,26 @@ impl CardAction {
 
 // ── Disclosure state ────────────────────────────────────────────────────────
 
+/// Which collapsible section of a card a disclosure drives.
+///
+/// Three kinds rather than three `HashSet` fields threaded through
+/// three near-identical accessor pairs: the widget side just wants
+/// "is *this* disclosure on *this* card open", and naming the kinds
+/// keeps that a single call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Disclosure {
+    /// "Show raw" — the §8.5 body. On every card.
+    Raw,
+    /// "Details" — the structured effect rows. Resolved cards only:
+    /// a pending card shows its rows inline, because someone
+    /// deciding *now* should not have to go looking for what the
+    /// command does.
+    Details,
+    /// "See approval reason" — rule attribution plus the revoke
+    /// button. Auto-allowed resolved cards only.
+    Reason,
+}
+
 /// Which collapsible sections of which cards are currently open.
 ///
 /// This lives in the model rather than in the `Expander` widgets for
@@ -70,37 +95,45 @@ impl CardAction {
 /// disclosure mid-read if the open/closed bit lived in the widget
 /// that gets destroyed.
 ///
-/// Keyed by request ULID, so the state follows the card rather than
-/// its position in the list.
+/// Keyed by `(kind, request ULID)`, so the state follows the card
+/// rather than its position in the list, and a card's three
+/// disclosures stay independent of one another.
 #[derive(Debug, Default)]
 pub(crate) struct ExpandedState {
-    /// Ids whose "Show raw" disclosure is open. Absent means closed,
-    /// which is the default the spec asks for ("Default state:
-    /// collapsed").
-    raw_open: HashSet<String>,
+    /// Absent means closed, which is the default the spec asks for
+    /// ("Default state: collapsed").
+    open: HashSet<(Disclosure, String)>,
 }
 
 impl ExpandedState {
-    pub(crate) fn is_raw_open(&self, id: &str) -> bool {
-        self.raw_open.contains(id)
+    pub(crate) fn is_open(&self, kind: Disclosure, id: &str) -> bool {
+        // `HashSet::contains` over an owned key pair: the tuple would
+        // need a matching `Borrow` impl to probe by reference, which
+        // is not worth a newtype for a set this small (bounded by the
+        // number of cards on screen).
+        self.open.contains(&(kind, id.to_string()))
     }
 
-    pub(crate) fn set_raw_open(&mut self, id: &str, open: bool) {
+    pub(crate) fn set_open(&mut self, kind: Disclosure, id: &str, open: bool) {
+        let key = (kind, id.to_string());
         if open {
-            self.raw_open.insert(id.to_string());
+            self.open.insert(key);
         } else {
-            self.raw_open.remove(id);
+            self.open.remove(&key);
         }
     }
 
-    /// Forget ids that are no longer pending.
+    /// Forget ids the window is no longer showing.
     ///
     /// Without this the set grows for the lifetime of the daemon:
     /// every request whose disclosure was ever opened would leave a
-    /// ULID behind after it resolved. Called from the refresh path,
-    /// where the live set is already in hand.
-    pub(crate) fn retain_live(&mut self, live: &[CardView]) {
-        self.raw_open.retain(|id| live.iter().any(|c| &c.id == id));
+    /// ULID behind after it fell out of view. The live set spans
+    /// *both* sections — a resolved card is still on screen, so
+    /// pruning against pending ids alone would collapse the Recent
+    /// disclosure the user just opened.
+    pub(crate) fn retain_live(&mut self, live_ids: &[&str]) {
+        self.open
+            .retain(|(_, id)| live_ids.iter().any(|live| live == id));
     }
 }
 
@@ -211,6 +244,9 @@ pub(crate) struct CardView {
     /// [`HttpUrlView`]. Kept at card level so a fallback card can
     /// still colour its chrome.
     pub trust: cards::url::HostTrust,
+    /// Whether the `Trust host…` button belongs on this card. See
+    /// [`show_trust_host`].
+    pub show_trust_host: bool,
 }
 
 /// The "Show raw" disclosure's contents.
@@ -259,6 +295,7 @@ pub(crate) fn card_view(summary: &PromptSummary, rendered: &str) -> CardView {
             plain: cards::spans::strip_ansi(rendered),
         },
         trust,
+        show_trust_host: show_trust_host(&summary.signals),
     }
 }
 
@@ -526,6 +563,179 @@ fn span_colour(style: cards::spans::SpanStyle, palette: MarkupPalette) -> Option
     }
 }
 
+// ── Resolved cards ──────────────────────────────────────────────────────────
+
+/// How a resolved request came out. Narrower than
+/// [`vetter_core::wire::WireDecision`] on purpose: the window paints
+/// two outcomes, and `AllowOnce` — which no daemon emits today —
+/// reads as an allow rather than as a third badge nobody has seen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    Allowed,
+    Denied,
+}
+
+impl Outcome {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Outcome::Allowed => "allowed",
+            Outcome::Denied => "denied",
+        }
+    }
+}
+
+/// Why a resolved card was auto-allowed, and whether the window can
+/// take the rule back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuleAttribution {
+    pub rule_id: String,
+    pub scope: Scope,
+    /// Sentence shown when "See approval reason" is opened.
+    pub summary: String,
+    /// `Some(scope)` when "Revoke rule" should be offered and where
+    /// the removal would land; `None` when this layer is not editable
+    /// from the window — see [`revoke_scope`].
+    pub revoke: Option<WireScope>,
+}
+
+/// One entry from the resolved-history ring, lowered for painting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedCardView {
+    /// Same shape as a pending card, so the two sections share every
+    /// row builder. Only the chrome around it differs.
+    pub card: CardView,
+    pub outcome: Outcome,
+    /// `Some` only for auto-allowed entries the matcher attributed to
+    /// a rule. Drives "See approval reason" / "Revoke rule".
+    pub attribution: Option<RuleAttribution>,
+    /// Whether the picker row appears. Allow-resolved cards keep it
+    /// (the user may still want a standing rule); deny-resolved cards
+    /// drop it — offering "Allowlist…" immediately after someone
+    /// pressed Reject reads as arguing with them.
+    pub show_pickers: bool,
+}
+
+/// Which allowlist layer a revoke would write to, or `None` when the
+/// window cannot edit it.
+///
+/// Session-scoped rules live in the *same* on-disk user file as any
+/// other rule (the loader partitions them at load time), so
+/// `Scope::Session` is revokable through the identical `User` remove
+/// call rather than being a dead end. Built-in, project and denylist
+/// entries are not editable here: project rules belong to
+/// `vet allow rm`, and the other two are not user-owned at all.
+pub(crate) fn revoke_scope(scope: Scope) -> Option<WireScope> {
+    match scope {
+        Scope::User | Scope::Session => Some(WireScope::User),
+        Scope::Project | Scope::Builtin | Scope::Denylist => None,
+    }
+}
+
+/// Lower one resolved-history entry into a card.
+pub(crate) fn resolved_card_view(entry: &ResolvedEntry) -> ResolvedCardView {
+    let outcome = match entry.decision {
+        WireDecision::Allow | WireDecision::AllowOnce => Outcome::Allowed,
+        WireDecision::Deny => Outcome::Denied,
+    };
+    // Attribution needs both halves. `rule_scope` is documented as
+    // always populated alongside `rule_id`, but zipping rather than
+    // unwrapping means a future producer that sets only one cannot
+    // panic the UI thread.
+    let attribution = entry
+        .rule_id
+        .as_ref()
+        .zip(entry.rule_scope)
+        .filter(|_| outcome == Outcome::Allowed)
+        .map(|(rule_id, scope)| RuleAttribution {
+            rule_id: rule_id.clone(),
+            scope,
+            summary: format!(
+                "Auto-allowed by rule `{rule_id}` in {} scope.",
+                scope.as_str()
+            ),
+            revoke: revoke_scope(scope),
+        });
+
+    ResolvedCardView {
+        card: card_view(&entry.summary, &entry.rendered),
+        outcome,
+        attribution,
+        show_pickers: outcome == Outcome::Allowed,
+    }
+}
+
+// ── Picker view-models ──────────────────────────────────────────────────────
+
+/// One radio row in a picker: the tier headline and the YAML the
+/// user would be persisting.
+///
+/// `preview` is deliberately a plain string destined for `set_text`.
+/// It is built from argv-derived data, and the one thing it must
+/// never become is markup — see the module docs in [`super::window`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PickerRow {
+    pub title: String,
+    pub preview: String,
+}
+
+/// Rows for the "Allowlist…" picker, tightest tier first (the order
+/// [`vetter_core::suggest::allowlist_suggestions`] emits).
+pub(crate) fn rule_picker_rows(suggestions: &[RuleSuggestion]) -> Vec<PickerRow> {
+    suggestions
+        .iter()
+        .map(|s| PickerRow {
+            title: format!("{}  —  {}", s.tier.as_str(), s.label),
+            preview: cards::rules::render_rule_when_yaml(&s.rule),
+        })
+        .collect()
+}
+
+/// Rows for the "Trust host…" picker.
+pub(crate) fn host_picker_rows(suggestions: &[HostSuggestion]) -> Vec<PickerRow> {
+    suggestions
+        .iter()
+        .map(|s| PickerRow {
+            title: format!("{}  —  {}", s.tier.as_str(), s.label),
+            preview: format!("pattern: \"{}\"", s.entry.pattern),
+        })
+        .collect()
+}
+
+/// Stamp a duration choice onto a suggested rule.
+///
+/// The whole reason [`crate::cards::rules::DurationChoice`] was
+/// lifted into the shared layer: a 15-minute rule must expire in 15
+/// minutes and a session rule must carry the requesting terminal's
+/// sid whether the radio was an `NSButton` or a `GtkCheckButton`.
+pub(crate) fn rule_with_duration(
+    mut rule: Rule,
+    choice: DurationChoice,
+    now: u64,
+    peer_sid: Option<i32>,
+) -> Rule {
+    let (expires_at, sid) = choice.apply(now, peer_sid);
+    rule.expires_at = expires_at;
+    rule.sid = sid;
+    rule
+}
+
+/// Whether the "Trust host…" button should appear for these signals.
+///
+/// Gated on `UnknownHost` being present, mirroring the
+/// `host_suggestions` engine contract: when the host is already
+/// trusted there is nothing to suggest, and a button that opens an
+/// empty picker is worse than no button.
+pub(crate) fn show_trust_host(signals: &[RiskSignal]) -> bool {
+    signals.iter().any(|s| s.kind == SignalKind::UnknownHost)
+}
+
+/// Header shown above the resolved section.
+pub(crate) const RECENT_TITLE: &str = "Recent";
+/// Placeholder standing in for the pending block when it is empty but
+/// Recent is not. Without it the window opens straight onto resolved
+/// cards with no action buttons and no explanation.
+pub(crate) const NO_PENDING: &str = "No pending approvals.";
+
 /// Snapshot the queue's pending entries into cards, oldest first.
 ///
 /// ULIDs are time-sortable, so a plain sort by id is chronological.
@@ -540,6 +750,30 @@ pub(crate) fn snapshot(pending: &[(PromptSummary, String)]) -> Vec<CardView> {
         .collect();
     cards.sort_by(|a, b| a.id.cmp(&b.id));
     cards
+}
+
+/// Lower the resolved-history ring for painting.
+///
+/// Order is left exactly as the queue holds it — newest first, since
+/// [`crate::pending::PendingQueue::resolve`] pushes to the front.
+/// That is the opposite of the pending section's oldest-first sort,
+/// and deliberately so: pending answers "what has been waiting
+/// longest", Recent answers "what just happened".
+pub(crate) fn resolved_snapshot(resolved: &[ResolvedEntry]) -> Vec<ResolvedCardView> {
+    resolved.iter().map(resolved_card_view).collect()
+}
+
+/// Every id currently on screen, across both sections. Feeds
+/// [`ExpandedState::retain_live`].
+pub(crate) fn live_ids<'a>(
+    pending: &'a [CardView],
+    resolved: &'a [ResolvedCardView],
+) -> Vec<&'a str> {
+    pending
+        .iter()
+        .map(|c| c.id.as_str())
+        .chain(resolved.iter().map(|r| r.card.id.as_str()))
+        .collect()
 }
 
 #[cfg(test)]

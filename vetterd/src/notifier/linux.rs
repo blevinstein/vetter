@@ -882,6 +882,12 @@ fn on_action_invoked(shared: &Arc<Shared>, notification: u32, key: &str) {
                 card_id: card,
                 token,
                 picker,
+                // No measurement: this raise carries an activation
+                // token and answers a click the user just made, so
+                // they are already looking at the result. Only
+                // `vet daemon open` needs the outcome reported back,
+                // because a terminal cannot see the screen.
+                observe: false,
             });
         }
     }

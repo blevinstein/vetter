@@ -205,10 +205,64 @@ fn mgmt_open_window_round_trips_through_serde() {
 
 #[test]
 fn mgmt_window_opened_response_round_trips_through_serde() {
-    let json = serde_json::to_string(&MgmtResponse::WindowOpened).unwrap();
-    assert!(json.contains("window_opened"), "unexpected tag: {json}");
-    let back: MgmtResponse = serde_json::from_str(&json).unwrap();
-    assert!(matches!(back, MgmtResponse::WindowOpened));
+    for raise in [
+        WindowRaise::Focused,
+        WindowRaise::Unfocused,
+        WindowRaise::Unknown,
+    ] {
+        let json = serde_json::to_string(&MgmtResponse::WindowOpened { raise }).unwrap();
+        assert!(json.contains("window_opened"), "unexpected tag: {json}");
+        match serde_json::from_str::<MgmtResponse>(&json).unwrap() {
+            MgmtResponse::WindowOpened { raise: back } => assert_eq!(back, raise),
+            other => panic!("expected WindowOpened, got {other:?}"),
+        }
+    }
+}
+
+/// An older daemon sends `window_opened` with no payload. A newer
+/// `vet` must read that as "not measured" rather than failing to
+/// parse or, worse, defaulting to a claim that the window was raised.
+#[test]
+fn window_opened_without_a_raise_field_reads_as_unknown() {
+    let legacy = r#"{"type":"window_opened"}"#;
+    match serde_json::from_str::<MgmtResponse>(legacy).unwrap() {
+        MgmtResponse::WindowOpened { raise } => assert_eq!(raise, WindowRaise::Unknown),
+        other => panic!("expected WindowOpened, got {other:?}"),
+    }
+}
+
+/// The other direction: a newer daemon's payload must not break an
+/// older `vet`, which knows `window_opened` only as a unit variant.
+/// Serde ignores unknown content for an internally-tagged unit
+/// variant, and this pins that — the alternative is a protocol change
+/// that silently strands every installed client.
+#[test]
+fn a_unit_variant_peer_still_parses_a_newer_window_opened() {
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum LegacyResponse {
+        WindowOpened,
+        #[serde(other)]
+        Other,
+    }
+
+    let modern = serde_json::to_string(&MgmtResponse::WindowOpened {
+        raise: WindowRaise::Focused,
+    })
+    .unwrap();
+    let back: LegacyResponse = serde_json::from_str(&modern).unwrap();
+    assert!(
+        matches!(back, LegacyResponse::WindowOpened),
+        "an older client must still recognise the variant, got {back:?}"
+    );
+}
+
+/// `Unknown` must be the `Default`: it is what a missing field and a
+/// timed-out measurement both produce, and both mean "no answer".
+/// Defaulting to either real outcome would manufacture a claim.
+#[test]
+fn window_raise_defaults_to_unknown() {
+    assert_eq!(WindowRaise::default(), WindowRaise::Unknown);
 }
 
 #[test]

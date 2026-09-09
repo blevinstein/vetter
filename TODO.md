@@ -955,14 +955,25 @@ has already landed elsewhere and one moved to §6f, marked below.
 
 ## Build health  `[~] in progress`
 
-- [ ] `vet daemon open` reports success when nothing appears. On Wayland
-      `present()` cannot raise or focus without an activation token, so
-      when the window is already mapped behind another window it stays
-      there while the CLI prints `approval window raised`. Fix is to
-      plumb a token into the `OpenWindow` path the way 6d step 4 does
-      for notification clicks
-      ([vetterd/src/runloop/linux/window.rs](vetterd/src/runloop/linux/window.rs)).
-      Found during 6h.
+- [x] `vet daemon open` reported success when nothing appeared. On
+      Wayland `present()` cannot raise or focus without an activation
+      token, so when the window was already mapped behind another one
+      it stayed there while the CLI printed `approval window raised`.
+      Found during 6h; **fixed 2026-09-09** — but not the way this
+      entry proposed.
+      Forwarding the caller's token is a dead end on this desktop:
+      `$XDG_ACTIVATION_TOKEN` is not set in a terminal's environment
+      (Konsole itself carries `kwin-1`, the token KWin used to *launch*
+      it, and does not propagate it — correctly, since xdg-activation
+      tokens are single-use). There is no token for a CLI invocation to
+      forward.
+      So the daemon **measures instead of assuming**: it presents,
+      waits 250 ms, reads `is_active()`, and answers with a
+      `WindowRaise` of `Focused` / `Unfocused` / `Unknown`.
+      `MgmtResponse::WindowOpened` carries it under `#[serde(default)]`
+      so an older daemon degrades to `Unknown` rather than to a claim.
+      The `Unfocused` message says where to look instead of merely
+      reporting the refusal.
 - [x] Under a private session bus with no notification server to
       activate, prompt-class requests appeared never to reach the
       pending queue: `vet` blocked, `vet daemon list` reported none,

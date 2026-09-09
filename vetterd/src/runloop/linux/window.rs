@@ -50,7 +50,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use gtk4::gdk::Display;
 use gtk4::glib;
@@ -62,7 +63,7 @@ use gtk4::{
 
 use vetter_core::known_hosts::KnownHostEntry;
 use vetter_core::matcher::Rule;
-use vetter_core::wire::WireScope;
+use vetter_core::wire::{WindowRaise, WireScope};
 
 use super::model::{self, CardAction, Disclosure, MarkupPalette};
 use crate::cards::card::{self, CardView, HttpUrlView, UrlView};
@@ -301,7 +302,43 @@ pub(crate) struct ShowRequest {
     /// `card_id` — a picker generalises one specific request, so
     /// there is nothing it could mean without one.
     pub picker: Option<PickerKind>,
+    /// Measure whether the window actually took focus and report it
+    /// back through [`RAISE_RESULT`].
+    ///
+    /// Only `vet daemon open` sets this. A tray click or a
+    /// notification action is already a user gesture the caller can
+    /// see the result of; a CLI invocation is the one caller with no
+    /// view of the screen, and the one that was printing a success it
+    /// had not checked.
+    pub observe: bool,
 }
+
+/// How long the GTK thread waits after presenting before reading
+/// focus back.
+///
+/// The compositor's answer is not synchronous: `present()` sends a
+/// request and KWin decides. Too short and a window that *did* come
+/// forward reads as unfocused; too long and `vet daemon open` feels
+/// stalled. 250 ms is comfortably past the observed round trip on
+/// Plasma while staying under human "did that work?" latency.
+const FOCUS_SETTLE: Duration = Duration::from_millis(250);
+
+/// How long the admin thread waits for the UI thread's answer.
+///
+/// Generous relative to [`FOCUS_SETTLE`] because it also has to cover
+/// a GTK main loop that is briefly busy. Well inside the admin
+/// socket's 5 s frame timeout, so a wedged UI thread costs the caller
+/// an "unknown", not a dropped connection.
+const RAISE_OBSERVE_TIMEOUT: Duration = Duration::from_millis(1_500);
+
+/// Where the GTK thread parks the measured outcome of an observed
+/// raise, and how the waiting admin thread is woken.
+///
+/// Same capture-free discipline as [`PENDING_SHOW`], in the other
+/// direction: the answer is a payload, so it travels through a static
+/// rather than out of a closure.
+static RAISE_RESULT: Mutex<Option<WindowRaise>> = Mutex::new(None);
+static RAISE_READY: Condvar = Condvar::new();
 
 /// A one-line outcome banner: what happened after a picker action.
 ///
@@ -1808,6 +1845,50 @@ pub(crate) fn request_show() {
     request_show_with(ShowRequest::default());
 }
 
+/// Raise the window and report back what the compositor actually did.
+///
+/// The daemon half of `vet daemon open`. Every other caller of
+/// [`request_show`] is a user gesture whose result the user is looking
+/// at; this one answers a terminal, which is why it is the only path
+/// that measures.
+///
+/// Blocks the calling thread for up to [`RAISE_OBSERVE_TIMEOUT`].
+/// That is the admin thread, which handles one request at a time, so
+/// a `vet daemon open` briefly delays other admin traffic — acceptable
+/// for a rare, human-initiated command, and bounded well inside the
+/// admin socket's frame timeout.
+///
+/// Never blocks the GTK thread: it parks a request, and the GTK thread
+/// answers on its own schedule. A UI thread that never answers costs
+/// this caller a [`WindowRaise::Unknown`], not a hang.
+pub(crate) fn request_show_observed() -> WindowRaise {
+    // Drop any answer left by a previous call before asking, so a
+    // stale result cannot be mistaken for this one's.
+    *RAISE_RESULT.lock().expect("raise result poisoned") = None;
+
+    request_show_with(ShowRequest {
+        observe: true,
+        ..ShowRequest::default()
+    });
+
+    let guard = RAISE_RESULT.lock().expect("raise result poisoned");
+    let (guard, wait) = RAISE_READY
+        .wait_timeout_while(guard, RAISE_OBSERVE_TIMEOUT, |result| result.is_none())
+        .expect("raise result poisoned");
+    if wait.timed_out() {
+        WindowRaise::Unknown
+    } else {
+        guard.unwrap_or(WindowRaise::Unknown)
+    }
+}
+
+/// Hand a measured outcome to whoever is waiting in
+/// [`request_show_observed`]. Runs on the GTK thread.
+fn publish_raise_result(raise: WindowRaise) {
+    *RAISE_RESULT.lock().expect("raise result poisoned") = Some(raise);
+    RAISE_READY.notify_all();
+}
+
 /// Raise the window, scrolled to a card and/or with a picker open.
 ///
 /// Safe to call from any thread. The payload is parked in
@@ -1857,6 +1938,29 @@ fn drain_show_requests() {
             state.window.present();
         }
     });
+
+    // Measure, rather than assume, whether that present took focus.
+    // Deferred because the compositor answers asynchronously: reading
+    // `is_active()` on this turn of the loop would report the state
+    // from *before* the request. The closure captures nothing — it
+    // reaches the window through the thread-local and reports through
+    // a static, like every other cross-boundary payload here.
+    if request.observe {
+        glib::timeout_add_local_once(FOCUS_SETTLE, || {
+            let raise = WINDOW
+                .with(|cell| {
+                    cell.borrow().as_ref().map(|state| {
+                        if state.window.is_active() {
+                            WindowRaise::Focused
+                        } else {
+                            WindowRaise::Unfocused
+                        }
+                    })
+                })
+                .unwrap_or(WindowRaise::Unknown);
+            publish_raise_result(raise);
+        });
+    }
 
     if let Some(id) = request.card_id.clone() {
         scroll_to_card(id);

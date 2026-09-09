@@ -24,7 +24,8 @@ use std::time::{Duration, Instant, SystemTime};
 use vetter_core::peer_cred::assert_peer_is_self;
 use vetter_core::pidfile::{self, PidFileContents};
 use vetter_core::wire::{
-    read_frame, write_frame, MgmtRequest, MgmtResponse, PendingItem, WireDecision, WireError,
+    read_frame, write_frame, MgmtRequest, MgmtResponse, PendingItem, WindowRaise, WireDecision,
+    WireError,
 };
 use vetter_core::{default_admin_socket_path, default_pidfile_path, default_socket_path};
 
@@ -333,6 +334,38 @@ fn resolve(id: &str, decision: WireDecision, reason: Option<&str>) -> ExitCode {
     }
 }
 
+/// What to tell the user about a raise the daemon measured.
+///
+/// Split out from [`open`] because it is the whole of the decision and
+/// the only part worth testing: everything else in that function is
+/// socket plumbing.
+///
+/// All three outcomes exit zero. The window exists and was presented
+/// in every one of them — the difference is whether it came to the
+/// front, which is the compositor's call, not a failure of the
+/// command. Only a daemon with no window at all is an error, and that
+/// arrives as [`MgmtResponse::Error`] instead.
+fn raise_message(raise: WindowRaise) -> &'static str {
+    match raise {
+        WindowRaise::Focused => "approval window raised",
+        // Deliberately not "raised": on Wayland a compositor may
+        // decline to focus a window the user did not just interact
+        // with, and the window is then showing somewhere the user is
+        // not looking. Saying where to look is the actionable part.
+        WindowRaise::Unfocused => {
+            "approval window is showing, but the compositor did not bring it to the front \
+             — check your taskbar, other workspaces, or behind the current window"
+        }
+        // The daemon has a window and asked it to present, but its UI
+        // thread did not answer in time, or the daemon predates this
+        // reporting. Claiming either outcome would be a guess.
+        WindowRaise::Unknown => {
+            "asked the approval window to present; could not confirm whether it came to \
+             the front"
+        }
+    }
+}
+
 /// `vet daemon open` — raise the daemon's approval window.
 ///
 /// The entry point that does not depend on a system tray. GNOME
@@ -346,8 +379,8 @@ fn resolve(id: &str, decision: WireDecision, reason: Option<&str>) -> ExitCode {
 /// looking for on screen.
 pub fn open() -> ExitCode {
     match query_admin(MgmtRequest::OpenWindow) {
-        Ok(MgmtResponse::WindowOpened) => {
-            println!("vet daemon open: approval window raised");
+        Ok(MgmtResponse::WindowOpened { raise }) => {
+            println!("vet daemon open: {}", raise_message(raise));
             ExitCode::from(EXIT_OK)
         }
         Ok(MgmtResponse::Error { message }) => {
@@ -566,3 +599,7 @@ fn format_uptime(c: &PidFileContents) -> String {
         format!("{s}s")
     }
 }
+
+#[cfg(test)]
+#[path = "tests/daemon.rs"]
+mod tests;

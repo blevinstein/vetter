@@ -701,8 +701,16 @@ fn handle_open_window() -> MgmtResponse {
                 .into(),
         };
     }
-    runloop::request_show();
-    MgmtResponse::WindowOpened
+    // Measure the outcome rather than reporting the attempt. On
+    // Wayland a client cannot raise or focus itself unprompted
+    // (`plans/LinuxApp.md` §5.6), so presenting a window that is
+    // already mapped behind another one can change nothing on screen.
+    // This verb is the §5.5 entry point for desktops with no tray, so
+    // for those users it is the only route to the window — and it used
+    // to print success either way.
+    MgmtResponse::WindowOpened {
+        raise: runloop::request_show_observed(),
+    }
 }
 
 /// Non-Linux stub. macOS has an approval surface, but it is an

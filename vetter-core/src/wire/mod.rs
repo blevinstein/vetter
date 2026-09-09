@@ -461,6 +461,30 @@ pub struct DesktopHealth {
     pub tray_host: bool,
 }
 
+/// What the daemon saw after presenting its approval window.
+///
+/// Distinguishing these matters because the interesting failure is
+/// silent: `present()` on an already-mapped window that the
+/// compositor declines to focus changes nothing on screen, and a
+/// caller told only "opened" has no way to tell that from a window
+/// appearing on another workspace.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowRaise {
+    /// The window is on screen and holds focus.
+    Focused,
+    /// The window was presented but did not take focus. It is
+    /// showing somewhere — behind another window, on another
+    /// workspace, or flagged in the taskbar — just not in front.
+    Unfocused,
+    /// The daemon could not determine the outcome: the UI thread did
+    /// not answer within the window it was given, or the peer predates
+    /// this field. Deliberately the [`Default`], so a missing or late
+    /// answer degrades to "unknown" rather than to a claim.
+    #[default]
+    Unknown,
+}
+
 /// Response returned by `vetterd` on the admin socket.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -506,14 +530,23 @@ pub enum MgmtResponse {
         decision: WireDecision,
     },
     /// Result of [`MgmtRequest::OpenWindow`]: the daemon has a window
-    /// and has asked it to present itself.
+    /// and has presented it.
     ///
-    /// Carries nothing. The raise is asynchronous — it crosses to the
-    /// UI thread — so there is no outcome to report beyond "a window
-    /// exists and the request was handed to it", and a compositor
-    /// that declines to focus it is not something the daemon can
-    /// observe.
-    WindowOpened,
+    /// `raise` reports what the daemon *observed* afterwards, not what
+    /// it attempted. On Wayland a client cannot raise or focus itself
+    /// unprompted (`plans/LinuxApp.md` §5.6), so presenting a window
+    /// that is already mapped behind another one can be a visible
+    /// no-op — and reporting that as success sends the user looking
+    /// for a window that never came forward.
+    ///
+    /// `#[serde(default)]` keeps an older daemon (which sent this
+    /// variant with no payload) readable by a newer `vet`: the
+    /// missing field deserialises to [`WindowRaise::Unknown`], which
+    /// is the truthful answer for a peer that never measured.
+    WindowOpened {
+        #[serde(default)]
+        raise: WindowRaise,
+    },
     /// Result of [`MgmtRequest::GetAutostart`] and
     /// [`MgmtRequest::SetAutostart`]. `status` is the live OS
     /// state; `desired` is what the user's `~/.vet/settings.yaml`

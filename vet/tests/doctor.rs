@@ -327,11 +327,51 @@ fn code_signing_rows_present() {
     );
 }
 
-/// On non-macOS platforms the doctor emits a single `code signing`
-/// SKIP row instead of the per-artifact ones — distribution is
-/// macOS-only, so a signature on Linux is meaningless.
+/// On Linux the code-signing row is replaced by `provenance`, which
+/// reports where the binary came from rather than pretending a
+/// signature exists. A cargo-built test binary is owned by no
+/// package, so the row is INFO "built from source" — and never OK,
+/// which would claim provenance we do not have.
 #[test]
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn provenance_row_reports_built_from_source() {
+    let s = Scratch::new();
+    let assert = s.doctor().assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("provenance"),
+        "expected a `provenance` row in:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("built from source"),
+        "cargo-built binaries are owned by no package; got:\n{stdout}"
+    );
+}
+
+/// The Linux-only desktop rows are always emitted, even with no
+/// daemon running — they degrade to "not probed" rather than
+/// vanishing, so the report shape does not change under the user.
+#[test]
+#[cfg(target_os = "linux")]
+fn desktop_rows_present_without_a_daemon() {
+    let s = Scratch::new();
+    let assert = s.doctor().assert();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    for row in [
+        "session bus",
+        "runtime dir",
+        "desktop entry",
+        "notifications",
+        "tray",
+    ] {
+        assert!(stdout.contains(row), "expected `{row}` row in:\n{stdout}");
+    }
+}
+
+/// On platforms with neither a signing story nor a package manager
+/// story the doctor still emits the single `code signing` SKIP row.
+#[test]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn code_signing_skipped_off_macos() {
     let s = Scratch::new();
     s.doctor()

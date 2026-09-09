@@ -65,6 +65,11 @@ ksni = { version = "0.3.6", default-features = false, features = [
     "async-io",
     "blocking",
 ] }
+# Atomic write of the XDG autostart entry (Phase 6e). Already a
+# dev-dependency here and a real one in vetter-core, so this pulls in
+# nothing new — it just makes `fs_secure::persist_at_mode` reachable
+# from the daemon's own writer.
+tempfile = { workspace = true }
 # Approval window (Phase 6d). GTK4 rather than an anchored popover:
 # Wayland has no protocol for positioning a surface against a tray
 # icon drawn by the host, so the window is one the compositor places

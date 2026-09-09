@@ -418,6 +418,47 @@ pub enum MgmtRequest {
     /// the request actually landed (e.g. RequiresApproval) without
     /// a second round-trip.
     SetAutostart { enabled: bool },
+    /// Read-only probe of the desktop services the Linux UI rides on
+    /// (Phase 6e). Answered with [`MgmtResponse::DesktopHealth`].
+    ///
+    /// The daemon answers because `vet` has no D-Bus library: `vet` is
+    /// exec'd for every wrapped command, and linking a bus stack into
+    /// it to serve one diagnostic would tax the hot path to pay for
+    /// `vet doctor`. Same reasoning that puts [`Self::GetAutostart`]
+    /// on this socket rather than in the CLI.
+    ///
+    /// Linux-only; other platforms answer [`MgmtResponse::Error`].
+    GetDesktopHealth,
+}
+
+/// Live state of the desktop services the Linux approval UI depends
+/// on. Every field is the result of an actual probe: anything that
+/// could not be observed reports absent rather than present, because
+/// a diagnostic that claims an unverified capability is worse than one
+/// that admits it could not look.
+///
+/// Most "missing" combinations here are supported steady states, not
+/// errors — a session with no tray host still has notifications and
+/// `vet daemon approve` — so consumers should describe what is
+/// unavailable rather than treating any of it as a failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopHealth {
+    /// A session bus was reachable at all. False makes every other
+    /// field meaningless.
+    pub session_bus: bool,
+    /// Name reported by `GetServerInformation`, e.g. `"Plasma"`.
+    /// `None` when no server owns `org.freedesktop.Notifications`.
+    pub notification_server: Option<String>,
+    /// Server advertises the `actions` capability, i.e. our
+    /// Approve / Reject buttons will render (§5.4).
+    pub notification_actions: bool,
+    /// Something owns a `StatusNotifierWatcher` name.
+    pub tray_watcher: bool,
+    /// A watcher exists *and* reports a host registered with it. Not
+    /// the same question: a watcher with no host accepts our tray item
+    /// and then nobody draws it, which looks like a bug in Vetter
+    /// rather than a missing desktop component.
+    pub tray_host: bool,
 }
 
 /// Response returned by `vetterd` on the admin socket.
@@ -482,6 +523,8 @@ pub enum MgmtResponse {
         desired: bool,
         status: AutostartStatus,
     },
+    /// Result of [`MgmtRequest::GetDesktopHealth`].
+    DesktopHealth(DesktopHealth),
     Error {
         message: String,
     },

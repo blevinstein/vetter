@@ -268,6 +268,7 @@ struct WindowState {
     /// Footer checkbox, re-synced from disk whenever the window is
     /// shown so an external edit to `settings.yaml` is reflected.
     sound: CheckButton,
+    autostart: CheckButton,
 }
 
 impl WindowState {
@@ -294,7 +295,7 @@ pub(super) fn install(app: &Application, ctx: Arc<Context>, shutdown: Arc<Atomic
         .child(&list)
         .build();
 
-    let (footer, sound) = footer(Arc::clone(&shutdown));
+    let (footer, sound, autostart) = footer(Arc::clone(&shutdown));
 
     // Footer sits outside the scroller so Quit and the settings stay
     // reachable no matter how far down the card list the user is.
@@ -328,41 +329,40 @@ pub(super) fn install(app: &Application, ctx: Arc<Context>, shutdown: Arc<Atomic
             scroller,
             ctx,
             sound,
+            autostart,
         });
     });
     WINDOW_INSTALLED.store(true, Ordering::SeqCst);
 
     sync_sound_checkbox();
+    sync_autostart_checkbox();
     refresh();
 }
 
 /// The fixed footer strip: settings on the left, Quit on the right.
 ///
-/// Returns the strip and the sound checkbox, which the caller parks
-/// in [`WindowState`] so it can be re-synced from disk on show.
-fn footer(shutdown: Arc<AtomicBool>) -> (GtkBox, CheckButton) {
+/// Returns the strip plus the sound and autostart checkboxes, which
+/// the caller parks in [`WindowState`] so both can be re-synced from
+/// disk on show.
+fn footer(shutdown: Arc<AtomicBool>) -> (GtkBox, CheckButton, CheckButton) {
     let row = GtkBox::new(Orientation::Horizontal, 12);
     row.set_margin_top(8);
     row.set_margin_bottom(8);
     row.set_margin_start(GUTTER);
     row.set_margin_end(GUTTER);
 
-    // "Start at login" ships **disabled**, not omitted. `autostart`
-    // on non-macOS is still the stub that answers `Unsupported`
-    // (`plans/LinuxApp.md` §5.3 / Phase 6e writes the real XDG
-    // autostart entry). Omitting it would leave the Linux footer
-    // quietly missing a control macOS has, and a user comparing the
-    // two would reasonably conclude autostart is unsupported forever
-    // rather than not-yet. Ticking a checkbox that silently fails
-    // would be worse still. Insensitive-with-a-reason is the honest
-    // middle, and 6e turns it on by deleting one line.
+    // Live as of Phase 6e: `autostart` now writes a real XDG entry
+    // at `~/.config/autostart/vetter.desktop` (§5.3). Same shape as
+    // the sound toggle — the write happens off this thread and the
+    // checkbox is re-read from disk on every show, so a user who
+    // disables us through their desktop's own autostart UI sees that
+    // reflected here rather than fighting the window over it.
     let autostart = CheckButton::with_label("Start at login");
-    autostart.set_sensitive(false);
     autostart.set_tooltip_text(Some(
-        "Not yet available on Linux — arrives with the XDG autostart \
-         entry in Phase 6e. Until then, start the daemon with \
-         `vet daemon start`.",
+        "Start the Vetter daemon when you log in, by writing an entry \
+         to ~/.config/autostart/.",
     ));
+    autostart.connect_toggled(|button| set_autostart(button.is_active()));
     row.append(&autostart);
 
     let sound = CheckButton::with_label("Play sound on new request");
@@ -395,7 +395,7 @@ fn footer(shutdown: Arc<AtomicBool>) -> (GtkBox, CheckButton) {
     });
     row.append(&quit);
 
-    (row, sound)
+    (row, sound, autostart)
 }
 
 /// Re-read `settings.yaml` and set the checkbox without re-entering
@@ -414,6 +414,62 @@ fn sync_sound_checkbox() {
                 // it when it actually differs.
                 state.sound.set_active(enabled);
             }
+        }
+    });
+}
+
+/// Re-read the live autostart state and set the checkbox without
+/// re-entering its own toggle handler.
+///
+/// Reads `autostart::current()` rather than `settings.yaml` because
+/// the entry is a file the user can delete or disable from their
+/// desktop's own autostart UI. The OS state is the truth; the
+/// preference is only what we would converge *to*.
+fn sync_autostart_checkbox() {
+    let enabled = crate::autostart::current().is_enabled();
+    WINDOW.with(|cell| {
+        if let Some(state) = cell.borrow().as_ref() {
+            if state.autostart.is_active() != enabled {
+                state.autostart.set_active(enabled);
+            }
+        }
+    });
+}
+
+/// Persist the autostart preference and converge the OS state, off
+/// the GTK thread.
+///
+/// Writes the settings file *first* so a failure to write the entry
+/// does not lose the user's stated preference — the next daemon
+/// launch retries via `reconcile_with_settings`. Same ordering as
+/// `apply_autostart_change` in `lib.rs`, for the same reason.
+fn set_autostart(enabled: bool) {
+    std::thread::spawn(move || {
+        let stored = vetter_core::settings::load().and_then(|mut s| {
+            if s.autostart == enabled {
+                return Ok(());
+            }
+            s.autostart = enabled;
+            vetter_core::settings::store(&s)
+        });
+        if let Err(e) = stored {
+            push_toast(Toast {
+                text: format!("Could not save the autostart setting: {e}"),
+                error: true,
+            });
+            return;
+        }
+        let applied = if enabled {
+            crate::autostart::enable()
+        } else {
+            crate::autostart::disable()
+        };
+        match applied {
+            Ok(()) => request_refresh(),
+            Err(e) => push_toast(Toast {
+                text: format!("Could not update the autostart entry: {e}"),
+                error: true,
+            }),
         }
     });
 }
@@ -1655,6 +1711,7 @@ fn drain_show_requests() {
     // and a checkbox showing a stale value is worse than one that
     // lags.
     sync_sound_checkbox();
+    sync_autostart_checkbox();
 
     // The token has to be handed over *before* the present it
     // authorises: GDK consumes the id on the next present and clears

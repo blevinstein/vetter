@@ -144,10 +144,10 @@ Linux stands.
 | — `See approval reason` + `Revoke rule` | `revokeRuleClicked:` | **DONE (6d step 3)** |
 | — `Open file` button on FileRead rows | `openFileClicked:` → `NSWorkspace` | **MISSING** (`xdg-open` is the analogue) |
 | — Quit button | `requestShutdown:` | **MISSING** |
-| Autostart on login | `SMAppService.mainApp` (`autostart.rs`) | **STUB** — returns `Unsupported` on non-macOS |
-| — `vet daemon autostart enable/disable/status` | Wire verbs exist and are portable | Works, but always errors on Linux |
-| — `vet doctor` autostart row | `doctor.rs` | Hard-coded `SKIP macOS only` |
-| Code-signing verification | `codesign --verify` | Hard-coded `SKIP macOS only`; Linux analogue is RPM/GPG signature |
+| Autostart on login | `SMAppService.mainApp` (`autostart.rs`) | **DONE (6e)** — XDG autostart entry; `NotFound` when the pinned `Exec` has moved |
+| — `vet daemon autostart enable/disable/status` | Wire verbs exist and are portable | **DONE (6e)** — per-platform wording so Linux is not told about "login items" |
+| — `vet doctor` autostart row | `doctor.rs` | **DONE (6e)** — reports real state; macOS strings unchanged |
+| Code-signing verification | `codesign --verify` | **DONE (6e)** — replaced by a `provenance` row (package ownership, not integrity; see §6e) |
 | Packaged install | Homebrew cask, notarised bundle | **MISSING** |
 | Process/UI identity | `.app` bundle + `LSUIElement` + Info.plist | Analogue is a `.desktop` entry (see §5.2) |
 
@@ -455,9 +455,9 @@ The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
       cards, driving the existing `RemoveRule`. Needed the Recent
       section, which landed alongside it.
 - [x] Footer: **Quit Vetter**, **Play sound on new request**.
-      **Start at login** ships insensitive with a tooltip — the
-      non-macOS `autostart` stub still answers `Unsupported`, and the
-      real XDG entry is Phase 6e (§5.3).
+      **Start at login** shipped insensitive here and went live in
+      Phase 6e, which replaced the non-macOS stub with a real XDG
+      entry (§5.3).
 - [x] Notification click-through opens the window scrolled to the
       matching card, using the activation token (§5.6). The body
       click is registered as the spec's `default` action and never
@@ -475,23 +475,62 @@ The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
       `glib::idle_add_local` / `MainContext::invoke` before touching
       widgets. This is the macOS `MainThreadBound` pattern.
 
-### Phase 6e — Autostart + `vet doctor` parity `[ ]`
+### Phase 6e — Autostart + `vet doctor` parity `[x]` **done 2026-09-08**
 
-- [ ] Linux `autostart::sys` writing/removing
+- [x] Linux `autostart::sys` writing/removing
       `~/.config/autostart/vetter.desktop` (§5.3); `current()` is a
       file-existence + `Hidden=` check.
-- [ ] `reconcile_with_settings` then works unchanged on Linux — it
-      already no-ops only on `Unsupported`.
-- [ ] `vet doctor` autostart row: drop the `cfg!(target_os = "macos")`
+      Also honours `X-GNOME-Autostart-enabled=false`, which is what
+      GNOME Tweaks writes — without that, `reconcile_with_settings`
+      would silently re-enable autostart a user had just switched off.
+      The entry pins an absolute `Exec=`, so `current()` stats that
+      target and reports `NotFound` when the binary has moved: the one
+      way this is worse than `SMAppService`, and detecting it is the
+      mitigation.
+- [x] `reconcile_with_settings` then works unchanged on Linux — it
+      already no-ops only on `Unsupported`. Verified, not assumed: it
+      started converging real state the moment the backend landed,
+      with no edit of its own.
+- [x] `vet doctor` autostart row: drop the `cfg!(target_os = "macos")`
       early return, report the real state.
-- [ ] `vet doctor` "code signing" row: on Linux report package
+      The per-status wording is `cfg`-split so macOS output stays
+      byte-identical. `vet daemon autostart`'s own CLI wording had the
+      same leak — it told Linux users their "login item" was
+      registered — and is split the same way.
+- [x] `vet doctor` "code signing" row: on Linux report package
       provenance instead (`rpm -V` / dpkg verify when installed from
       a package; `INFO built from source` otherwise), or keep the
       SKIP with an honest reason.
-- [ ] New Linux-only doctor rows worth having, given §5.4/§5.5:
+      **Chose provenance without integrity verification.** The row
+      asks `rpm -qf` / `dpkg-query -S` who owns the binary and reports
+      that; it deliberately does *not* run `rpm -V`, which checksums
+      every file in the owning package and would cost seconds on a
+      command people run when something is already wrong — to prove a
+      guarantee we cannot currently make, since no signed Vetter
+      package exists until 6f. Today's honest answer for essentially
+      every install is `INFO built from source`.
+- [x] New Linux-only doctor rows worth having, given §5.4/§5.5:
       session bus reachable; notification daemon present +
       `actions` capability; StatusNotifierWatcher present;
       `$XDG_RUNTIME_DIR` sane.
+      Plus a `desktop entry` row: absent, it is invisible — banners
+      and the window silently fall back to a generic name and icon
+      (§5.2) — so it earns a line. The tray row distinguishes "no
+      watcher" from "watcher but no host", because the second looks
+      exactly like a Vetter bug from the outside: our item registers
+      and then nobody draws it.
+      The two bus-dependent rows are answered by the **daemon** over
+      the admin socket (`MgmtRequest::GetDesktopHealth`), not probed
+      by `vet`. `vet` is exec'd for every wrapped command, and linking
+      a D-Bus stack into it to serve one diagnostic would tax the hot
+      path to pay for `vet doctor`. Cost: those rows read "not probed"
+      when the daemon is down — which the `daemon` row above already
+      explains.
+      Framing throughout: most missing states here are supported
+      steady states, not faults. `WARN` is reserved for losing a
+      capability you would otherwise have; a session with no tray host
+      is `INFO`, because notifications and `vet daemon approve` are
+      unaffected.
 
 ### Phase 6f — Distribution `[ ]`
 

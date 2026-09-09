@@ -155,6 +155,45 @@ pub fn default_audit_path() -> Result<PathBuf, PathError> {
     }
 }
 
+/// XDG autostart entry for the daemon:
+/// `$XDG_CONFIG_HOME/autostart/vetter.desktop`, defaulting to
+/// `~/.config/autostart/vetter.desktop`.
+///
+/// Unlike macOS's `SMAppService`, Linux autostart *is a file* — there
+/// is no API to ask, only an entry to write (`plans/LinuxApp.md`
+/// §5.3). Resolution lives here rather than in `vetterd` so
+/// `vet doctor` and the daemon agree on which file they are talking
+/// about, exactly as they already do for the socket and audit log.
+///
+/// Pure: never touches the filesystem. Defined on every target
+/// because it is path arithmetic and its tests should run everywhere;
+/// only the Linux `autostart::sys` actually writes here.
+pub fn user_autostart_path() -> Result<PathBuf, PathError> {
+    if let Some(p) = std::env::var_os("VETTER_AUTOSTART_ENTRY") {
+        return Ok(PathBuf::from(p));
+    }
+    if let Some(config) = std::env::var_os("XDG_CONFIG_HOME") {
+        let p = PathBuf::from(config);
+        if !p.as_os_str().is_empty() {
+            return Ok(p.join("autostart").join(AUTOSTART_ENTRY_NAME));
+        }
+    }
+    let home = std::env::var_os("HOME").ok_or(PathError::HomeUnset)?;
+    Ok(PathBuf::from(home)
+        .join(".config/autostart")
+        .join(AUTOSTART_ENTRY_NAME))
+}
+
+/// Basename of the autostart entry. Deliberately *not*
+/// `dev.vetter.daemon.desktop`: that name belongs to the installed
+/// application entry (`share/applications/`, see
+/// `tools/install-desktop.sh`), which exists for identity — the
+/// notification `desktop-entry` hint and the window's Wayland icon.
+/// This is a separate file with a different job and an absolute
+/// `Exec=`, and colliding the two would make uninstalling one break
+/// the other.
+pub const AUTOSTART_ENTRY_NAME: &str = "vetter.desktop";
+
 #[cfg(test)]
 #[path = "tests/paths.rs"]
 mod tests;

@@ -103,6 +103,7 @@ pub fn run(allowlist_override: Option<&Path>) -> ExitCode {
     checks.push(check_parsers());
     checks.extend(check_code_signing());
     checks.push(check_autostart());
+    checks.extend(check_desktop());
 
     print_report(&checks);
 
@@ -862,7 +863,11 @@ fn check_parsers() -> Check {
 ///   fails. The row is omitted when the binaries are not inside an
 ///   `.app` (typical cargo-build path).
 fn check_code_signing() -> Vec<Check> {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        vec![provenance_row(probe_provenance())]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         vec![Check::new("code signing", Status::Skip, "macOS only")]
     }
@@ -1185,6 +1190,429 @@ fn format_uptime(start: SystemTime) -> String {
     }
 }
 
+// ── Linux: provenance and desktop integration ───────────────────────
+
+/// Where the `vetterd` binary came from, as far as the host's package
+/// manager is willing to say.
+///
+/// Deliberately *provenance*, not integrity. The obvious next step —
+/// `rpm -V` / `dpkg --verify` — checksums every file in the owning
+/// package, which can take seconds, and `vet doctor` is a command
+/// people run when something is already wrong. It would also imply a
+/// guarantee we cannot currently deliver: there is no signed Vetter
+/// package yet (packaging is deferred to Phase 6f, `plans/LinuxApp.md`
+/// §4.3), so today the honest answer for essentially every install is
+/// "built from source". Saying that plainly beats running an
+/// expensive check whose only outcome is the same sentence.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Provenance {
+    /// The binary is owned by an installed package.
+    Package(String),
+    /// A package manager answered, and nothing owns this file — the
+    /// expected result for a `cargo build` or a tarball install.
+    Unpackaged,
+    /// Neither `rpm` nor `dpkg-query` is available to ask.
+    NoPackageManager,
+    /// The `vetterd` binary could not be located at all.
+    Unresolved(String),
+}
+
+/// Map a provenance probe onto its row. Pure, so the mapping is
+/// testable without a package manager on the host.
+#[cfg(target_os = "linux")]
+fn provenance_row(p: Provenance) -> Check {
+    match p {
+        Provenance::Package(name) => Check::new(
+            "provenance",
+            Status::Ok,
+            format!("installed from package `{name}`"),
+        ),
+        Provenance::Unpackaged => Check::new(
+            "provenance",
+            Status::Info,
+            "built from source — no package provenance (expected for \
+             `cargo build` and tarball installs)",
+        ),
+        Provenance::NoPackageManager => Check::new(
+            "provenance",
+            Status::Skip,
+            "no rpm or dpkg on this host to attribute the binary",
+        ),
+        Provenance::Unresolved(why) => Check::new(
+            "provenance",
+            Status::Warn,
+            format!("cannot locate the vetterd binary to attribute it: {why}"),
+        ),
+    }
+}
+
+/// Ask the host package manager who owns the `vetterd` binary.
+#[cfg(target_os = "linux")]
+fn probe_provenance() -> Provenance {
+    let path = match crate::daemon::locate_vetterd() {
+        Ok(p) => p,
+        Err(e) => return Provenance::Unresolved(e),
+    };
+    // Resolve symlinks first: package databases record real paths, and
+    // a `~/.local/bin/vetterd` symlink into a packaged location would
+    // otherwise read as unowned.
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+
+    if which("rpm").is_some() {
+        // `-qf` prints the owning package or fails when nothing owns
+        // the file; `--queryformat` keeps the output to a bare name.
+        let out = std::process::Command::new("rpm")
+            .args(["-qf", "--queryformat", "%{NAME}"])
+            .arg(&path)
+            .output();
+        if let Ok(out) = out {
+            if out.status.success() {
+                let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !name.is_empty() {
+                    return Provenance::Package(name);
+                }
+            }
+            return Provenance::Unpackaged;
+        }
+    }
+    if which("dpkg-query").is_some() {
+        let out = std::process::Command::new("dpkg-query")
+            .arg("-S")
+            .arg(&path)
+            .output();
+        if let Ok(out) = out {
+            if out.status.success() {
+                // Output is `package: /path`; take the name before the
+                // first colon.
+                let text = String::from_utf8_lossy(&out.stdout);
+                if let Some(name) = text.split(':').next().map(str::trim) {
+                    if !name.is_empty() {
+                        return Provenance::Package(name.to_string());
+                    }
+                }
+            }
+            return Provenance::Unpackaged;
+        }
+    }
+    Provenance::NoPackageManager
+}
+
+/// First match for `name` on `$PATH`.
+#[cfg(target_os = "linux")]
+fn which(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|c| c.is_file())
+}
+
+/// The Linux-only rows: the desktop services the approval UI rides on,
+/// plus the runtime dir everything else hangs off.
+///
+/// Framing matters here. Most "missing" states below are supported
+/// steady states rather than faults — a session with no tray host
+/// still has notifications and `vet daemon approve`; a notification
+/// server without `actions` still raises banners and the body click
+/// still opens the window. So these rows say what is unavailable *and
+/// what still works*, and reserve WARN for the cases that actually
+/// cost the user a capability they would otherwise have.
+#[cfg(target_os = "linux")]
+fn check_desktop() -> Vec<Check> {
+    let health = query_desktop_health();
+    vec![
+        session_bus_row(probe_session_bus()),
+        runtime_dir_row(probe_runtime_dir()),
+        desktop_entry_row(probe_desktop_entry()),
+        notification_row(health.as_ref()),
+        tray_row(health.as_ref()),
+    ]
+}
+
+#[cfg(not(target_os = "linux"))]
+fn check_desktop() -> Vec<Check> {
+    Vec::new()
+}
+
+/// Fetch [`vetter_core::wire::DesktopHealth`] from the daemon.
+///
+/// `None` whenever the daemon cannot answer — it is down, or it is a
+/// build with no desktop services to report. The rows that depend on
+/// this then say they were not probed rather than guessing, and the
+/// `daemon` row above already tells the user why.
+#[cfg(target_os = "linux")]
+fn query_desktop_health() -> Option<vetter_core::wire::DesktopHealth> {
+    use vetter_core::wire::{MgmtRequest, MgmtResponse};
+    match crate::daemon::query_admin(MgmtRequest::GetDesktopHealth) {
+        Ok(MgmtResponse::DesktopHealth(h)) => Some(h),
+        _ => None,
+    }
+}
+
+/// Outcome of the session-bus probe. Checked directly rather than via
+/// the daemon so the row still answers when the daemon is down —
+/// which is exactly when "is my session bus even there?" is the
+/// question worth answering.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BusProbe {
+    /// Connected to the socket named by `$DBUS_SESSION_BUS_ADDRESS`.
+    Reachable(String),
+    /// The address is set but the socket refused a connection.
+    Unreachable { address: String, why: String },
+    /// The address is set to something we cannot connect to directly
+    /// (a `tcp:` or `autolaunch:` address); not an error, just not
+    /// something this probe can confirm.
+    NotProbeable(String),
+    /// `$DBUS_SESSION_BUS_ADDRESS` is unset.
+    Unset,
+}
+
+#[cfg(target_os = "linux")]
+fn session_bus_row(p: BusProbe) -> Check {
+    match p {
+        BusProbe::Reachable(addr) => Check::new("session bus", Status::Ok, addr),
+        BusProbe::Unreachable { address, why } => Check::new(
+            "session bus",
+            Status::Warn,
+            format!(
+                "{address} is set but not connectable ({why}); notifications, \
+                 tray and the approval window are all unavailable — \
+                 `vet daemon approve` still works"
+            ),
+        ),
+        BusProbe::NotProbeable(addr) => Check::new(
+            "session bus",
+            Status::Info,
+            format!("{addr} (cannot verify this address form directly)"),
+        ),
+        BusProbe::Unset => Check::new(
+            "session bus",
+            Status::Info,
+            "$DBUS_SESSION_BUS_ADDRESS unset — headless session; the daemon \
+             runs without a UI and `vet daemon approve` is the approval path",
+        ),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn probe_session_bus() -> BusProbe {
+    let Some(addr) = std::env::var_os("DBUS_SESSION_BUS_ADDRESS") else {
+        return BusProbe::Unset;
+    };
+    let addr = addr.to_string_lossy().into_owned();
+    // Only `unix:path=` / `unix:abstract=` are worth probing; anything
+    // else we report without claiming to have verified it.
+    let Some(rest) = addr.strip_prefix("unix:") else {
+        return BusProbe::NotProbeable(addr);
+    };
+    let Some(path) = rest.split(',').find_map(|kv| kv.strip_prefix("path=")) else {
+        return BusProbe::NotProbeable(addr);
+    };
+    match std::os::unix::net::UnixStream::connect(path) {
+        Ok(_) => BusProbe::Reachable(addr),
+        Err(e) => BusProbe::Unreachable {
+            address: addr,
+            why: e.to_string(),
+        },
+    }
+}
+
+/// Outcome of the `$XDG_RUNTIME_DIR` probe. The socket, pidfile and
+/// admin socket all live under it, so a wrong-mode or wrong-owner
+/// runtime dir is the one item in this group that is a real problem
+/// rather than a missing nicety.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeDirProbe {
+    Ok(String),
+    Loose { path: String, mode: u32 },
+    Foreign { path: String, owner: u32 },
+    Missing(String),
+    Unset,
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_dir_row(p: RuntimeDirProbe) -> Check {
+    match p {
+        RuntimeDirProbe::Ok(path) => Check::new("runtime dir", Status::Ok, path),
+        RuntimeDirProbe::Loose { path, mode } => Check::new(
+            "runtime dir",
+            Status::Warn,
+            format!("{path} is mode {mode:04o}; expected 0700 (chmod 700 it)"),
+        ),
+        RuntimeDirProbe::Foreign { path, owner } => Check::new(
+            "runtime dir",
+            Status::Error,
+            format!("{path} is owned by uid {owner}, not you"),
+        ),
+        RuntimeDirProbe::Missing(path) => Check::new(
+            "runtime dir",
+            Status::Error,
+            format!("$XDG_RUNTIME_DIR points at {path}, which does not exist"),
+        ),
+        RuntimeDirProbe::Unset => Check::new(
+            "runtime dir",
+            Status::Info,
+            "$XDG_RUNTIME_DIR unset; socket falls back under $TMPDIR",
+        ),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn probe_runtime_dir() -> RuntimeDirProbe {
+    use std::os::unix::fs::MetadataExt as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return RuntimeDirProbe::Unset;
+    };
+    let path = PathBuf::from(&dir);
+    let display = path.display().to_string();
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return RuntimeDirProbe::Missing(display);
+    };
+    if meta.uid() != current_euid() {
+        return RuntimeDirProbe::Foreign {
+            path: display,
+            owner: meta.uid(),
+        };
+    }
+    let mode = meta.permissions().mode() & 0o777;
+    if mode != 0o700 {
+        return RuntimeDirProbe::Loose {
+            path: display,
+            mode,
+        };
+    }
+    RuntimeDirProbe::Ok(display)
+}
+
+/// Whether the application desktop entry is installed.
+///
+/// Invisible when absent, which is why it earns a row: without it
+/// notifications fall back to a generic name and icon, and on Wayland
+/// the approval window gets the compositor's placeholder icon, because
+/// the compositor resolves a window's icon by matching its `app_id`
+/// against an *installed* entry (§5.2). Nothing breaks; it just looks
+/// broken.
+#[cfg(target_os = "linux")]
+fn desktop_entry_row(found: Option<PathBuf>) -> Check {
+    match found {
+        Some(path) => Check::new("desktop entry", Status::Ok, path.display().to_string()),
+        None => Check::new(
+            "desktop entry",
+            Status::Info,
+            "dev.vetter.daemon.desktop not installed — notifications and the \
+             window fall back to a generic name and icon; install with \
+             `tools/install-desktop.sh`",
+        ),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn probe_desktop_entry() -> Option<PathBuf> {
+    let name = "applications/dev.vetter.daemon.desktop";
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
+        if !data.is_empty() {
+            roots.push(PathBuf::from(data));
+        }
+    } else if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join(".local/share"));
+    }
+    roots.push(PathBuf::from("/usr/share"));
+    roots.push(PathBuf::from("/usr/local/share"));
+    roots
+        .into_iter()
+        .map(|r| r.join(name))
+        .find(|p| p.is_file())
+}
+
+/// Notification-server row. `actions` absent is a degradation, not a
+/// failure: banners still appear and the body click still opens the
+/// window (§5.4).
+#[cfg(target_os = "linux")]
+fn notification_row(health: Option<&vetter_core::wire::DesktopHealth>) -> Check {
+    let Some(h) = health else {
+        return Check::new("notifications", Status::Info, "not probed (daemon offline)");
+    };
+    match (&h.notification_server, h.notification_actions) {
+        (Some(name), true) => Check::new(
+            "notifications",
+            Status::Ok,
+            format!("{name}, with action buttons"),
+        ),
+        (Some(name), false) => Check::new(
+            "notifications",
+            Status::Warn,
+            format!(
+                "{name} does not advertise `actions`; banners appear without \
+                 Approve/Reject buttons — click the banner body to open the window"
+            ),
+        ),
+        (None, _) => Check::new(
+            "notifications",
+            Status::Warn,
+            "no notification server on the bus; prompts raise no banner — \
+             use the tray, the window, or `vet daemon approve`",
+        ),
+    }
+}
+
+/// Tray row. Distinguishes "no watcher" from "watcher but no host",
+/// because the second looks identical to a Vetter bug from the
+/// outside: our item registers successfully and then nobody draws it.
+#[cfg(target_os = "linux")]
+fn tray_row(health: Option<&vetter_core::wire::DesktopHealth>) -> Check {
+    let Some(h) = health else {
+        return Check::new("tray", Status::Info, "not probed (daemon offline)");
+    };
+    match (h.tray_watcher, h.tray_host) {
+        (true, true) => Check::new("tray", Status::Ok, "StatusNotifierWatcher with a host"),
+        (true, false) => Check::new(
+            "tray",
+            Status::Warn,
+            "a StatusNotifierWatcher is registered but no host is drawing items; \
+             the tray icon will not appear (GNOME: enable the AppIndicator extension)",
+        ),
+        (false, _) => Check::new(
+            "tray",
+            Status::Info,
+            "no StatusNotifierWatcher; no tray icon — notifications, \
+             `vet daemon open` and `vet daemon approve` are unaffected",
+        ),
+    }
+}
+
+/// Per-platform wording for the `autostart` row. Split as constants
+/// rather than branched inline so the macOS strings stay byte-for-byte
+/// what they were before Linux gained a real backend — that output is
+/// validated on a Mac and must not drift as a side effect of this
+/// file becoming cross-platform.
+#[cfg(target_os = "macos")]
+const AUTOSTART_ENABLED_DETAIL: &str = "enabled (login item registered)";
+#[cfg(target_os = "macos")]
+const AUTOSTART_NOT_FOUND_DETAIL: &str =
+    "bundle not registered (try `vet daemon autostart enable`)";
+#[cfg(target_os = "macos")]
+const AUTOSTART_UNSUPPORTED_DETAIL: &str = "needs macOS 13+ inside Vetter.app";
+
+#[cfg(target_os = "linux")]
+const AUTOSTART_ENABLED_DETAIL: &str = "enabled (~/.config/autostart/vetter.desktop)";
+#[cfg(target_os = "linux")]
+const AUTOSTART_NOT_FOUND_DETAIL: &str = "autostart entry names a binary that is no longer there; \
+     re-run `vet daemon autostart enable`";
+#[cfg(target_os = "linux")]
+const AUTOSTART_UNSUPPORTED_DETAIL: &str =
+    "cannot resolve ~/.config/autostart (no $HOME or $XDG_CONFIG_HOME)";
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+const AUTOSTART_ENABLED_DETAIL: &str = "enabled";
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+const AUTOSTART_NOT_FOUND_DETAIL: &str = "not registered";
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+const AUTOSTART_UNSUPPORTED_DETAIL: &str = "no autostart backend on this platform";
+
 /// Build the `autostart` row.
 ///
 /// Reports whether `Vetter.app` is registered as a macOS Login
@@ -1197,16 +1625,13 @@ fn format_uptime(start: SystemTime) -> String {
 /// daemon is not reachable, so the user at least sees their
 /// persisted preference.
 fn check_autostart() -> Check {
-    if !cfg!(target_os = "macos") {
-        return Check::new("autostart", Status::Skip, "macOS only");
-    }
     use vetter_core::settings::AutostartStatus;
     use vetter_core::wire::{MgmtRequest, MgmtResponse};
 
     match crate::daemon::query_admin(MgmtRequest::GetAutostart) {
         Ok(MgmtResponse::AutostartState { desired, status }) => match status {
             AutostartStatus::Enabled => {
-                Check::new("autostart", Status::Ok, "enabled (login item registered)")
+                Check::new("autostart", Status::Ok, AUTOSTART_ENABLED_DETAIL)
             }
             AutostartStatus::NotRegistered => {
                 let detail = if desired {
@@ -1224,16 +1649,12 @@ fn check_autostart() -> Check {
                 Status::Warn,
                 "requires approval; open System Settings -> General -> Login Items",
             ),
-            AutostartStatus::NotFound => Check::new(
-                "autostart",
-                Status::Warn,
-                "bundle not registered (try `vet daemon autostart enable`)",
-            ),
-            AutostartStatus::Unsupported => Check::new(
-                "autostart",
-                Status::Skip,
-                "needs macOS 13+ inside Vetter.app",
-            ),
+            AutostartStatus::NotFound => {
+                Check::new("autostart", Status::Warn, AUTOSTART_NOT_FOUND_DETAIL)
+            }
+            AutostartStatus::Unsupported => {
+                Check::new("autostart", Status::Skip, AUTOSTART_UNSUPPORTED_DETAIL)
+            }
         },
         Ok(MgmtResponse::Error { message }) => Check::new(
             "autostart",
@@ -1268,3 +1689,7 @@ fn check_autostart() -> Check {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/doctor.rs"]
+mod tests;

@@ -89,11 +89,13 @@ mod bundle_guard {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod stub_impl {
-    //! On non-macOS targets the entire SMAppService path is
-    //! unreachable; the CLI / popover / doctor row should observe a
-    //! consistent "unsupported" state without blowing up the daemon.
+    //! On targets with no autostart backend at all the entire
+    //! registration path is unreachable; the CLI / popover / doctor
+    //! row should observe a consistent "unsupported" state without
+    //! blowing up the daemon. Linux has a real backend as of Phase
+    //! 6e and is covered by `linux_entry` below instead.
     use super::*;
 
     #[test]
@@ -120,6 +122,203 @@ mod stub_impl {
         // because `~/.vet/settings.yaml` says `autostart: true`).
         assert!(!reconcile_with_settings(true).unwrap());
         assert!(!reconcile_with_settings(false).unwrap());
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux_entry {
+    //! Phase 6e. Autostart on Linux is a file, so unlike the macOS
+    //! backend it is fully testable without a desktop session: every
+    //! state below is a directory we build in a tempdir.
+    use std::path::{Path, PathBuf};
+
+    use super::super::sys;
+    use super::*;
+
+    /// A real, existing binary to point `Exec=` at. Using the test
+    /// binary itself means "the target exists" is true for reasons
+    /// that survive the tempdir being cleaned up.
+    fn real_exe() -> PathBuf {
+        std::env::current_exe().expect("test binary path")
+    }
+
+    fn entry_in(dir: &Path) -> PathBuf {
+        dir.join("autostart").join("vetter.desktop")
+    }
+
+    #[test]
+    fn absent_entry_reads_as_not_registered() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            sys::current_at(&entry_in(dir.path())),
+            AutostartStatus::NotRegistered
+        );
+    }
+
+    #[test]
+    fn written_entry_reads_as_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = entry_in(dir.path());
+        sys::write_entry_at(&path, &real_exe()).expect("write entry");
+        assert_eq!(sys::current_at(&path), AutostartStatus::Enabled);
+    }
+
+    #[test]
+    fn write_then_remove_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = entry_in(dir.path());
+        sys::write_entry_at(&path, &real_exe()).unwrap();
+        assert!(path.exists());
+        sys::remove_entry_at(&path).unwrap();
+        assert!(!path.exists());
+        assert_eq!(sys::current_at(&path), AutostartStatus::NotRegistered);
+    }
+
+    #[test]
+    fn removing_an_absent_entry_is_success() {
+        // `reconcile_with_settings` calls `disable()` without first
+        // checking, and Apple's `unregister` is a no-op when never
+        // registered. Keep the two backends symmetric.
+        let dir = tempfile::tempdir().unwrap();
+        sys::remove_entry_at(&entry_in(dir.path())).expect("absent removal is not an error");
+    }
+
+    #[test]
+    fn entry_is_world_readable_but_directory_is_not() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = entry_in(dir.path());
+        sys::write_entry_at(&path, &real_exe()).unwrap();
+        let entry_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let dir_mode = std::fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(entry_mode, 0o644, "desktop entries are conventionally 0644");
+        assert_eq!(dir_mode, 0o700, "but the directory stays user-private");
+    }
+
+    #[test]
+    fn hidden_true_reads_as_not_registered() {
+        // The XDG spec's way of saying "the user deleted this".
+        let dir = tempfile::tempdir().unwrap();
+        let path = entry_in(dir.path());
+        sys::write_entry_at(&path, &real_exe()).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap() + "Hidden=true\n";
+        std::fs::write(&path, contents).unwrap();
+        assert_eq!(sys::current_at(&path), AutostartStatus::NotRegistered);
+    }
+
+    #[test]
+    fn gnome_disabled_flag_reads_as_not_registered() {
+        // What GNOME Tweaks writes when you untick an application.
+        // Missing this would let `reconcile_with_settings` silently
+        // re-enable autostart the user had just switched off.
+        let dir = tempfile::tempdir().unwrap();
+        let path = entry_in(dir.path());
+        sys::write_entry_at(&path, &real_exe()).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap().replace(
+            "X-GNOME-Autostart-enabled=true",
+            "X-GNOME-Autostart-enabled=false",
+        );
+        std::fs::write(&path, contents).unwrap();
+        assert_eq!(sys::current_at(&path), AutostartStatus::NotRegistered);
+    }
+
+    #[test]
+    fn stale_exec_target_reads_as_not_found() {
+        // The failure mode this backend has and SMAppService does not:
+        // the entry still exists, but the binary it names has moved.
+        let dir = tempfile::tempdir().unwrap();
+        let path = entry_in(dir.path());
+        let ghost = dir.path().join("moved-away-vetterd");
+        std::fs::write(&ghost, b"#!/bin/true\n").unwrap();
+        sys::write_entry_at(&path, &ghost).unwrap();
+        assert_eq!(sys::current_at(&path), AutostartStatus::Enabled);
+        std::fs::remove_file(&ghost).unwrap();
+        assert_eq!(sys::current_at(&path), AutostartStatus::NotFound);
+    }
+
+    #[test]
+    fn entry_without_exec_reads_as_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = entry_in(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[Desktop Entry]\nType=Application\nName=Vetter\n").unwrap();
+        assert_eq!(sys::current_at(&path), AutostartStatus::NotFound);
+    }
+
+    #[test]
+    fn relative_exec_is_not_called_missing() {
+        // A bare command name is resolved against $PATH by the session
+        // at login. We cannot reproduce that here, so we must not
+        // claim it is broken.
+        let dir = tempfile::tempdir().unwrap();
+        let path = entry_in(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[Desktop Entry]\nExec=vetterd\n").unwrap();
+        assert_eq!(sys::current_at(&path), AutostartStatus::Enabled);
+    }
+
+    #[test]
+    fn exec_path_with_spaces_round_trips() {
+        // Quoting has to survive the write/read pair, or an install
+        // under "~/My Apps/" would produce an entry that launches the
+        // wrong thing — or nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let spaced = dir.path().join("dir with spaces");
+        std::fs::create_dir_all(&spaced).unwrap();
+        let exe = spaced.join("vetterd");
+        std::fs::write(&exe, b"#!/bin/true\n").unwrap();
+        let path = entry_in(dir.path());
+        sys::write_entry_at(&path, &exe).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(sys::exec_target(&contents).as_deref(), Some(exe.as_path()));
+        assert_eq!(sys::current_at(&path), AutostartStatus::Enabled);
+    }
+
+    #[test]
+    fn commented_out_hidden_is_not_a_setting() {
+        // The entry we write ends with comment lines; a naive parser
+        // that ignored `#` would be one stray comment away from
+        // reporting a live entry as disabled.
+        assert!(!sys::is_disabled("[Desktop Entry]\n#Hidden=true\n"));
+        assert!(sys::is_disabled("[Desktop Entry]\nHidden=true\n"));
+    }
+
+    #[test]
+    fn rendered_entry_is_a_desktop_entry_naming_the_binary() {
+        let rendered = sys::render_entry(Path::new("/usr/bin/vetterd"));
+        assert!(rendered.starts_with("[Desktop Entry]\n"));
+        assert!(rendered.contains("Type=Application"));
+        assert!(rendered.contains("Exec=\"/usr/bin/vetterd\""));
+        assert_eq!(
+            sys::exec_target(&rendered).as_deref(),
+            Some(Path::new("/usr/bin/vetterd"))
+        );
+    }
+
+    #[test]
+    fn requires_approval_is_never_returned() {
+        // There is nothing to approve: writing a file in your own
+        // config directory needs no permission. The macOS rollback UI
+        // for that state must stay unreachable here.
+        let dir = tempfile::tempdir().unwrap();
+        let path = entry_in(dir.path());
+        for setup in [None, Some("Hidden=true\n"), Some("Exec=/nonexistent/x\n")] {
+            match setup {
+                None => {
+                    sys::write_entry_at(&path, &real_exe()).unwrap();
+                }
+                Some(extra) => {
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(&path, format!("[Desktop Entry]\n{extra}")).unwrap();
+                }
+            }
+            assert_ne!(sys::current_at(&path), AutostartStatus::RequiresApproval);
+        }
     }
 }
 

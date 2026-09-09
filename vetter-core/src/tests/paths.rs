@@ -167,3 +167,64 @@ fn audit_returns_home_unset_when_home_is_missing_on_macos() {
     let _h = Guard::unset("HOME");
     assert!(matches!(default_audit_path(), Err(PathError::HomeUnset)));
 }
+
+// ── XDG autostart entry (Phase 6e) ──────────────────────────────────
+
+#[test]
+fn autostart_env_override_wins() {
+    let _g = lock();
+    let _e = Guard::set("VETTER_AUTOSTART_ENTRY", "/explicit/entry.desktop");
+    assert_eq!(
+        user_autostart_path().unwrap(),
+        PathBuf::from("/explicit/entry.desktop")
+    );
+}
+
+#[test]
+fn autostart_prefers_xdg_config_home() {
+    let _g = lock();
+    let _e = Guard::unset("VETTER_AUTOSTART_ENTRY");
+    let _c = Guard::set("XDG_CONFIG_HOME", "/cfg");
+    let _h = Guard::set("HOME", "/home/somebody");
+    assert_eq!(
+        user_autostart_path().unwrap(),
+        PathBuf::from("/cfg/autostart/vetter.desktop")
+    );
+}
+
+#[test]
+fn autostart_falls_back_to_home_dot_config() {
+    let _g = lock();
+    let _e = Guard::unset("VETTER_AUTOSTART_ENTRY");
+    let _c = Guard::unset("XDG_CONFIG_HOME");
+    let _h = Guard::set("HOME", "/home/somebody");
+    assert_eq!(
+        user_autostart_path().unwrap(),
+        PathBuf::from("/home/somebody/.config/autostart/vetter.desktop")
+    );
+}
+
+#[test]
+fn autostart_ignores_an_empty_xdg_config_home() {
+    // An exported-but-empty variable is a real shell footgun; treating
+    // it as a path root would resolve the entry to `/autostart/...`.
+    let _g = lock();
+    let _e = Guard::unset("VETTER_AUTOSTART_ENTRY");
+    let _c = Guard::set("XDG_CONFIG_HOME", "");
+    let _h = Guard::set("HOME", "/home/somebody");
+    assert_eq!(
+        user_autostart_path().unwrap(),
+        PathBuf::from("/home/somebody/.config/autostart/vetter.desktop")
+    );
+}
+
+#[test]
+fn autostart_entry_is_not_the_application_entry() {
+    // `vetter.desktop` (autostart, absolute Exec) and
+    // `dev.vetter.daemon.desktop` (identity, installed by
+    // tools/install-desktop.sh) are different files with different
+    // jobs. Colliding them would make uninstalling one break the
+    // other.
+    assert_eq!(AUTOSTART_ENTRY_NAME, "vetter.desktop");
+    assert_ne!(AUTOSTART_ENTRY_NAME, "dev.vetter.daemon.desktop");
+}

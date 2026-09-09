@@ -41,11 +41,21 @@
 //! ## Cross-platform shape
 //!
 //! The whole module compiles on every target so `wire`, `lib.rs`, and
-//! the CLI can call into it without `cfg` gates. On non-macOS targets
-//! [`current`] returns [`AutostartStatus::Unsupported`] and
-//! [`enable`] / [`disable`] both return [`AutostartError::Unavailable`]
-//! immediately. This matches the project's "Linux support is Phase 6"
-//! posture without forcing every caller to branch on `target_os`.
+//! the CLI can call into it without `cfg` gates. Three backends sit
+//! behind one API:
+//!
+//! - **macOS** — `SMAppService`, described above.
+//! - **Linux** — an XDG autostart entry at
+//!   `$XDG_CONFIG_HOME/autostart/vetter.desktop`. Autostart there is a
+//!   file rather than an API (`plans/LinuxApp.md` §5.3), so `current`
+//!   is a filesystem read and [`AutostartStatus::RequiresApproval`] is
+//!   never returned.
+//! - **Everything else** — a stub where [`current`] answers
+//!   [`AutostartStatus::Unsupported`] and the mutators refuse.
+//!
+//! [`reconcile_with_settings`] no-ops only on `Unsupported`, so it
+//! started converging real state on Linux the moment that backend
+//! landed, with no change of its own.
 
 // `AutostartStatus` lives in `vetter_core::settings` so the
 // admin-socket wire module can reference it without pulling in the
@@ -72,6 +82,15 @@ pub enum AutostartError {
     /// formatted into a Rust string.
     #[error("SMAppService {op} failed: {message}")]
     Apple { op: &'static str, message: String },
+    /// Writing or removing the XDG autostart entry failed. Linux-only:
+    /// there autostart *is* a file, so filesystem errors are a real
+    /// failure mode that `SMAppService` never had (§5.3).
+    #[error("autostart entry {path}: {source}")]
+    Io {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 // ── macOS implementation ────────────────────────────────────────────
@@ -181,9 +200,262 @@ mod sys {
     }
 }
 
-// ── non-macOS stub ──────────────────────────────────────────────────
+// ── Linux implementation (XDG autostart) ────────────────────────────
 
-#[cfg(not(target_os = "macos"))]
+/// Linux autostart is a *file*, not an API (`plans/LinuxApp.md` §5.3):
+/// the session manager runs every `.desktop` entry it finds under
+/// `$XDG_CONFIG_HOME/autostart/` at login. So `enable` writes an
+/// entry, `disable` removes it, and `current` reads the filesystem.
+///
+/// Three consequences fall out of that, all of which shape the code
+/// below:
+///
+/// - `current()` is a stat plus a small parse rather than an IPC
+///   round-trip, so the "cheap enough to call on every window open"
+///   property macOS relies on still holds.
+/// - [`AutostartStatus::RequiresApproval`] has no analogue — nothing
+///   gates writing a file in your own config directory — and is never
+///   returned here.
+/// - The entry pins an **absolute** `Exec=`, so it silently stops
+///   working if the binary moves. That is the one place this is worse
+///   than `SMAppService`, which resolves a bundle through Launch
+///   Services. [`current`] therefore stats the recorded `Exec` target
+///   and reports [`AutostartStatus::NotFound`] when it has gone, which
+///   is exactly the actionable state `vet doctor` wants to surface.
+#[cfg(target_os = "linux")]
+mod sys {
+    use std::path::{Path, PathBuf};
+
+    use vetter_core::fs_secure::{create_dir_secure, persist_at_mode};
+
+    use super::{AutostartError, AutostartStatus};
+
+    /// Mode for the entry itself. Deliberately `0644` rather than the
+    /// `0600` used for `settings.yaml` and the audit log: the file
+    /// holds no secrets — just a path that is already visible in
+    /// `/proc` to anyone who can see the process — and `.desktop`
+    /// entries are conventionally world-readable. The containing
+    /// directory is created `0700` regardless, so nothing new is
+    /// exposed to other UIDs.
+    const ENTRY_MODE: u32 = 0o644;
+
+    pub fn current() -> AutostartStatus {
+        match vetter_core::paths::user_autostart_path() {
+            Ok(path) => current_at(&path),
+            // No `$HOME` and no `$XDG_CONFIG_HOME`: we cannot even
+            // name the file, let alone read it. That is a genuinely
+            // unsupported environment rather than "disabled".
+            Err(_) => AutostartStatus::Unsupported,
+        }
+    }
+
+    pub fn enable() -> Result<(), AutostartError> {
+        let exe =
+            std::env::current_exe().map_err(|e| AutostartError::Unavailable(e.to_string()))?;
+        let path = entry_path()?;
+        write_entry_at(&path, &exe)
+    }
+
+    pub fn disable() -> Result<(), AutostartError> {
+        let path = entry_path()?;
+        remove_entry_at(&path)
+    }
+
+    fn entry_path() -> Result<PathBuf, AutostartError> {
+        vetter_core::paths::user_autostart_path()
+            .map_err(|e| AutostartError::Unavailable(e.to_string()))
+    }
+
+    /// Read the entry at `path` and classify it.
+    ///
+    /// A read error maps to `NotRegistered` rather than to an error
+    /// state, for the same reason the macOS driver falls back that
+    /// way on an unknown status code: never claim autostart is *on*
+    /// when we could not actually determine it.
+    pub(crate) fn current_at(path: &Path) -> AutostartStatus {
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            return AutostartStatus::NotRegistered;
+        };
+        if is_disabled(&contents) {
+            return AutostartStatus::NotRegistered;
+        }
+        match exec_target(&contents) {
+            // An entry with no usable `Exec=` would never launch
+            // anything. Report it as `NotFound` rather than
+            // `Enabled`: the row should push the user to re-run
+            // `enable` rather than reassure them.
+            None => AutostartStatus::NotFound,
+            Some(target) => {
+                // Only an absolute path can be checked here. A bare
+                // command name is resolved against `$PATH` by the
+                // session at login, which we cannot reproduce, so we
+                // decline to call it missing.
+                if target.is_absolute() && !target.exists() {
+                    AutostartStatus::NotFound
+                } else {
+                    AutostartStatus::Enabled
+                }
+            }
+        }
+    }
+
+    /// Whether the entry is present but switched off.
+    ///
+    /// Two spellings are honoured because two ecosystems write them:
+    /// `Hidden=true` is the XDG spec's "the user deleted this entry",
+    /// and `X-GNOME-Autostart-enabled=false` is what GNOME Tweaks
+    /// writes when you untick an application. A user who disabled us
+    /// through their desktop's own UI must not have the daemon report
+    /// `Enabled` — and, via `reconcile_with_settings`, silently
+    /// re-enable it on the next launch.
+    pub(crate) fn is_disabled(contents: &str) -> bool {
+        field(contents, "Hidden").is_some_and(|v| v.eq_ignore_ascii_case("true"))
+            || field(contents, "X-GNOME-Autostart-enabled")
+                .is_some_and(|v| v.eq_ignore_ascii_case("false"))
+    }
+
+    /// The binary an entry would launch, if we can determine it.
+    pub(crate) fn exec_target(contents: &str) -> Option<PathBuf> {
+        let raw = field(contents, "Exec")?;
+        let first = first_argument(raw)?;
+        if first.is_empty() {
+            return None;
+        }
+        Some(PathBuf::from(first))
+    }
+
+    /// Value of `Key=` in the entry, trimmed.
+    ///
+    /// Deliberately naive about groups: our entries have exactly one
+    /// (`[Desktop Entry]`), and a parser that tracked group headers
+    /// would be more code defending against a file we wrote
+    /// ourselves. Comment lines are skipped so a `#Hidden=true` note
+    /// is not read as a setting.
+    fn field<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
+        contents.lines().find_map(|line| {
+            let line = line.trim();
+            if line.starts_with('#') {
+                return None;
+            }
+            let (k, v) = line.split_once('=')?;
+            (k.trim() == key).then(|| v.trim())
+        })
+    }
+
+    /// First argument of an `Exec=` value, unquoted.
+    ///
+    /// The desktop-entry spec allows the program to be double-quoted
+    /// with backslash escapes, which is how [`render_entry`] writes a
+    /// path containing spaces. Anything else is taken up to the first
+    /// space. Field codes (`%f`, `%U`) never appear in our own entry
+    /// and are irrelevant to the first token.
+    fn first_argument(raw: &str) -> Option<String> {
+        let raw = raw.trim();
+        if let Some(rest) = raw.strip_prefix('"') {
+            let mut out = String::new();
+            let mut chars = rest.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => out.push(chars.next()?),
+                    '"' => return Some(out),
+                    _ => out.push(c),
+                }
+            }
+            // Unterminated quote: malformed, and we should not guess.
+            None
+        } else {
+            Some(raw.split_whitespace().next()?.to_string())
+        }
+    }
+
+    /// Render the autostart entry for `exec`.
+    ///
+    /// `Exec` is always quoted and escaped so a path containing a
+    /// space or a quote round-trips through [`exec_target`] instead of
+    /// producing an entry that launches the wrong thing.
+    pub(crate) fn render_entry(exec: &Path) -> String {
+        let quoted = quote_exec(&exec.display().to_string());
+        format!(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Vetter\n\
+             Comment=Approve or reject commands an AI agent wants to run\n\
+             Exec={quoted}\n\
+             Icon=dev.vetter.daemon\n\
+             Terminal=false\n\
+             X-GNOME-Autostart-enabled=true\n\
+             # Written by `vet daemon autostart enable`. The Exec path is\n\
+             # absolute and pinned at that moment: if the binary moves,\n\
+             # `vet doctor` reports the autostart row as `not found`.\n"
+        )
+    }
+
+    /// Double-quote and escape a value per the desktop-entry spec's
+    /// quoting rules (backslash, double quote, backtick, dollar).
+    fn quote_exec(value: &str) -> String {
+        let mut out = String::with_capacity(value.len() + 2);
+        out.push('"');
+        for c in value.chars() {
+            if matches!(c, '\\' | '"' | '`' | '$') {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out.push('"');
+        out
+    }
+
+    /// Write the entry atomically, creating `~/.config/autostart` if
+    /// needed. Same temp-then-rename discipline as the settings and
+    /// allowlist writers, so a kill mid-write leaves the previous
+    /// entry intact rather than a truncated one the session manager
+    /// would choke on at next login.
+    pub(crate) fn write_entry_at(path: &Path, exec: &Path) -> Result<(), AutostartError> {
+        let io_err = |p: &Path| {
+            let p = p.display().to_string();
+            move |source: std::io::Error| AutostartError::Io {
+                path: p.clone(),
+                source,
+            }
+        };
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            create_dir_secure(parent, 0o700).map_err(io_err(parent))?;
+        }
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+        let tmp = match parent {
+            Some(p) => tempfile::NamedTempFile::new_in(p),
+            None => tempfile::NamedTempFile::new_in("."),
+        }
+        .map_err(io_err(path))?;
+        {
+            use std::io::Write as _;
+            let mut handle = tmp.as_file();
+            handle
+                .write_all(render_entry(exec).as_bytes())
+                .map_err(io_err(path))?;
+            handle.flush().map_err(io_err(path))?;
+        }
+        persist_at_mode(tmp, path, ENTRY_MODE).map_err(io_err(path))
+    }
+
+    /// Remove the entry. Idempotent: a missing file is success, which
+    /// keeps `disable` symmetric with Apple's no-op `unregister` and
+    /// lets `reconcile_with_settings` call it without checking first.
+    pub(crate) fn remove_entry_at(path: &Path) -> Result<(), AutostartError> {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(AutostartError::Io {
+                path: path.display().to_string(),
+                source,
+            }),
+        }
+    }
+}
+
+// ── stub for every other target ─────────────────────────────────────
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod sys {
     use super::{AutostartError, AutostartStatus};
 
@@ -193,13 +465,13 @@ mod sys {
 
     pub fn enable() -> Result<(), AutostartError> {
         Err(AutostartError::Unavailable(
-            "autostart only supported on macOS targets".into(),
+            "autostart supported on macOS and Linux targets only".into(),
         ))
     }
 
     pub fn disable() -> Result<(), AutostartError> {
         Err(AutostartError::Unavailable(
-            "autostart only supported on macOS targets".into(),
+            "autostart supported on macOS and Linux targets only".into(),
         ))
     }
 }

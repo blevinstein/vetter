@@ -42,6 +42,8 @@ pub mod runloop;
 // scope. The alternative — the `runloop/mac/` move TODO Phase 6 PR 1
 // describes — edits macOS-gated code that cannot be compiled here.
 #[cfg(target_os = "linux")]
+pub mod desktop_health;
+#[cfg(target_os = "linux")]
 #[path = "runloop/linux/mod.rs"]
 pub mod runloop;
 pub mod socket;
@@ -653,6 +655,7 @@ fn handle_admin_request(ctx: &Arc<Context>, req: MgmtRequest) -> MgmtResponse {
             reason,
         } => handle_resolve(ctx, &id, decision, reason.as_deref()),
         MgmtRequest::OpenWindow => handle_open_window(),
+        MgmtRequest::GetDesktopHealth => handle_desktop_health(),
         MgmtRequest::GetAutostart => {
             // Read both: settings.yaml (the user's persisted
             // preference) and SMAppService (the live OS state). The
@@ -835,6 +838,26 @@ fn match_pending_id(pending: &[String], id: &str) -> Result<String, String> {
                 list = matches.join(", "),
             ))
         }
+    }
+}
+
+/// Answer [`MgmtRequest::GetDesktopHealth`].
+///
+/// Split by `cfg` rather than branched at runtime so the macOS arm is
+/// a compile-time fact: there is no D-Bus session there and nothing
+/// this could truthfully report, so it says so rather than inventing
+/// a shape for a platform that has none.
+#[cfg(target_os = "linux")]
+fn handle_desktop_health() -> MgmtResponse {
+    MgmtResponse::DesktopHealth(crate::desktop_health::probe())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn handle_desktop_health() -> MgmtResponse {
+    MgmtResponse::Error {
+        message: "desktop health probing is Linux-only; \
+                  this daemon has no D-Bus desktop services to report"
+            .into(),
     }
 }
 

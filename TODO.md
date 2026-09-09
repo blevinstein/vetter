@@ -781,6 +781,31 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
       without a display rather than reporting a raise that will not
       happen.
 
+### PR 4c — Autostart + `vet doctor` parity  `[x] done`
+
+Landed 2026-09-08. Full detail in
+[plans/LinuxApp.md](plans/LinuxApp.md) §6e.
+
+- [x] `autostart::sys` for Linux: writes / removes
+      `~/.config/autostart/vetter.desktop`, `current()` is a
+      filesystem read. Honours both `Hidden=true` and
+      `X-GNOME-Autostart-enabled=false`, and reports `NotFound` when
+      the entry's pinned absolute `Exec` no longer exists.
+- [x] Footer **Start at login** goes live (was insensitive in PR 4).
+- [x] `vet doctor` autostart row reports real state; macOS wording
+      unchanged. `vet daemon autostart`'s CLI wording split the same
+      way — it was telling Linux users about "login items".
+- [x] `code signing` becomes a `provenance` row on Linux: package
+      ownership via `rpm -qf` / `dpkg-query -S`, *not* `rpm -V`
+      integrity verification (slow, and would imply a guarantee that
+      does not exist until packaging lands in PR 5/6).
+- [x] New Linux rows: session bus, runtime dir, desktop entry,
+      notifications (+`actions`), tray (watcher vs. host).
+      The bus-dependent two are answered by the daemon over
+      `MgmtRequest::GetDesktopHealth` rather than probed by `vet`,
+      which is exec'd on every wrapped command and should not link a
+      D-Bus stack to serve one diagnostic.
+
 ### PR 4b — GTK visual polish
 
 Deferred from PR 4 on 2026-09-08 after driving the card catalogue on

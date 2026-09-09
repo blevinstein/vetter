@@ -423,12 +423,29 @@ fn autostart_set(enabled: bool) -> ExitCode {
 
 fn print_autostart_state(desired: bool, status: vetter_core::settings::AutostartStatus) {
     use vetter_core::settings::AutostartStatus as S;
+    // Wording is per-platform because the mechanisms are: macOS
+    // registers a Login Item with `SMAppService`, Linux writes an XDG
+    // autostart entry (`plans/LinuxApp.md` §5.3). Telling a Linux user
+    // their "login item" is registered would send them looking through
+    // System Settings for something that is a file in their home
+    // directory. The macOS strings are unchanged.
+    #[cfg(not(target_os = "linux"))]
     let extra = match status {
         S::Enabled => " (login item registered)",
         S::NotRegistered => " (not registered)",
         S::RequiresApproval => " (waiting for user approval in System Settings → Login Items)",
         S::NotFound => " (the system cannot resolve Vetter.app)",
         S::Unsupported => " (autostart only available on macOS 13+ inside Vetter.app)",
+    };
+    #[cfg(target_os = "linux")]
+    let extra = match status {
+        S::Enabled => " (~/.config/autostart/vetter.desktop written)",
+        S::NotRegistered => " (no autostart entry)",
+        // Unreachable on Linux — nothing gates writing a file in your
+        // own config dir — but the match must stay exhaustive.
+        S::RequiresApproval => " (awaiting approval)",
+        S::NotFound => " (entry present but the binary it names is gone; re-run enable)",
+        S::Unsupported => " (cannot resolve ~/.config/autostart; is $HOME set?)",
     };
     println!(
         "vet daemon autostart: {label}{extra}\n  preference: autostart = {desired}",

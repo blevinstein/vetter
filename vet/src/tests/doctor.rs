@@ -8,6 +8,7 @@
 //! `probe_*` half that touches the world and a pure half that takes
 //! the outcome as an argument; these cover the pure half.
 
+#[cfg(target_os = "linux")]
 use super::*;
 
 /// A row must never claim a capability the probe did not observe.

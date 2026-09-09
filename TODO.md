@@ -806,7 +806,7 @@ Landed 2026-09-08. Full detail in
       which is exec'd on every wrapped command and should not link a
       D-Bus stack to serve one diagnostic.
 
-### PR 4b — GTK visual polish
+### PR 4b — GTK visual polish  `[x] done 2026-09-09`
 
 Deferred from PR 4 on 2026-09-08 after driving the card catalogue on
 Plasma: the surface is functionally right but reads rougher than the
@@ -814,15 +814,15 @@ AppKit popover. Full checklist in
 [plans/LinuxApp.md](plans/LinuxApp.md) §6h; the acceptance test is a
 side-by-side screenshot against macOS.
 
-- [ ] Audit every element against
+- [x] Audit every element against
       [plans/ApprovalUI.md](plans/ApprovalUI.md) and record which
       divergences are deliberate and which are accidental.
-- [ ] Spacing / padding / radii / card separation.
-- [ ] Typography and the URL-row-to-pill optical match.
-- [ ] Light **and** dark palette fidelity (semantic tones already
+- [x] Spacing / padding / radii / card separation.
+- [x] Typography and the URL-row-to-pill optical match.
+- [x] Light **and** dark palette fidelity (semantic tones already
       live in `cards::`; this is the per-platform mapping).
-- [ ] Repaint on live theme switch (~2 lines, noted in §6h).
-- [ ] Window default/minimum size, scrolling, empty-queue state.
+- [x] Repaint on live theme switch (~2 lines, noted in §6h).
+- [x] Window default/minimum size, scrolling, empty-queue state.
 
 ### PR 5 — `.deb` packaging + systemd user service
 

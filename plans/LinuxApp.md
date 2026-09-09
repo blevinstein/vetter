@@ -605,43 +605,71 @@ card plumbing and step 3 built the pickers.
       rather than only decided blind. `request_show(Some(id))` from
       6d step 4 is the call.
 
-### Phase 6h — Visual polish `[ ]`
+### Phase 6h — Visual polish `[x]` **done 2026-09-09**
 
-Deferred deliberately. 6d steps 1–3 optimise for *correct* — the right
-rows, the right suppression rules, no markup injection — and the
-result works but reads noticeably rougher than the AppKit popover.
-Polish is cheaper as one deliberate pass over a finished surface than
-as guesswork spread across three feature steps, so it lives here.
+Done. The reference is [ApprovalUI.md](ApprovalUI.md); the work was
+checked against screenshots in both themes rather than reasoned about,
+using a nested `Xephyr` display so the window could be captured
+deterministically instead of fighting the compositor for stacking
+order.
 
-The reference is [ApprovalUI.md](ApprovalUI.md): its element catalogue
-is normative for both platforms, and the honest test of this phase is
-a side-by-side screenshot against the macOS popover.
+#### Divergence audit vs. `ApprovalUI.md`
 
-- [ ] Audit each element against `ApprovalUI.md` — tinted pill recipe,
-      signal pills, URL row, effect rows, show-raw disclosure, body
-      colouring, dry-run wrapper, card chrome — and record where GTK
-      diverges and whether the divergence is deliberate (GNOME HIG,
-      platform idiom) or accidental (nobody chose it).
-- [ ] Spacing, padding, corner radii and card separation. AppKit's
-      defaults did a lot of unearned work here that GTK does not.
-- [ ] Typography: monospace face and size for URL / raw body, label
-      weights, and the optical match between the URL row and the
-      pills that sit beside it.
-- [ ] Palette fidelity in **both** light and dark. The host-trust and
-      signal tones are semantic in `cards::` and mapped per platform,
-      so this is a mapping review, not a redesign.
-- [ ] Live theme switching. The palette is currently selected once per
-      refresh via `gtk_application_prefer_dark_theme`, so a theme
-      change only repaints on the next queue change. Fix is roughly
-      two lines: `connect_gtk_application_prefer_dark_theme_notify` →
-      `request_refresh`. Left out of 6d step 2 as out of scope.
-- [ ] Window sizing: sensible default and minimum, scroll behaviour
-      with many cards, and what an empty queue should look like.
-- [ ] Decide whether to ship a `.css` provider and, if so, whether to
-      honour a user override. `~/.config/vetter/icon.css` appears in
-      the old docs as a path that never existed (§3.3) — if we add a
-      style hook, add it deliberately and document it, rather than
-      resurrecting that ghost.
+| Element | Status | Divergence |
+|---|---|---|
+| Tinted pill recipe | matches | `alpha(@color, 0.22)` in CSS is the literal translation of `pill_bg_for` |
+| Popover appearance | **deliberate** | macOS *pins* Dark Aqua because its tones were calibrated for a dark ground. A GTK window ignoring the user's theme would look broken beside every other app, so we track the theme and carry two markup palettes instead |
+| Signal pills | matches | dedupe by kind, priority sort, `slug: detail` tooltip |
+| URL row | matches — **was** accidental | had been proportional; now monospace, as the spec always said |
+| Effect rows | **deliberate** | no SF-Symbol glyphs: no equivalent icon set, and inventing one per row would read worse than the text label |
+| Show raw disclosure | matches | `GtkExpander`, collapsed by default |
+| Body colouring | matches | the SGR mapping is the shared `cards::spans` model |
+| Dry-run wrapper | matches — **was** accidental | titled orange frame; the inner card now drops its own border so the wrapper is the only frame, not a second one 3px inside the first |
+| Card chrome | **deliberate** | no separator rule between cards. The spec's rule divides cards in a flat AppKit stack; ours are drawn boxes, and a rule on top of a border reads as a stray line |
+| Approve / Reject | **theme-dependent** | `suggested-action` / `destructive-action` render filled under Adwaita and outlined under Breeze. Left to the theme rather than hard-coded, which is the GTK convention |
+| Footer | matches | Quit plus the two settings checkboxes |
+
+The largest accidental divergence: `.card` is a **libadwaita** style
+class and this binary links plain GTK4, so under Breeze — the theme a
+KDE session hands us — it resolved to nothing and cards rendered as
+flat text separated by a rule. The window default had then been sized
+against those surface-less cards, so once real padding existed it
+showed one-and-a-bit cards with the next one cut off at the footer.
+
+- [x] Audit each element against `ApprovalUI.md` (table above).
+- [x] Spacing, padding, corner radii, card separation. Cards are drawn
+      surfaces (`.vetter-card`: `@theme_base_color`, `@borders`, 8px
+      radius, 12px inset) with `CARD_SPACING` between and a tighter
+      `ROW_SPACING` within, so the grouping reads.
+- [x] Typography: URL row and card title monospaced, title semibold,
+      matching the macOS header font. The URL is the field a user
+      scans for a look-alike host, and proportional glyphs are exactly
+      where homoglyphs hide.
+- [x] Palette fidelity in light **and** dark, verified by screenshot
+      in each. Every CSS colour is a GTK *named* colour so the sheet
+      re-resolves per theme; only the raw body's Pango markup needs
+      the two hard-coded palettes.
+- [x] Live theme switching, via
+      `connect_gtk_application_prefer_dark_theme_notify` →
+      `request_refresh`.
+- [x] Window sizing: 720x720 default, 480x360 floor, both pinned by a
+      `const` assertion so a bad edit fails the build rather than a
+      test. Empty state is a centred title plus a line naming the
+      other approval routes.
+- [x] **No user CSS override**, deliberately. This surface exists to
+      make risk legible, and a stylesheet we invited users to edit is
+      a way to make a hostile request look benign on the very screen
+      where it is authorised. §3.3 also lists `~/.config/vetter/icon.css`
+      as a path the old docs promised and never had. GTK already loads
+      `~/.config/gtk-4.0/gtk.css` at `PRIORITY_USER`, which outranks
+      ours, for anyone determined — that is GTK's decision, not a
+      vetter feature, and is not advertised as one.
+
+Not chased, with reasons: SF-Symbol-equivalent row glyphs (no
+comparable icon set; text labels beat invented icons); per-param query
+colouring and click-to-pin pill popovers — both are listed as *future
+work* for macOS, so building them here would put Linux ahead of the
+reference rather than level with it.
 
 ---
 

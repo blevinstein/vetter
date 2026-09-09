@@ -75,14 +75,46 @@ use crate::cards::url::{HostTrust, MethodTone};
 use crate::pending::PendingQueue;
 use crate::{suggestions, Context};
 
-/// Window chrome sizing. Wide enough for a realistic URL without
-/// wrapping, tall enough for three cards before scrolling.
-const WINDOW_WIDTH: i32 = 560;
-const WINDOW_HEIGHT: i32 = 520;
+/// Window chrome sizing.
+///
+/// The first pass used 560x520, which was sized against a card that
+/// had no padding and no surface. Once cards became real boxes with
+/// 12px insets, a single expanded card no longer fit and every
+/// screenshot showed one-and-a-bit cards with the next one guillotined
+/// at the footer. 720 wide keeps a realistic URL on one monospaced
+/// line; 720 tall shows one full card plus enough of the next to make
+/// it obvious the list scrolls.
+const WINDOW_WIDTH: i32 = 720;
+const WINDOW_HEIGHT: i32 = 720;
+/// Floor for a user-resized window. Below roughly this the URL row
+/// starts wrapping mid-host, which is precisely the field that must
+/// stay readable.
+const WINDOW_MIN_WIDTH: i32 = 480;
+const WINDOW_MIN_HEIGHT: i32 = 360;
 const GUTTER: i32 = 12;
-/// `plans/ApprovalUI.md` "Card chrome": 16pt between cards, with a
-/// separator rule between adjacent ones.
+/// `plans/ApprovalUI.md` "Card chrome": 16pt between cards. The spec
+/// also calls for a separator rule between adjacent cards, which we
+/// deliberately drop — see [`refresh`].
 const CARD_SPACING: i32 = 16;
+/// Vertical rhythm *inside* a card. Tighter than [`CARD_SPACING`] so
+/// the rows of one card visibly group against the gap to the next.
+const ROW_SPACING: i32 = 6;
+
+// Layout invariants, checked at compile time rather than by a test:
+// the compiler already knows the answer, so a violation should fail
+// the build rather than wait for `cargo test`.
+//
+// - A floor larger than the default would open the window already
+//   clamped, at a size we never chose.
+// - Cards spaced no wider than their own rows inverts the grouping:
+//   rows of adjacent cards read as one block and the card boundary
+//   stops being where the eye breaks.
+const _: () = {
+    assert!(WINDOW_MIN_WIDTH > 0 && WINDOW_MIN_HEIGHT > 0);
+    assert!(WINDOW_MIN_WIDTH <= WINDOW_WIDTH);
+    assert!(WINDOW_MIN_HEIGHT <= WINDOW_HEIGHT);
+    assert!(CARD_SPACING > ROW_SPACING);
+};
 
 /// Palettes for the raw body's Pango markup.
 ///
@@ -113,15 +145,40 @@ const DARK_PALETTE: MarkupPalette = MarkupPalette {
     dim: "#9a9996",
 };
 
-/// Styling the stock GTK classes do not cover: tinted pill capsules
-/// and the dry-run frame.
+/// Styling the stock GTK classes do not cover: the card surface,
+/// tinted pill capsules, and the dry-run frame.
 ///
-/// Pill backgrounds are the `plans/ApprovalUI.md` "Tinted pill
-/// recipe" translated to CSS — a low-alpha tint of the foreground, so
-/// one rule works on both light and dark grounds without a second
-/// palette. `alpha()` is GTK's own CSS function, so the tint tracks
-/// whatever the theme resolves the colour to.
+/// Every colour here is a GTK *named* colour rather than a literal,
+/// so the whole sheet re-resolves against whatever theme is active —
+/// which is what keeps one rule working on both light and dark
+/// grounds. `alpha()` is GTK's own CSS function, so the pill tints
+/// track the resolved foreground the way
+/// `plans/ApprovalUI.md`'s "Tinted pill recipe" does on AppKit.
+///
+/// `.vetter-card` exists because the obvious spelling does not work:
+/// `.card` is a **libadwaita** style class, and this binary links
+/// plain GTK4. Under Breeze — the GTK theme a KDE session hands us —
+/// `.card` resolves to nothing at all, so cards rendered as flat text
+/// on the window background with only a separator between them. This
+/// draws the surface ourselves from `@theme_base_color` + `@borders`,
+/// both long-standing GTK names present in every theme.
 const CSS: &str = "
+.vetter-card {
+    background: @theme_base_color;
+    border: 1px solid @borders;
+    border-radius: 8px;
+    padding: 12px;
+}
+.vetter-title {
+    font-family: monospace;
+    font-weight: bold;
+    font-size: 1.05em;
+}
+.vetter-url { font-family: monospace; }
+.vetter-rowlabel {
+    font-size: 0.82em;
+    letter-spacing: 0.04em;
+}
 .vetter-pill {
     border-radius: 7px;
     padding: 1px 7px;
@@ -137,7 +194,16 @@ const CSS: &str = "
 .vetter-method.write       { color: @warning_color; }
 .vetter-method.destructive { color: @error_color; }
 .vetter-method.other       { color: @accent_color; }
-.vetter-dryrun { border: 1.5px solid @warning_color; border-radius: 6px; }
+.vetter-dryrun {
+    border: 1.5px solid @warning_color;
+    border-radius: 8px;
+    padding: 6px;
+}
+.vetter-dryrun > label { color: @warning_color; font-weight: bold; }
+/* The wrapper *is* the card's frame on a dry-run card, so the card
+   inside it drops its own border rather than drawing a second one
+   3px inside the first. */
+.vetter-dryrun .vetter-card { border: none; background: transparent; }
 .vetter-raw { font-family: monospace; font-size: 0.9em; }
 .vetter-toast { border-radius: 6px; padding: 8px 10px; }
 .vetter-toast.ok    { background: alpha(@success_color, 0.18); }
@@ -311,6 +377,7 @@ pub(super) fn install(app: &Application, ctx: Arc<Context>, shutdown: Arc<Atomic
         .default_height(WINDOW_HEIGHT)
         .child(&root)
         .build();
+    window.set_size_request(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT);
 
     // Closing the window must not quit the daemon: the tray and the
     // notifier are still live surfaces, and `gtk::Application` would
@@ -334,6 +401,7 @@ pub(super) fn install(app: &Application, ctx: Arc<Context>, shutdown: Arc<Atomic
     });
     WINDOW_INSTALLED.store(true, Ordering::SeqCst);
 
+    watch_theme_changes();
     sync_sound_checkbox();
     sync_autostart_checkbox();
     refresh();
@@ -501,6 +569,21 @@ fn set_notification_sound(enabled: bool) {
 
 /// Install [`CSS`] once, at the display level so every widget we
 /// build picks it up without per-widget providers.
+///
+/// **No user-override file, deliberately.** `plans/LinuxApp.md` §6h
+/// asks whether to ship a style hook; the answer is no. This surface
+/// exists to make risk legible — the unknown-host pill, the danger
+/// tones, the dry-run frame — and a stylesheet we invited the user to
+/// edit is a way to make a hostile request look benign on the very
+/// screen where it gets authorised. §3.3 also lists
+/// `~/.config/vetter/icon.css` as a path the old docs promised and
+/// never had, and inventing one now would just make that fiction
+/// true for no asked-for reason.
+///
+/// Anyone determined can still restyle us: GTK loads
+/// `~/.config/gtk-4.0/gtk.css` at `PRIORITY_USER`, which outranks the
+/// `PRIORITY_APPLICATION` used here. That is GTK's decision, not a
+/// vetter feature, and it is not advertised as one.
 fn install_css() {
     let Some(display) = Display::default() else {
         return;
@@ -518,16 +601,44 @@ fn install_css() {
     );
 }
 
-/// The markup palette matching the active theme.
-fn palette() -> MarkupPalette {
-    let dark = gtk4::Settings::default()
-        .map(|s| s.is_gtk_application_prefer_dark_theme())
-        .unwrap_or(false);
+/// The markup palette for a given theme polarity.
+///
+/// Split from [`palette`] so the mapping is reachable from a test:
+/// asking GTK which theme is active needs a display, but *which
+/// palette answers dark* does not.
+pub(crate) fn palette_for(dark: bool) -> MarkupPalette {
     if dark {
         DARK_PALETTE
     } else {
         LIGHT_PALETTE
     }
+}
+
+/// The markup palette matching the active theme.
+fn palette() -> MarkupPalette {
+    palette_for(
+        gtk4::Settings::default()
+            .map(|s| s.is_gtk_application_prefer_dark_theme())
+            .unwrap_or(false),
+    )
+}
+
+/// Repaint when the user switches between light and dark.
+///
+/// Only the raw body's Pango markup needs this: every other colour is
+/// a GTK named colour resolved by the theme itself, so the rest of
+/// the window follows a theme change with no help from us. The markup
+/// palette is chosen once per [`refresh`], though, so without this
+/// subscription a theme switch would leave the §8.5 body in the old
+/// palette until the next queue change happened to rebuild it.
+fn watch_theme_changes() {
+    let Some(settings) = gtk4::Settings::default() else {
+        return;
+    };
+    // Captures nothing: `request_refresh` reaches the window through
+    // the thread-local, which is the invariant the whole module rests
+    // on (see the module docs).
+    settings.connect_gtk_application_prefer_dark_theme_notify(|_| request_refresh());
 }
 
 /// Rebuild the card list from live queue state. GTK thread only.
@@ -584,10 +695,12 @@ fn refresh() {
             note.set_halign(Align::Center);
             state.list.append(&note);
         }
-        for (idx, card) in pending.iter().enumerate() {
-            if idx > 0 {
-                state.list.append(&Separator::new(Orientation::Horizontal));
-            }
+        // No separator between cards. `plans/ApprovalUI.md` asks for
+        // one, but that spec describes a flat AppKit stack where a
+        // rule is the only thing dividing two cards. Ours are drawn
+        // boxes with their own border, so a separator on top of that
+        // reads as a stray line rather than a division.
+        for card in pending.iter() {
             let widget = card_widget(card, state, palette);
             state.list.append(&widget);
             remember_card_widget(&card.id, &widget);
@@ -602,7 +715,6 @@ fn refresh() {
             state.list.append(&header);
 
             for card in &resolved {
-                state.list.append(&Separator::new(Orientation::Horizontal));
                 let widget = resolved_widget(card, state, palette);
                 state.list.append(&widget);
                 // Resolved cards are addressable too: a banner click
@@ -795,17 +907,20 @@ fn card_widget(card: &CardView, state: &WindowState, palette: MarkupPalette) -> 
 
 /// Shared card chrome: title, URL row, pills.
 fn card_head(card: &CardView, badge: Option<&str>) -> GtkBox {
-    let frame = GtkBox::new(Orientation::Vertical, 6);
-    frame.add_css_class("card");
-    frame.set_margin_top(GUTTER);
-    frame.set_margin_bottom(GUTTER);
-    frame.set_margin_start(GUTTER);
-    frame.set_margin_end(GUTTER);
+    // Inner padding comes from `.vetter-card`'s CSS rather than
+    // margins: a margin would sit *outside* the border and leave the
+    // rows clipped against it, which is the same reason the macOS
+    // card carries `NSEdgeInsets` inside its box.
+    let frame = GtkBox::new(Orientation::Vertical, ROW_SPACING);
+    frame.add_css_class("vetter-card");
 
     let title_row = GtkBox::new(Orientation::Horizontal, 6);
     let title = Label::new(Some(&card.title));
     title.set_halign(Align::Start);
-    title.add_css_class("heading");
+    // Monospaced semibold, matching the macOS header font, so the
+    // command name reads in lockstep with the URL row beneath it
+    // (`plans/ApprovalUI.md` "Card chrome").
+    title.add_css_class("vetter-title");
     title_row.append(&title);
     if let Some(badge) = badge {
         // Outcome badge on resolved cards, in place of the action
@@ -1003,6 +1118,11 @@ fn picker_row(card: &CardView, state: &WindowState) -> GtkBox {
 fn url_row(url: &UrlView) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 4);
     row.set_halign(Align::Start);
+    // `plans/ApprovalUI.md` "URL row" specifies monospaced: the URL
+    // is the field a user scans character by character for a
+    // look-alike host, and proportional glyphs are exactly where
+    // homoglyph tricks hide.
+    row.add_css_class("vetter-url");
 
     match url {
         UrlView::Fallback(text) => {
@@ -1105,6 +1225,7 @@ fn effect_row(row: &EffectRow) -> GtkBox {
                     let label = plain_mono(text);
                     label.set_wrap(true);
                     label.set_selectable(true);
+                    label.set_can_focus(false);
                     section.append(&label);
                 }
                 BodyContent::FromFile(file) => section.append(&file_row(file)),
@@ -1156,6 +1277,10 @@ fn file_row(file: &FilePath) -> GtkBox {
     let label = plain_mono(&file.display);
     label.set_wrap(true);
     label.set_selectable(true);
+    // Selectable for copy, but not focusable: GTK hands the caret to
+    // the first focusable widget when the window opens, which put a
+    // blinking cursor mid-path on every show.
+    label.set_can_focus(false);
     row.append(&label);
 
     if file.can_open {
@@ -1206,6 +1331,7 @@ fn raw_disclosure(card: &CardView, palette: MarkupPalette) -> Expander {
     body.set_xalign(0.0);
     body.set_wrap(true);
     body.set_selectable(true);
+    body.set_can_focus(false);
     body.add_css_class("vetter-raw");
 
     let inner = GtkBox::new(Orientation::Vertical, 4);
@@ -1263,6 +1389,10 @@ fn section(title: &str) -> GtkBox {
     caption.set_halign(Align::Start);
     caption.add_css_class("dim-label");
     caption.add_css_class("caption");
+    // Slightly tracked-out so a one-word section label ("body",
+    // "auth") reads as a heading for the rows under it rather than as
+    // another row of content.
+    caption.add_css_class("vetter-rowlabel");
     column.append(&caption);
     column
 }
@@ -1821,3 +1951,7 @@ pub(super) fn watch_shutdown(app: &Application, shutdown: Arc<AtomicBool>) {
         glib::ControlFlow::Continue
     });
 }
+
+#[cfg(test)]
+#[path = "../../tests/window_chrome.rs"]
+mod tests;

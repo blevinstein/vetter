@@ -30,7 +30,12 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       # GTK4 approval window (Linux only) links system libraries; the
-      # package list lives in one place — tools/install-deps.sh.
+      # package list lives in one place — tools/install-deps.sh. Drop
+      # the runner image's preinstalled Google Chrome repo first: we
+      # never need it, and its mirror periodically serves a stale
+      # Packages.gz that fails the hash check and aborts `apt-get
+      # update` for the whole job.
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list
       - run: sudo apt-get update && tools/install-deps.sh --run
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -48,6 +53,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # GTK4 approval window links system libraries on Linux; no-op on
       # macOS (the script exits early there). See tools/install-deps.sh.
+      # Drop the preinstalled Google Chrome repo first — see the
+      # clippy job above for why.
+      - if: runner.os == 'Linux'
+        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list
       - if: runner.os == 'Linux'
         run: sudo apt-get update && tools/install-deps.sh --run
       - run: cargo build --workspace --all-targets --all-features
@@ -63,7 +72,10 @@ jobs:
         with:
           key: msrv-1.95
       # GTK4 approval window (Linux only) links system libraries; the
-      # package list lives in one place — tools/install-deps.sh.
+      # package list lives in one place — tools/install-deps.sh. Drop
+      # the preinstalled Google Chrome repo first — see the clippy
+      # job above for why.
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list
       - run: sudo apt-get update && tools/install-deps.sh --run
       - run: cargo build --workspace --all-targets --all-features
       - run: cargo test --workspace --all-features

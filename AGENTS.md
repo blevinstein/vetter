@@ -88,6 +88,41 @@ The `--all-features` runs enable the test-only `noop` parser used by
 integration tests in `vetter-core/tests/`. CI runs both feature
 configurations.
 
+### Debugging a running daemon
+
+The release profile sets `strip = "symbols"`, so a stack trace from a
+release binary is bare addresses. Get a symbolized one without editing
+`Cargo.toml`:
+
+```sh
+CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=1 \
+    cargo build --release -p vetterd -p vet
+```
+
+Before reaching for a debugger, take a thread census. It costs nothing
+and is often enough on its own:
+
+```sh
+for t in /proc/$PID/task/*; do
+    printf '%-8s %-20s %s\n' "$(basename "$t")" "$(cat "$t/comm")" "$(cat "$t/wchan")"
+done
+```
+
+The daemon names its threads (`vetterd-accept`, `vetterd-admin`,
+`vetterd-notify`, `vetterd-tray`), so **which threads exist is itself
+diagnostic**: a daemon showing only two is still in startup no matter
+what it has already logged. That is what located the 2026-09-09 startup
+stall, after stack traces had pointed the wrong way.
+
+Two traps when reading those traces:
+
+- The optimized build folds identical generic instantiations, so a
+  symbolized frame can name the wrong type — an `mpsc` `recv` was
+  attributed to `Channel<vetterd::tray::TrayJob>` in a daemon where the
+  tray was not involved. Trust the shape, not the type parameter.
+- Sample *while* the symptom is present. A trace taken after a transient
+  stall shows the healthy steady state and reads as a contradiction.
+
 ## Running the app locally
 
 ### macOS

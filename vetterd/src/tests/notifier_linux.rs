@@ -35,6 +35,25 @@ fn capabilities_from_empty_list_is_all_false() {
 }
 
 #[test]
+fn default_capabilities_claim_nothing() {
+    // `LinuxNotifier::install` queues the first `GetCapabilities` on
+    // the jobs thread instead of blocking startup on it, so there is a
+    // brief window where this default *is* the daemon's belief about
+    // the server. The window is safe only because the default claims
+    // nothing: a banner posted under it degrades to "no buttons, use
+    // `vet daemon approve`", which is the documented §5.4 fallback.
+    //
+    // Flipping any of these to `true` would make that interim state
+    // assert support the daemon has never confirmed — banners would
+    // advertise Approve/Reject the server may not render, or send
+    // unescaped markup. Pinned here because the cost shows up in
+    // `install`, a long way from this struct.
+    let caps = Capabilities::default();
+    assert!(!caps.actions);
+    assert!(!caps.body_markup);
+}
+
+#[test]
 fn capabilities_do_not_match_on_prefix() {
     // `actions-extra` is not `actions`; a sloppy `starts_with` here
     // would claim button support we don't have.

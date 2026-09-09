@@ -637,10 +637,38 @@ impl LinuxNotifier {
             tokens: Mutex::new(HashMap::new()),
             shutdown: AtomicBool::new(false),
         });
-        shared.refresh_capabilities();
-
         let (tx, rx) = channel::<Job>();
         spawn_jobs_thread(Arc::clone(&shared), rx);
+
+        // Probe capabilities on the jobs thread, not here.
+        //
+        // This used to be a direct `shared.refresh_capabilities()`,
+        // which is a synchronous `GetCapabilities` on the calling
+        // thread — and that thread is `run()`'s, *after* the sockets
+        // are bound but *before* the accept loop is spawned. When
+        // `org.freedesktop.Notifications` is absent but activatable,
+        // D-Bus tries to start it and the call does not return until
+        // activation times out: measured at **60 seconds** on a
+        // `dbus-run-session` bus with no notification server. For that
+        // whole window the daemon had a bound socket that nobody was
+        // accepting on, so every `vet` invocation connected into the
+        // listen backlog and hung with no banner, no window card, and
+        // nothing in `vet daemon list` — the exact
+        // unapprovable-request failure `plans/LinuxApp.md` §0 says this
+        // phase existed to remove.
+        //
+        // It also contradicted this module's own contract (see the
+        // header): the jobs thread owns every outgoing bus call so a
+        // stalled bus cannot wedge anything else. Startup was the one
+        // caller that bypassed it.
+        //
+        // Queueing is sufficient rather than merely faster: the jobs
+        // channel is FIFO and this is the first message sent, so the
+        // refresh is processed before any `Job::Post` that a later
+        // request could enqueue. No banner can go out with the interim
+        // `Capabilities::default()`, which is the same all-false state
+        // a genuinely capability-less server produces.
+        let _ = tx.send(Job::RefreshCapabilities);
         spawn_signal_thread(Arc::clone(&shared));
         spawn_name_watch_thread(Arc::clone(&shared), tx.clone());
 

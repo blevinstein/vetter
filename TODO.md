@@ -880,16 +880,24 @@ side-by-side screenshot against macOS.
       for notification clicks
       ([vetterd/src/runloop/linux/window.rs](vetterd/src/runloop/linux/window.rs)).
       Found during 6h.
-- [ ] Under a private session bus with no notification server to
-      activate, the daemon accepts connections and answers the admin
-      socket, but prompt-class requests never reach the pending queue:
-      `vet` blocks, `vet daemon list` reports none, and no audit entry
-      is written. The same isolated daemon parks correctly with
-      `VETTERD_NOTIFIER=noop`, so it is specific to the linux notifier
-      in that configuration. Reproduce with `tools/dev-window.sh`.
-      **This blocks §6g's planned `dbus-run-session` + `dunst` CI smoke
-      job**, which is exactly this configuration, so it is worth
-      root-causing before that job is written. Found 2026-09-09.
+- [x] Under a private session bus with no notification server to
+      activate, prompt-class requests appeared never to reach the
+      pending queue: `vet` blocked, `vet daemon list` reported none,
+      and no audit entry was written. **Root-caused and fixed
+      2026-09-09.** Not a lost request — a startup stall.
+      `LinuxNotifier::install` probed `GetCapabilities` synchronously
+      on `run()`'s thread, which sits *after* the sockets bind and
+      *before* the accept loop is spawned. With
+      `org.freedesktop.Notifications` absent-but-activatable, D-Bus
+      attempted activation and that call did not return for ~60s
+      (measured), so clients connected into the listen backlog with
+      nothing accepting. It also broke `notifier/linux.rs`'s own
+      contract that the jobs thread owns every outgoing bus call.
+      The probe is now queued as `Job::RefreshCapabilities`; the jobs
+      channel is FIFO and it is the first message sent, so no banner
+      can go out under the interim all-false capabilities. Measured
+      60.4s → 0.35s. **§6g's `dbus-run-session` + `dunst` CI job is
+      unblocked.**
 
 Items that make `cargo clippy` / `cargo test` red at `main`. These
 jump the queue regardless of which phase is in flight: a red baseline

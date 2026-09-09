@@ -16,15 +16,13 @@
 #
 # Development-only. Not part of the release tarball (Phase 6f).
 #
-# KNOWN LIMITATION (2026-09-09): under this rig the daemon accepts
-# connections and answers the admin socket, but prompt-class requests do
-# not reach the pending queue — `vet` blocks, `vet daemon list` reports
-# none, and no audit entry is written. The same isolated daemon parks
-# correctly with VETTERD_NOTIFIER=noop (which also means no window), so
-# it is specific to the linux notifier on a private bus with no
-# notification server to activate. Until that is root-caused this
-# captures the window's *empty* state; see TODO.md. It still exercises
-# GTK/X11 rendering, which is what it was built for.
+# Historical note: this rig is what surfaced the startup stall fixed on
+# 2026-09-09. `LinuxNotifier::install` used to probe `GetCapabilities`
+# synchronously, and on a bus with no notification server to activate
+# that call blocked ~60s *after* the socket was bound but *before* the
+# accept loop was spawned — so requests sat unaccepted in the listen
+# backlog and were invisible to `vet daemon list`. The probe now runs on
+# the jobs thread; requests park in well under a second here.
 #
 # Requires Xephyr, dbus-run-session and ImageMagick (`import`). These
 # are NOT in tools/install-deps.sh — that script declares what you need

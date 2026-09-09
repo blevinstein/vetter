@@ -23,9 +23,12 @@ platforms; the data layer is unchanged.
 ## 0. TL;DR
 
 The **non-GUI half of vetter already works on Linux**, unmodified.
-It builds clean, the full test suite passes (684 tests, 0 failures),
+It builds clean, the full test suite passes (863 tests, 0 failures),
 and the daemon's socket / pidfile / audit / XDG path layer is
-correct. What is missing is the entire approval surface.
+correct. The approval surface — notifier, tray, window, pickers,
+autostart, doctor rows — was missing when this was written and
+landed across 6a–6e, 6h and 6i. What remains is distribution (§6f)
+and one CI job (§6g).
 
 **The one blocking gap — closed by Phase 6a on 2026-09-06.** It used
 to be that on Linux nothing could approve a prompt-class request: the
@@ -36,7 +39,7 @@ a deny) when the daemon shut down and called `cancel_all`.
 now close that loop, on every platform, with no new dependencies and
 no GUI — see §6a.
 
-Everything else in this plan is UI polish.
+Everything else in this plan was UI, and is now built.
 
 ---
 
@@ -48,7 +51,7 @@ Wayland session, kernel 7.1.4.
 | Check | Result |
 |---|---|
 | `cargo build --release -p vetterd -p vet` | **OK** — clean, no cfg fallout, ~49 s cold |
-| `cargo test --workspace --all-features` | **OK** — 684 passed, 0 failed, 0 ignored |
+| `cargo test --workspace --all-features` | **OK** — 863 passed, 0 failed, 0 ignored (2026-09-09) |
 | `cargo clippy --workspace --all-targets` | **OK** — both feature configurations; was red on two unused `PermissionsExt` imports until 2026-09-06 (TODO.md §"Build health") |
 | `vet doctor` | **OK** — all rows resolve; correct XDG paths |
 | `vet daemon start` / `status` / `stop` | **OK** — pidfile, socket, clean teardown, no leftovers |
@@ -57,8 +60,8 @@ Wayland session, kernel 7.1.4.
 | `vet curl` → parse → render → policy → park | **OK** — request reaches the pending queue |
 | `vet daemon list` | **OK** — shows the parked request with its ULID |
 | **Resolve the parked request** | **OK** — `vet daemon approve` / `reject` (Phase 6a, landed 2026-09-06) |
-| `vet doctor` row "code signing" | `SKIP macOS only` — no Linux equivalent yet |
-| `vet doctor` row "autostart" | `SKIP macOS only` — no Linux equivalent yet |
+| `vet doctor` row "code signing" | **OK** — became the `provenance` row on Linux (Phase 6e, 2026-09-09); reports package ownership, or "built from source" |
+| `vet doctor` row "autostart" | **OK** — reports real state from `~/.config/autostart/vetter.desktop` (Phase 6e, 2026-09-09) |
 
 Note that `vetter-core::paths` already branches correctly on
 `target_os` and honours `$XDG_RUNTIME_DIR` / `$XDG_STATE_HOME`. No
@@ -133,29 +136,32 @@ Linux stands.
 | Banner coalescing (`NotifyHint::was_empty_before`) | `notifier/mac.rs` | **DONE (6b)** — consumed by `notifier/linux.rs` |
 | Banner dismissal on resolve | `removeDeliveredNotificationsWithIdentifiers:` | **DONE (6b)** — `CloseNotification`, driven off the queue change listener so *every* resolve path closes |
 | Notification sound setting | `UNNotificationSound::defaultSound()` | **DONE (6b)** — `sound-name` hint |
-| Tray icon + pending-count badge | `runloop/status_item.rs` (180 ln) | **MISSING** — no SNI item |
-| Approval window listing pending cards | `runloop/popover.rs` (2250 ln) + 5 helper modules (~1500 ln) | **MISSING** |
-| — §8.5 detail disclosure | `toggleDetailsDisclosure:` | **MISSING** |
-| — raw-command disclosure + copy | `toggleRawDisclosure:`, `copyRawClicked:` | **MISSING** |
-| — signal pills | `popover_pills.rs` | **MISSING** |
-| — URL styling | `popover_url.rs` | **MISSING** |
+| Tray icon + pending-count badge | `runloop/status_item.rs` (180 ln) | **DONE (6c)** — `ksni` SNI item in `tray.rs`; badge is `ToolTip` + `NeedsAttention`, not an overlay icon (GNOME's extension does not render those reliably) |
+| Approval window listing pending cards | `runloop/popover.rs` (2250 ln) + 5 helper modules (~1500 ln) | **DONE (6d)** — `runloop/linux/`, a plain window rather than an anchored popover (§5.1) |
+| — §8.5 detail disclosure | `toggleDetailsDisclosure:` | **DONE (6d step 2)** — structured rows inline on pending cards; the disclosure is Recent-card behaviour |
+| — raw-command disclosure + copy | `toggleRawDisclosure:`, `copyRawClicked:` | **DONE (6d step 2)** |
+| — signal pills | `popover_pills.rs` | **DONE (6d step 2)** — via the shared `cards::pills` lowering |
+| — URL styling | `popover_url.rs` | **DONE (6d step 2)** — via the shared `cards::url` lowering |
 | — `Allowlist…` picker (with duration radios) | `popover_picker.rs` (760 ln) | **DONE (6d step 3)** |
 | — `Trust host…` picker | `popover_picker.rs` | **DONE (6d step 3)** |
 | — `See approval reason` + `Revoke rule` | `revokeRuleClicked:` | **DONE (6d step 3)** |
-| — `Open file` button on FileRead rows | `openFileClicked:` → `NSWorkspace` | **MISSING** (`xdg-open` is the analogue) |
-| — Quit button | `requestShutdown:` | **MISSING** |
+| — `Open file` button on FileRead rows | `openFileClicked:` → `NSWorkspace` | **DONE (6d step 2)** — `xdg-open`, suppressed when the path does not exist, same rule as macOS |
+| — Quit button | `requestShutdown:` | **DONE (6d step 3)** — window footer, plus the tray's Quit; both flip the shutdown flag rather than exiting from a callback |
 | Autostart on login | `SMAppService.mainApp` (`autostart.rs`) | **DONE (6e)** — XDG autostart entry; `NotFound` when the pinned `Exec` has moved |
 | — `vet daemon autostart enable/disable/status` | Wire verbs exist and are portable | **DONE (6e)** — per-platform wording so Linux is not told about "login items" |
 | — `vet doctor` autostart row | `doctor.rs` | **DONE (6e)** — reports real state; macOS strings unchanged |
 | Code-signing verification | `codesign --verify` | **DONE (6e)** — replaced by a `provenance` row (package ownership, not integrity; see §6e) |
-| Packaged install | Homebrew cask, notarised bundle | **MISSING** |
+| Packaged install | Homebrew cask, notarised bundle | **MISSING** — the one remaining gap; tarball + `cargo install` per §4.3, tracked in §6f |
 | Process/UI identity | `.app` bundle + `LSUIElement` + Info.plist | Analogue is a `.desktop` entry (see §5.2) |
 
 ### 3.3 Documented-but-nonexistent (traps in the current docs)
 
-These appear in `AGENTS.md`, `plans/Overview.md`, `plans/Release.md`,
-`plans/TestingPlan.md`, and the deleted `UbuntuApp.md` as if they
-ship. They do not exist:
+These appeared in `AGENTS.md`, `plans/Overview.md`,
+`plans/Release.md`, `plans/TestingPlan.md`, and the deleted
+`UbuntuApp.md` as if they shipped, when none of them existed.
+Struck-through entries have since been built; the rest are still
+absent, and several are absent *by decision* rather than by
+omission — which is the more useful thing to record:
 
 - ~~`vet daemon approve <id>` / `vet daemon reject <id>`~~ — was
   **the documented headless escape hatch on every platform,
@@ -170,15 +176,29 @@ ship. They do not exist:
   with exit 78 when the session bus is unreachable.
 - `[package.metadata.deb]` in `vetterd/Cargo.toml` — absent.
 - `/usr/lib/systemd/user/vetter.service` — no unit file in the repo.
-- `/etc/xdg/autostart/vetter.desktop` — no desktop entry in the repo.
-- `dev.vetter.daemon.svg` tray icon — `assets/` holds only
-  `vetter-logo.{png,svg}`; no hicolor-scalable install path.
+- `/etc/xdg/autostart/vetter.desktop` — still no *system-wide* entry,
+  and there will not be one: Phase 6e writes the user-scoped
+  `~/.config/autostart/vetter.desktop` instead, opt-in via **Start at
+  login** rather than enabled at install time (§5.3).
+- ~~`dev.vetter.daemon.svg` tray icon~~ — **landed in Phase 6c**:
+  `share/icons/hicolor/scalable/apps/dev.vetter.daemon.svg`, installed
+  into `$XDG_DATA_HOME` by `tools/install-desktop.sh`. The tray also
+  publishes an `IconPixmap` fallback so it works uninstalled.
 - `tools/release-deb.sh` — referenced by `Release.md:15`; `tools/`
-  contains only the macOS scripts.
-- `vetterd/src/runloop/linux/` — referenced by `Overview.md:439`
-  and `:843`; does not exist.
+  contains only the macOS scripts, `install-deps.sh`,
+  `install-desktop.sh`, `dev-window.sh` and `park-spread.sh`. Under
+  §4.3 this one is not coming.
+- ~~`vetterd/src/runloop/linux/`~~ — **landed in Phase 6d**, though
+  reached by a `#[path]` mapping in `lib.rs` rather than by nesting
+  under `runloop/mod.rs`, which is `#![cfg(target_os = "macos")]` at
+  file scope.
 - `~/.config/vetter/icon.css` — a `gtk::CssProvider` override path
-  for an icon that doesn't exist.
+  for an icon that doesn't exist. **Deliberately still absent**:
+  Phase 6h declined to add a user-override stylesheet, because a
+  surface whose job is making risk legible should not invite
+  restyling. GTK's own `~/.config/gtk-4.0/gtk.css` outranks our
+  provider for anyone determined; that is GTK's behaviour, not a
+  vetter feature.
 
 See §10 for what to do about the spec documents.
 
@@ -411,7 +431,7 @@ credible v0.2 ship point.**
 - [x] Daemon must start and stay useful when no watcher is present
       (§5.5).
 
-### Phase 6d — Approval window (GTK4) `[ ]`
+### Phase 6d — Approval window (GTK4) `[x]` **done 2026-09-08**
 
 The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
 
@@ -465,10 +485,11 @@ The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
 - [x] Single-instance / raise-existing entry point (§5.5), as
       `MgmtRequest::OpenWindow` + `vet daemon open`. GNOME ships no
       StatusNotifierHost, so the tray cannot be the only way in.
-      *(Partial: the tray's `Open Vetter…` raises it, and
-      `IS_SERVICE` gives single-instance. GNOME ships no tray,
-      so those users still have no way to open the window —
-      needs the non-tray entry point §5.5 asks for.)*
+      *(Single-instance is a `NameHasOwner` check made before the
+      `Application` is built, not `ApplicationFlags::IS_SERVICE` —
+      that flag was tried and removed, because its inactivity
+      timeout ended the main loop and shut the whole daemon down
+      after ~10 s idle.)*
 - [x] Threading discipline: GObject is single-threaded. The queue's
       change-listener fires on whatever worker thread resolved the
       request and must hop to the GTK thread via
@@ -553,20 +574,30 @@ Per §4.3: tarball + `cargo install` only, for now.
       `cargo install` instructions and drop the PPA promise until
       §8 is decided.
 
-### Phase 6g — CI `[ ]`
+### Phase 6g — CI `[~]` **three of four done**
 
-- [ ] Linux job already runs fmt/clippy/tests. Extend it to build
+- [x] Linux job already runs fmt/clippy/tests. Extend it to build
       the new `target_os = "linux"` cfg paths — otherwise the
-      notifier and GTK code never get compiled in CI.
-- [ ] Run `tools/install-deps.sh --run` in the Linux job instead of
-      naming packages in the workflow.
-- [ ] Keep the `MockNotifier` as the automated-coverage workhorse;
+      notifier and GTK code never get compiled in CI. *(Falls out of
+      the deps being installed: the clippy, test and msrv jobs all
+      run on `ubuntu-latest`, so `--all-targets` compiles the zbus /
+      ksni / gtk4 code as a matter of course.)*
+- [x] Run `tools/install-deps.sh --run` in the Linux job instead of
+      naming packages in the workflow. *(In the clippy, test and
+      msrv jobs.)*
+- [x] Keep the `MockNotifier` as the automated-coverage workhorse;
       CI has no session bus, so 6b/6c/6d get manual smoke coverage
       only (§7) plus unit tests on the extracted pure functions.
+      *(Held: the pure halves live in `vetterd/src/cards/` and are
+      tested on every platform.)*
 - [ ] Consider a `dbus-run-session` + `dunst` job to smoke the
       `LinuxNotifier` for real. `dunst` supports `actions`, so an
       end-to-end approve could genuinely be automated. Worth
       prototyping — this would be better coverage than macOS has.
+      *(Unbuilt, but no longer blocked: this configuration — a
+      private bus with no notification server — used to stall the
+      daemon for ~60 s at startup, fixed 2026-09-09. `dunst` is not
+      installed on the reference host.)*
 
 ### Phase 6i — Notification and tray parity `[x]` **done 2026-09-08**
 
@@ -673,11 +704,13 @@ reference rather than level with it.
 
 ---
 
-## 7. Manual smoke test (Linux) — **steps 1–7 runnable; 8–15 target state**
+## 7. Manual smoke test (Linux) — **all 15 steps runnable**
 
-Every step below depends on phases that are not written yet. Marked
-with the phase that unlocks it. With 6a and 6b landed, steps 1–7
-work today; the rest wait on 6c–6e.
+Every step is runnable as of 2026-09-09: 6a–6e plus 6h and 6i have
+landed. Each step keeps the phase tag that introduced it, as
+provenance rather than as a gate. Step 14's logout/login half still
+needs a human — nothing scripted can verify that the daemon returns
+after a real session restart.
 
 1. Build: `cargo build --release -p vetterd -p vet`, then
    `export PATH="$PWD/target/release:$PATH"`. *(works today)*
@@ -823,17 +856,20 @@ discrepancies instead. Raising them here:
   bundle-guard removal (§5.2), and (c) the packaging deferral (§4.3).
 - **`Overview.md`** should also record that `vet daemon approve` /
   `reject` — referenced across the docs as the headless escape
-  hatch — is unimplemented on **every** platform, and that Phase 6a
-  is where it lands.
+  hatch — *was* unimplemented on **every** platform, and landed in
+  Phase 6a (2026-09-06). `vet daemon open` joined them in 6d step 4.
 - **`Release.md` §"Linux / Launchpad PPA"** documents a Launchpad
   flow and a `tools/release-deb.sh` that does not exist. Under §4.3
   this section is on hold; it should be marked as such rather than
   read as current.
 - **`TestingPlan.md`:690** points at the old `UbuntuApp.md` smoke
-  procedure. Repoint at §7 here, and note that steps are gated on
-  unlanded phases.
+  procedure. Repoint at §7 here. (The "gated on unlanded phases"
+  caveat this bullet used to carry is spent — as of 2026-09-09 all
+  15 steps run.)
 - **`ApprovalUI.md`** should gain a note that the Linux container is
-  a window, not a popover (§5.1).
+  a window, not a popover (§5.1). **Still outstanding** — checked
+  2026-09-09, the file has no such note, and it is editable
+  (unlike `Overview.md` / `TestingPlan.md`).
 - **`README.md`** promises a PPA (see 6f).
 - Mechanical link updates from `UbuntuApp.md` → `LinuxApp.md` have
   been made in `AGENTS.md`, `TODO.md`, `RepoMap.md`, `Release.md`,

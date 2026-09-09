@@ -4,7 +4,9 @@ Tracks per-phase progress against the roadmap in
 [plans/Overview.md](plans/Overview.md) §11. Phase exit criteria come from
 [plans/TestingPlan.md](plans/TestingPlan.md) §11.
 
-Status legend: `[x]` done · `[~]` in progress · `[ ]` not started.
+Status legend: `[x]` done · `[~]` in progress · `[ ]` not started ·
+`[—]` superseded by a later decision (kept for the reasoning, not to
+be picked up).
 
 ---
 
@@ -658,33 +660,66 @@ popover's `Allow path…` picker.
 
 ---
 
-## Phase 6 — Ubuntu support  `[ ] not started`  (v0.2 milestone)
+## Phase 6 — Ubuntu support  `[~] in progress`  (v0.2 milestone)
 
 Roadmap: [plans/Overview.md](plans/Overview.md) §7 ("Linux"), §11.
 Operational notes + manual smoke procedure:
 [plans/LinuxApp.md](plans/LinuxApp.md). Distribution flow:
-[plans/Release.md](plans/Release.md) §"Linux / Launchpad PPA".
+[plans/LinuxApp.md](plans/LinuxApp.md) §6f — *not* `Release.md`
+§"Linux / Launchpad PPA", which describes a Launchpad flow and a
+`tools/release-deb.sh` that do not exist and are on hold (§10).
 
-End-state: `sudo add-apt-repository ppa:blevinstein/vetter && sudo
-apt-get install vetter` puts `vet` + `vetterd` on `$PATH`, starts
-the daemon under `systemd --user`, lights a tray icon, and routes
-prompt-class requests through D-Bus notifications + a GTK4 popover
-window — same separate-channel guarantee as macOS, no TTY prompt.
+End-state: a release tarball on GitHub Releases plus a documented
+`cargo install --git` path puts `vet` + `vetterd` on `$PATH`; the
+user starts the daemon with `vet daemon start` and opts into
+`~/.config/autostart/vetter.desktop` via **Start at login**. It
+lights a tray icon and routes prompt-class requests through D-Bus
+notifications + a GTK4 window — same separate-channel guarantee as
+macOS, no TTY prompt.
 
-### PR 1 — Linux daemon spine + admin-CLI approve/reject
+The PPA / `.deb` / `systemd --user` end-state this section used to
+describe was **decided against** in
+[plans/LinuxApp.md](plans/LinuxApp.md) §4.3 on 2026-09-06; PR 5 and
+PR 6 below are superseded accordingly. Reference platform is
+Nobara/KDE/Wayland, with Ubuntu/GNOME deltas in §9 — the section
+title predates that and is kept for continuity with `Overview.md`
+§11.
 
-- [ ] Refactor [vetterd/src/runloop/](vetterd/src/runloop/) into
+Landed: PR 1–4 (spine, notifier, tray, window), PR 4b (polish),
+PR 4c (autostart + doctor), plus phase 6i in
+[plans/LinuxApp.md](plans/LinuxApp.md). Remaining: distribution
+(§6f) and the last CI job (§6g).
+
+### PR 1 — Linux daemon spine + admin-CLI approve/reject  `[x] done`
+
+Landed 2026-09-06 (phases 6a/6b). The one unticked bullet below is
+superseded, not outstanding — see its note.
+
+- [—] Refactor [vetterd/src/runloop/](vetterd/src/runloop/) into
       `runloop/mac/` (move-only, keep the diff reviewable). Add a
       thin `runloop/mod.rs` that re-exports the right submodule
-      per `cfg(target_os)`.
-- [ ] Add `PlatformDriver::Glib` to
+      per `cfg(target_os)`. **Not done, and deliberately routed
+      around:** `runloop/mod.rs` is `#![cfg(target_os = "macos")]`
+      at *file* scope, so `runloop/linux/` cannot nest under it,
+      and the move would edit macOS-gated code that cannot be
+      compiled on the Linux host doing the work.
+      [vetterd/src/lib.rs](vetterd/src/lib.rs) maps the path per
+      target instead (`#[path = "runloop/linux/mod.rs"]`), so
+      `crate::runloop` still means "this platform's driver". The
+      move stays available for whoever has a Mac.
+- [x] Add `PlatformDriver::Glib` to
       [vetterd/src/lib.rs](vetterd/src/lib.rs); `run_with_glib`
       mirrors `run_with_appkit`, accept-loop on background thread.
-- [ ] Stub `notifier::linux::LinuxNotifier` (no-op `notify`,
+      *(Landed as `PlatformDriver::Gtk`; `run_with_glib` kept the
+      name. The variant carries a `cfg(not(target_os = "linux"))`
+      `unreachable!()` arm so the match stays exhaustive on macOS.)*
+- [x] Stub `notifier::linux::LinuxNotifier` (no-op `notify`,
       session-bus availability check in `install`); flip
       `default_kind()` in
       [vetterd/src/notifier/mod.rs](vetterd/src/notifier/mod.rs)
-      to `"linux"` on Linux.
+      to `"linux"` on Linux. *(Never landed as a stub — PR 2's real
+      implementation went in directly. The session-bus guard and
+      the `default_kind()` flip are as described.)*
 - [x] Add `MgmtRequest::Resolve { id, decision, reason }`
       + matching `MgmtResponse::Resolved { id, decision }` to
       [vetter-core/src/wire/mod.rs](vetter-core/src/wire/mod.rs);
@@ -701,11 +736,15 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
       [plans/LinuxApp.md](plans/LinuxApp.md) §6a; the wire field
       carries a reason for either decision if `approve` ever wants
       one.
-- [ ] CI: extend `.github/workflows/ci.yml` test job to run
+- [x] CI: extend `.github/workflows/ci.yml` test job to run
       `tools/install-deps.sh --run`, rather than hard-coding package
       names in the workflow — the script is the canonical list.
+      *(In the clippy, test and msrv jobs.)*
 
-### PR 2 — D-Bus notifications via zbus
+### PR 2 — D-Bus notifications via zbus  `[~] in progress`
+
+The notifier itself landed 2026-09-06 (§6b); the mock-server E2E
+coverage below is still open and now belongs with §6g.
 
 - [x] Real `LinuxNotifier::notify` against
       `org.freedesktop.Notifications`; subscribe to
@@ -731,18 +770,35 @@ window — same separate-channel guarantee as macOS, no TTY prompt.
       about a Python dependency in CI, which belongs with the PR-6
       CI work rather than here.
 
-### PR 3 — Tray (StatusNotifierItem)
+### PR 3 — Tray (StatusNotifierItem)  `[x] done 2026-09-06`
 
-- [x] `runloop/linux/status_item.rs` using `ksni`: shield icon,
-      pending-count badge, "Open vetter window…" / "Pending: N"
-      / "Quit Vetter" menu.
+- [x] `ksni`-backed tray: shield icon, pending-count badge,
+      "Open Vetter…" / "Pending: N" / "Quit Vetter" menu.
+      *(Landed as [vetterd/src/tray.rs](vetterd/src/tray.rs), not
+      under `runloop/linux/` — it is bus-driven and owns no GTK
+      objects, so it does not belong in the window module. The badge
+      is `ToolTip` text plus `Status = NeedsAttention` rather than an
+      overlay icon, which GNOME's appindicator extension does not
+      reliably render. Per-request submenus gained **Open** in phase
+      6i.)*
 - [x] Wire the queue change-listener to call `ksni::Handle::update`
       on every state flip (mirrors
       `runloop/mac/status_item.rs::set_pending_count`).
-- [x] Hicolor SVG asset under `vetterd/resources/icons/` with the
-      same shield silhouette as macOS.
+- [x] Hicolor SVG asset with the same shield silhouette as macOS.
+      *(Landed at
+      `share/icons/hicolor/scalable/apps/dev.vetter.daemon.svg`,
+      installed into `$XDG_DATA_HOME` by
+      [tools/install-desktop.sh](tools/install-desktop.sh) — the
+      repo ships an installable `share/` tree rather than a private
+      `resources/` dir, because the same file supplies the window's
+      Wayland icon and the notification's `desktop-entry` identity.
+      Tray also publishes an `IconPixmap` fallback so it works from
+      `target/release` before anything is installed.)*
 
-### PR 4 — GTK4 popover window
+### PR 4 — GTK4 popover window  `[x] done 2026-09-08`
+
+Landed as a plain window rather than a popover — Wayland cannot anchor
+to a tray icon we do not own (§5.1).
 
 - [x] `runloop/linux/` window + card assembly. The split landed
       differently and better than this bullet assumed: rather than
@@ -824,7 +880,18 @@ side-by-side screenshot against macOS.
 - [x] Repaint on live theme switch (~2 lines, noted in §6h).
 - [x] Window default/minimum size, scrolling, empty-queue state.
 
-### PR 5 — `.deb` packaging + systemd user service
+### PR 5 — `.deb` packaging + systemd user service  `[—] superseded`
+
+**Superseded by [plans/LinuxApp.md](plans/LinuxApp.md) §4.3
+(2026-09-06)**, which chose a release tarball + `cargo install` for
+this milestone: no COPR, no Flatpak, no PPA. The distribution work
+that *is* planned is §6f. Kept rather than deleted because native
+packaging is an explicit follow-up once the UI settles (§8), and the
+`[package.metadata.deb]` / unit-file shape below is a reasonable
+starting point when it comes back.
+
+Do not pick these up as written — in particular the autostart bullet
+below is now factually wrong, see its note.
 
 - [ ] `[package.metadata.deb]` block in
       [vetterd/Cargo.toml](vetterd/Cargo.toml) describing
@@ -839,11 +906,16 @@ side-by-side screenshot against macOS.
       `WantedBy=default.target` user unit above is what actually
       brings the daemon up at every login; the `.desktop` file is
       only needed for users who run vetterd outside a systemd-
-      session manager. We do **not** plan to surface the
+      session manager. ~~We do **not** plan to surface the
       `Settings::autostart` toggle on Linux: opting in is the
       install-time default (`postinst` enables the user unit),
       and revocation goes through `systemctl --user disable
-      vetter.service`.
+      vetter.service`.~~ **Overtaken by events:** PR 4c shipped
+      exactly that toggle. `autostart::sys` writes
+      `~/.config/autostart/vetter.desktop`, the footer's **Start at
+      login** drives it, and opting in is *not* the default — a
+      security tool should not auto-enable behaviour that outlives
+      the user's explicit consent (§5.3).
 - [ ] `vetterd/resources/postinst` →
       `systemctl --user --global enable vetter.service`.
 - [ ] `tools/release-deb.sh`: `cargo build --release` →
@@ -852,21 +924,32 @@ side-by-side screenshot against macOS.
       `dpkg-deb --contents target/debian/*.deb` against an
       expected manifest.
 
-### PR 6 — Launchpad PPA + Release.md update + README
+### PR 6 — Launchpad PPA + Release.md update + README  `[—] superseded`
 
-- [ ] Create `ppa:blevinstein/vetter` on Launchpad (manual; one-
-      time per maintainer).
-- [ ] First upload via `dput vetter-ppa target/source-package/
+**PPA superseded by [plans/LinuxApp.md](plans/LinuxApp.md) §4.3**,
+same as PR 5. The two non-PPA bullets did not go away, though: one
+has already landed elsewhere and one moved to §6f, marked below.
+
+- [—] Create `ppa:blevinstein/vetter` on Launchpad (manual; one-
+      time per maintainer). *(Superseded, §4.3.)*
+- [—] First upload via `dput vetter-ppa target/source-package/
       vetter_*_source.changes`; verify per-arch builds succeed
-      for jammy and noble.
-- [ ] Update `vet doctor` to surface Linux-specific rows: D-Bus
+      for jammy and noble. *(Superseded, §4.3.)*
+- [x] Update `vet doctor` to surface Linux-specific rows: D-Bus
       session bus reachable, notification daemon name + version,
       StatusNotifierWatcher present, systemd user service status,
       package source (`dpkg -S` lookup against the binary path).
+      *(Landed in PR 4c / §6e, minus the systemd row, which has no
+      subject now that there is no unit. Package source became the
+      `provenance` row.)*
 - [ ] Update [README.md](README.md) status section; add the
       Ubuntu install block (parallel to the existing macOS one).
+      *(Still open, but it belongs to §6f: README currently promises
+      `sudo add-apt-repository ppa:blevinstein/vetter`, which §4.3
+      retired. Tracked there, not here.)*
 - [ ] Update [TODO.md](TODO.md) (this file): flip Phase 6 boxes
-      to `[x]` and the phase tag to `[x] done` once PR 6 lands.
+      to `[x]` and the phase tag to `[x] done` once the remaining
+      work (§6f, §6g) lands.
 
 ---
 

@@ -870,7 +870,26 @@ side-by-side screenshot against macOS.
 
 ---
 
-## Build health  `[x] done`
+## Build health  `[~] in progress`
+
+- [ ] `vet daemon open` reports success when nothing appears. On Wayland
+      `present()` cannot raise or focus without an activation token, so
+      when the window is already mapped behind another window it stays
+      there while the CLI prints `approval window raised`. Fix is to
+      plumb a token into the `OpenWindow` path the way 6d step 4 does
+      for notification clicks
+      ([vetterd/src/runloop/linux/window.rs](vetterd/src/runloop/linux/window.rs)).
+      Found during 6h.
+- [ ] Under a private session bus with no notification server to
+      activate, the daemon accepts connections and answers the admin
+      socket, but prompt-class requests never reach the pending queue:
+      `vet` blocks, `vet daemon list` reports none, and no audit entry
+      is written. The same isolated daemon parks correctly with
+      `VETTERD_NOTIFIER=noop`, so it is specific to the linux notifier
+      in that configuration. Reproduce with `tools/dev-window.sh`.
+      **This blocks §6g's planned `dbus-run-session` + `dunst` CI smoke
+      job**, which is exactly this configuration, so it is worth
+      root-causing before that job is written. Found 2026-09-09.
 
 Items that make `cargo clippy` / `cargo test` red at `main`. These
 jump the queue regardless of which phase is in flight: a red baseline

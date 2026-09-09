@@ -121,13 +121,19 @@ distribution is built by [`tools/release.sh`](tools/release.sh) — see
 Source-build path for Ubuntu development:
 
 ```sh
-tools/install-deps.sh --run    # system build deps; see the script for the list
+tools/install-deps.sh --run     # system build deps; see the script for the list
 cargo build --release -p vetterd -p vet
-cargo install cargo-deb && cargo deb -p vetterd
-sudo dpkg -i target/debian/vetter_*.deb
-# log out and back in so systemd --user picks up vetter.service
+export PATH="$PWD/target/release:$PATH"
+tools/install-desktop.sh        # desktop entry + icon: without it the window
+                                # and its banners fall back to a generic icon
+vet daemon start
 vet curl https://prompt-test.example/    # D-Bus banner with Approve/Reject
 ```
+
+There is no `.deb` and no systemd unit. `cargo deb`,
+`[package.metadata.deb]` and `vetter.service` were described here before
+they existed and still do not; `plans/LinuxApp.md` §4.3 defers packaging
+to a release tarball, and §3.3 catalogues the rest of that drift.
 
 The daemon **expects** a graphical session: the default `VETTERD_NOTIFIER=linux`
 refuses to install if `$DBUS_SESSION_BUS_ADDRESS` is unset, and exits with
@@ -136,6 +142,27 @@ code 78. For SSH / CI / container use, set `VETTERD_NOTIFIER=noop` (see below).
 See [plans/LinuxApp.md](plans/LinuxApp.md) for the full operational guide
 and [plans/Release.md](plans/Release.md) §"Linux / Launchpad PPA" for the
 maintainer-side flow.
+
+#### Verifying a UI change
+
+After any daemon change, rebuild **and restart** before testing:
+
+```sh
+cargo build --release -p vetterd -p vet
+vet daemon stop && vet daemon start
+```
+
+A running daemon keeps the binary it started with. Testing a UI change
+against a stale daemon looks exactly like the feature not working, and
+has already cost this project a full debugging round.
+
+`tools/park-spread.sh` parks one request per element of the card
+catalogue — pills, dry-run wrapper, both `Open file` cases, loopback vs
+unknown host, a markup-hostile URL — which is otherwise reconstructed by
+hand every time. `tools/dev-window.sh` renders the window against a
+nested X server and captures a PNG: the window cannot raise itself on
+Wayland without an activation token, so that is the only scripted way to
+look at it (read its header for a current limitation).
 
 ### Headless / CI / dev workflows
 
@@ -146,6 +173,7 @@ request will then block until it is resolved via the admin socket:
 vet daemon list              # show pending requests
 vet daemon approve <id>
 vet daemon reject <id>
+vet daemon open              # raise the approval window (Linux, GUI session)
 ```
 
 This is the intended path for headless CI, SSH sessions, and lifecycle
@@ -217,3 +245,19 @@ smoke checks.
   implementation. They are the spec; raise discrepancies in PR
   description or open questions section, don't silently rewrite the
   spec.
+- `pkill -f <pattern>` where the pattern could match your own shell. It
+  matches the invoking command line and kills the session mid-cleanup.
+  This has now caught three separate agents in this repo. Key teardown
+  off a marker unique to the child instead:
+  ```sh
+  for p in $(pgrep -f 'release/vetterd'); do
+      grep -qa "MY_MARKER=$$" "/proc/$p/environ" && kill "$p"
+  done
+  ```
+- Putting a Unix socket under a long scratch path. `sun_path` is 108
+  bytes and the daemon refuses anything longer, so agent scratch
+  directories overflow it. Use `/run/user/$(id -u)/...`.
+- Assuming `rustup`'s `stable` is current. `rust-toolchain.toml` pins
+  the *channel*, not a version, and rustup does not refresh a stale
+  one — a long-installed `stable` fails the workspace MSRV with an
+  error that reads like a project bug. `rustup update stable` first.

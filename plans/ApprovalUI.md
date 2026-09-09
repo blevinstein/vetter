@@ -1,11 +1,28 @@
 # Approval UI
 
-Native AppKit catalogue for the macOS approver popover. This doc owns
-the *shape* of each card: which widgets render which fields, how
+Catalogue for the approver card on **both macOS and Linux**. This doc
+owns the *shape* of each card: which widgets render which fields, how
 severity colors are applied, what is intentionally deferred, and the
-SGR-to-`NSColor` taxonomy shared with the CLI renderer (see
+SGR-to-colour taxonomy shared with the CLI renderer (see
 [Body colouring](#body-colouring)). For build / smoke / debug
-procedures see [MacOSApp.md](MacOSApp.md).
+procedures see [MacOSApp.md](MacOSApp.md) and
+[LinuxApp.md](LinuxApp.md).
+
+**The catalogue is shared; the container is not.** macOS renders the
+cards in an `NSPopover` anchored to the menu-bar status item. Linux
+renders the same cards in a plain `gtk::ApplicationWindow` that the
+compositor places, because Wayland has no anchored-popover equivalent
+and cannot have one: a client cannot position a surface at absolute
+screen coordinates, `xdg_positioner` anchors only against the client's
+*own* surfaces, and the tray icon is not ours — the shell draws it from
+the `StatusNotifierItem` properties we publish over D-Bus. See
+[LinuxApp.md §5.1](LinuxApp.md) for the three options weighed and why a
+plain window won.
+
+Card *contents* are identical across the two. The container, its
+sizing, and its dismissal semantics differ, and each divergence is
+noted against the element it affects below. **A section with no
+platform note describes both.**
 
 ## Goals
 
@@ -20,9 +37,14 @@ procedures see [MacOSApp.md](MacOSApp.md).
   don't yet have a native widget for, the user can always click
   "Show raw" to see the §8.5 plaintext layout — every field stays
   reachable, even when the structured presentation is incomplete.
-- **Keep the daemon agnostic.** All the UI rules live in
-  `vetterd/src/runloop/popover_*.rs`. `vetter-core` only ships data
-  (the parsed command, risk signals, severity classifier).
+- **Keep the daemon agnostic.** `vetter-core` only ships data (the
+  parsed command, risk signals, severity classifier). The rules that
+  lower that data into a card — URL segmentation, signal tone, host
+  trust, effect rows, the duration ladder — live in
+  `vetterd/src/cards/`, shared by both platforms and unit-tested with
+  no display and no bus. Each platform's `runloop` owns only widget
+  assembly: `runloop/popover_*.rs` on macOS, `runloop/linux/` on
+  Linux.
 
 ## Non-goals (v1)
 
@@ -103,6 +125,12 @@ as `build_pill(label, fg, bg, mtm)`.
   below), so a low-alpha tint of the foreground reads as a soft
   capsule on a dark surface in both Light and Dark system themes.
 
+**On Linux** the recipe is one CSS rule — `alpha(@color, 0.22)` on a
+rounded label — so the tint arithmetic is literally the same. It
+resolves against whichever theme is active rather than a pinned one,
+which is why the palette has to be checked in both (see "Popover
+appearance").
+
 ### Popover appearance
 
 `Popover::new` calls
@@ -113,6 +141,21 @@ pill / signal / URL row colours were calibrated against a dark
 surface; running them under Light Aqua made the orange / yellow
 text unreadable regardless of pill background. Pinning gives one
 visual story to QA against and keeps the design doc honest.
+
+**On Linux the window tracks the user's theme instead of pinning
+one.** A GTK window that ignored the system theme would look broken
+beside every other application on the desktop — a different trade than
+a transient popover anchored to a menu bar makes. The cost is that the
+palette must read correctly in both light and dark, so the semantic
+tones from `cards::` are mapped to two concrete palettes and the window
+repaints when `gtk-application-prefer-dark-theme` changes. Phase 6h
+verified both by screenshot.
+
+There is deliberately **no user-override stylesheet**. This surface
+exists to make risk legible — the unknown-host pill, the danger tones,
+the dry-run frame — and inviting users to restyle it is a way to make a
+hostile request look benign on the exact screen where it gets
+authorised.
 
 ### Signal pills
 
@@ -224,6 +267,13 @@ particular symbol is unavailable on the running OS we omit the icon
 and just show the label (the system call returns an empty image
 rather than crashing).
 
+**On Linux the rows carry no glyphs at all.** No stock icon set covers
+these specific concepts the way SF Symbols does, and an invented
+mapping onto approximate icon names reads worse than the text label it
+would sit beside — a wrong icon is more confusing than no icon on a
+surface whose whole job is to be read carefully before a decision. The
+rows are otherwise identical, minus the leading image.
+
 ### Show raw disclosure
 
 Per-card `NSDisclosureButton` (`NSBezelStyle::Disclosure`,
@@ -237,6 +287,15 @@ expand to keep the closed-state card cheap.
 This is the safety valve: any time the structured layout hasn't
 caught up with a new parser, "Show raw" guarantees the user can
 still read the canonical §8.5 detail before approving.
+
+**On Linux** this is a `GtkExpander` with the same title and the same
+collapsed-by-default state. One difference is load-bearing: the GTK
+window rebuilds every card whenever the queue changes — and the queue
+changes whenever *any* request resolves anywhere, including from a
+notification or `vet daemon approve` — so the open/closed bit lives in
+the model keyed by request id, not in the widget. Without that,
+resolving one card would collapse the disclosure a user was mid-way
+through reading on another.
 
 ### Body colouring
 
@@ -298,6 +357,23 @@ classes reads at a glance when both sit in the same popover.
   See [MacOSApp.md §Notification sound](MacOSApp.md#notification-sound)
   and [§Autostart on login](MacOSApp.md#autostart-on-login).
 
+**On Linux the cards are drawn boxes, so there is no inter-card
+separator.** The rule above divides cards in a *flat* AppKit stack;
+laid over a border it reads as a stray line. The box is the
+separation. Two details are recorded here so they are not
+re-litigated:
+
+- The obvious spelling — the `.card` style class — is **libadwaita**,
+  and the daemon links plain GTK4. Under Breeze it silently resolves
+  to nothing and cards render as flat text. The implementation defines
+  its own `.vetter-card` from `@theme_base_color` and `@borders`.
+- The window opens at 720×720 with a 480×360 floor. The original
+  figure had been sized against those surface-less cards and clipped
+  the following card at the footer once real padding existed.
+
+The Linux footer carries the same two checkboxes alongside **Quit
+Vetter**.
+
 ### Approve / Reject buttons
 
 - Layout: **Reject** on the left, **Approve** on the right (canonical
@@ -310,6 +386,14 @@ classes reads at a glance when both sit in the same popover.
 - `Esc` is **not** rebound: the popover's `Transient` behavior
   reserves it for dismissal, so the user can always back out without
   resolving a card.
+
+**On Linux** the ordering and the accent / destructive treatment are
+the same, expressed as the `suggested-action` and `destructive-action`
+style classes so the active theme supplies the tint. `Esc` and the
+window-manager close button **hide** the window rather than resolving
+anything, which preserves the same back-out-without-deciding property.
+Hidden rather than closed is deliberate: closing the last window would
+end the GTK main loop and take the daemon's accept loop down with it.
 
 ### Allowlist / Trust-host picker (Phase 5)
 
@@ -351,6 +435,18 @@ without bespoke UI work in the picker module.
 Scope default in v1: every picker writes to the user scope (the
 chosen-option from Phase-5 design). Project-scope writes still
 work through the existing `vet allow add --scope project` CLI.
+
+**On Linux** the picker is a modal `gtk::Window` set transient-for the
+approval window: the same radio-per-tier layout, the same monospaced
+YAML preview of the rule's `when:` block, driven by the same
+`cards::rules::DurationChoice` ladder. The preview is not decoration —
+it is what makes a security-relevant write reviewable before it
+happens, so it is mandatory on both platforms.
+
+The result does **not** surface as a second modal. A dialog raised
+after the work is already done has nothing to ask, and stacking one
+over a still-open sheet on Wayland is a reliable way to lose a window
+behind its parent. An in-window banner reports it instead.
 
 ## Data flow
 

@@ -260,8 +260,9 @@ The three real options, and why we chose (a):
 
 **Implication for `ApprovalUI.md`:** the Linux card layout is a
 window, not a popover. Card contents are unchanged; the container,
-its sizing, and its dismissal semantics differ. Worth an explicit
-note in that document.
+its sizing, and its dismissal semantics differ. That document records
+this as of 2026-09-09 (§10), so it now reads as a shared catalogue
+with per-element platform notes rather than as a macOS-only spec.
 
 ### 5.2 There is no bundle identity
 
@@ -866,10 +867,14 @@ discrepancies instead. Raising them here:
   procedure. Repoint at §7 here. (The "gated on unlanded phases"
   caveat this bullet used to carry is spent — as of 2026-09-09 all
   15 steps run.)
-- **`ApprovalUI.md`** should gain a note that the Linux container is
-  a window, not a popover (§5.1). **Still outstanding** — checked
-  2026-09-09, the file has no such note, and it is editable
-  (unlike `Overview.md` / `TestingPlan.md`).
+- **`ApprovalUI.md`** needed a note that the Linux container is a
+  window, not a popover (§5.1). **Done 2026-09-09.** That document now
+  frames the catalogue as shared and carries a per-element note
+  wherever the two platforms diverge — container, theme handling,
+  effect-row glyphs, card separation, disclosure state, button
+  semantics and the picker — including the three deliberate
+  divergences Phase 6h recorded. Sections with no platform note
+  describe both.
 - **`README.md`** promises a PPA (see 6f).
 - Mechanical link updates from `UbuntuApp.md` → `LinuxApp.md` have
   been made in `AGENTS.md`, `TODO.md`, `RepoMap.md`, `Release.md`,

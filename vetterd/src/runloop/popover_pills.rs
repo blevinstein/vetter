@@ -7,29 +7,24 @@
 //! corner radius, same font weight, same padding).
 //!
 //! The base [`build_pill`] helper takes raw foreground / background
-//! colours and a label string; the higher-level
-//! [`build_signal_pill`] derives those from a [`SignalKind`] and the
-//! `RiskSignal::detail` tooltip text per the table in
-//! [plans/ApprovalUI.md "Element catalogue"](../../../plans/ApprovalUI.md).
+//! colours and a label string; the higher-level [`build_spec_pill`]
+//! paints a [`PillSpec`] — which signals earn a chip, what it says,
+//! how urgent it reads and where it sorts are all decided in
+//! [`crate::cards::pills`], shared with the GTK surface, per the table
+//! in [plans/ApprovalUI.md "Element catalogue"](../../../plans/ApprovalUI.md).
 //!
 //! `Info`-tier signal kinds intentionally don't get a pill — those
 //! lines stay in the §8.5 raw body inside the "Show raw" disclosure.
-//! `build_signal_pill` returns `None` in that case so `build_card`
-//! can `flatten()` over the iterator without an explicit branch.
+//! The shared layer drops them, so everything reaching
+//! [`build_spec_pill`] is a chip that should be painted.
 
 #![cfg(target_os = "macos")]
 
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSFont, NSTextField, NSView};
 use objc2_foundation::{MainThreadMarker, NSString};
-use vetter_core::SignalKind;
 
-use crate::cards::pills::{self, Tone};
-
-// Re-exported so `popover.rs` keeps calling
-// `popover_pills::signal_priority` after the lift into
-// `crate::cards::pills`.
-pub use crate::cards::pills::signal_priority;
+use crate::cards::pills::{PillSpec, Tone};
 
 /// `CGFloat` is `f64` on Apple Silicon (and `f32` on the legacy
 /// 32-bit ABI we don't target). Aliased here so the `setCornerRadius:`
@@ -98,10 +93,14 @@ pub fn build_pill(
     field.into_super().into_super()
 }
 
-/// Build a signal pill for `kind`, using `detail` for the tooltip.
+/// Paint one [`PillSpec`] as a tinted chip.
 ///
-/// Returns `None` for `Info`-tier kinds (see module docs); the caller
-/// should `.flatten()` over the iterator.
+/// Everything *decided* about the pill — whether the signal earns one
+/// at all, its label, its tooltip, its tone and its position in the
+/// row — happens in [`crate::cards::pills`], which the GTK surface
+/// consumes too (including why `AuthHeader` is special-cased to a
+/// positive tone). All that is left here is mapping a tone onto
+/// AppKit's palette.
 ///
 /// Each pill is tinted with its own foreground colour at low alpha
 /// ([`pill_bg_for`]). The popover itself is forced into Dark Aqua
@@ -111,24 +110,14 @@ pub fn build_pill(
 /// appearance is fixed regardless. Earlier rounds tried a single
 /// near-black background for every pill, but against the now-dark
 /// popover that disappeared into the surface.
-pub fn build_signal_pill(
-    kind: SignalKind,
-    detail: &str,
-    mtm: MainThreadMarker,
-) -> Option<Retained<NSView>> {
-    // Which chip (if any) this signal earns, what it says, and how
-    // urgent it reads are platform-neutral decisions — see
-    // `crate::cards::pills::signal_pill`, including why `AuthHeader`
-    // is special-cased to a positive tone. All that is left here is
-    // painting a tone in AppKit's palette.
-    let spec = pills::signal_pill(kind, detail)?;
+pub fn build_spec_pill(spec: &PillSpec, mtm: MainThreadMarker) -> Retained<NSView> {
     let fg = match spec.tone {
         Tone::Danger => NSColor::systemRedColor(),
         Tone::Warn => NSColor::systemOrangeColor(),
         Tone::Positive => NSColor::systemGreenColor(),
     };
     let bg = pill_bg_for(&fg);
-    Some(build_pill(spec.label, &fg, &bg, &spec.tooltip, mtm))
+    build_pill(spec.label, &fg, &bg, &spec.tooltip, mtm)
 }
 
 /// Tint helper: returns `fg` faded to a low-alpha background suitable

@@ -46,6 +46,7 @@ use objc2_foundation::{
 use super::{
     popover_attr, popover_effects, popover_picker, popover_pills, popover_url, AppDelegate,
 };
+use crate::cards::pills as card_pills;
 use crate::pending::{PendingQueue, PromptSummary, ResolvedEntry};
 use crate::Context;
 
@@ -1556,44 +1557,22 @@ impl PopoverController {
         card.addArrangedSubview(&header_row);
 
         // Pills row — one tinted pill per `Warn`/`Danger`-tier
-        // signal kind, deduped on kind. The dedupe rule matters when
-        // a request emits the same kind on multiple effects (e.g. a
-        // POST + AuthHeader on the same HttpRequest would otherwise
-        // paint two `auth-header` pills); we keep the *first*
-        // matching `RiskSignal` so its `detail` powers the tooltip.
-        // Info-tier kinds (none today) intentionally don't get a
-        // pill — that's surfaced inside the "Show raw" disclosure
-        // body instead.
-        //
-        // Order within the row is by triage priority
-        // (`popover_pills::signal_priority`): Danger (red) first,
-        // Warn (orange) next, AuthHeader (green) last. The user's
-        // eye lands on the most-urgent chips before scanning past
-        // the supportive ones, regardless of the order the parser
-        // emitted the signals in. Ties (two Danger kinds, etc.)
-        // keep their first-seen order so the tooltip-detail
-        // selection above stays stable.
+        // signal kind. Which signals earn a chip, the dedupe on kind
+        // (a request tripping the same kind on several effects gets
+        // one chip, keeping the *first* signal's `detail` for the
+        // tooltip), the Info-tier exclusion, and the triage ordering
+        // — Danger first, then Warn, AuthHeader last — are all
+        // decided by `cards::pills::pills_for`, shared with the GTK
+        // surface so the two cannot drift.
         //
         // Layout: a horizontal stack placed *below* the header row
         // rather than inside it, so multi-pill cases don't
         // crowd the command/url line. The row is hidden entirely
         // when no pill ends up rendered (no Warn/Danger signals).
-        let mut deduped: Vec<&vetter_core::RiskSignal> = Vec::new();
-        let mut seen: Vec<vetter_core::SignalKind> = Vec::new();
-        for sig in &summary.signals {
-            if seen.contains(&sig.kind) {
-                continue;
-            }
-            seen.push(sig.kind);
-            deduped.push(sig);
-        }
-        deduped.sort_by_key(|sig| popover_pills::signal_priority(sig.kind));
-        let mut pill_views: Vec<Retained<NSView>> = Vec::new();
-        for sig in &deduped {
-            if let Some(pill) = popover_pills::build_signal_pill(sig.kind, &sig.detail, mtm) {
-                pill_views.push(pill);
-            }
-        }
+        let pill_views: Vec<Retained<NSView>> = card_pills::pills_for(&summary.signals)
+            .iter()
+            .map(|spec| popover_pills::build_spec_pill(spec, mtm))
+            .collect();
         if !pill_views.is_empty() {
             let pills_row = NSStackView::new(mtm);
             pills_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);

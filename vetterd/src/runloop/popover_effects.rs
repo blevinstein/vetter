@@ -1,7 +1,9 @@
 //! Per-effect native rows for the approver popover.
 //!
-//! [`build_effect_views`] walks `parsed.effects` and produces one
-//! `NSView` per item, ready to be appended to the card stack:
+//! [`build_effect_views`] lowers `parsed.effects` through
+//! [`crate::cards::rows::effect_rows`] — shared with the GTK
+//! surface — and paints one `NSView` per resulting row, ready to be
+//! appended to the card stack:
 //!
 //! - `HttpRequest` → headers list, body summary, auth row.
 //!   The request line is *not* repeated — it's already in the URL
@@ -31,9 +33,9 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use vetter_core::render::sanitize_for_display;
-use vetter_core::{Auth, Body, Effect, FileRead, FileWrite, Header, ParsedCommand, ProcessSpawn};
+use vetter_core::ParsedCommand;
 
-use crate::cards::effects as card_effects;
+use crate::cards::rows::{self as card_rows, BodyContent, EffectRow, FilePath};
 
 /// Body / monospaced-label font size. Picked to read at the same
 /// optical weight as the URL row's tokens.
@@ -115,79 +117,68 @@ impl EffectViews {
 /// get the button this round — write paths may not exist yet, and
 /// "Reveal in Finder" is a separate UX call left for follow-up.
 ///
-/// De-duplication: the curl parser intentionally emits **both**
-/// `Body::FromFile { path }` (for `-d @file`) **and** a separate
-/// `Effect::FileRead { path }` so the matcher / audit log can
-/// reason about the file read independently of the HTTP body.
-/// That double-bookkeeping is invisible in the §8.5 renderer (one
-/// "body" line, one "files" line) but the popover would render two
-/// identical rows — body row + read row, same path — without help.
-/// Any FileRead whose path also appears as a `Body::FromFile` in
-/// this parsed command is skipped on the read row; the body row
-/// already exposes the path and the Open button. We keep the
-/// FileRead in the underlying effect list (the matcher still sees
-/// it) — only the visible row collapses.
+/// Which effects earn a row, in what order, and which bucket they
+/// land in are decided by [`crate::cards::rows::effect_rows`], shared
+/// with the GTK surface so the two cannot drift. That includes the
+/// de-duplication the curl parser makes necessary: it intentionally
+/// emits **both** `Body::FromFile { path }` (for `-d @file`) **and** a
+/// separate `Effect::FileRead { path }` so the matcher / audit log can
+/// reason about the read independently of the HTTP body, and a card
+/// painting both would show the same path twice. Only the visible row
+/// collapses — the effect list the matcher sees is untouched.
+///
+/// What is left here is painting: one `NSView` per lowered row.
 pub fn build_effect_views(
     parsed: &ParsedCommand,
     mtm: MainThreadMarker,
     file_button_factory: &FileButtonFactory<'_>,
 ) -> EffectViews {
-    let body_file_paths = card_effects::collect_body_file_paths(parsed);
-    let mut out = EffectViews {
-        file_inputs: Vec::new(),
-        others: Vec::new(),
-    };
-    for eff in &parsed.effects {
-        match eff {
-            Effect::HttpRequest(req) => {
-                if let Some(view) = build_headers_section(&req.headers, mtm) {
-                    out.others.push(view);
-                }
-                if let Some(view) = build_body_section(&req.body, mtm, file_button_factory) {
-                    // `Body::FromFile` is the only file-input
-                    // variant of the body section. Other body
-                    // shapes (Inline / Form) live in `others` so
-                    // they fall behind the resolved-card disclosure
-                    // with the rest of the request metadata.
-                    if matches!(req.body, Body::FromFile { .. }) {
-                        out.file_inputs.push(view);
-                    } else {
-                        out.others.push(view);
-                    }
-                }
-                if let Some(view) = build_auth_row(req.auth.as_ref(), mtm) {
-                    out.others.push(view);
-                }
-            }
-            Effect::FileRead(fr) => {
-                if body_file_paths.contains(&fr.path) {
-                    // Path already surfaced by the matching
-                    // `Body::FromFile` row above — skip the duplicate.
-                    continue;
-                }
-                out.file_inputs
-                    .push(build_file_read_row(fr, mtm, file_button_factory));
-            }
-            Effect::FileWrite(fw) => out.others.push(build_file_write_row(fw, mtm)),
-            Effect::ProcessSpawn(ps) => out.others.push(build_process_row(ps, mtm)),
-            Effect::CredentialUse(_) | Effect::Network(_) => {}
-        }
+    let rows = card_rows::effect_rows(parsed);
+    EffectViews {
+        file_inputs: rows
+            .file_inputs
+            .iter()
+            .map(|row| build_row_view(row, mtm, file_button_factory))
+            .collect(),
+        others: rows
+            .others
+            .iter()
+            .map(|row| build_row_view(row, mtm, file_button_factory))
+            .collect(),
     }
-    out
 }
 
-/// Build the headers section for an HttpRequest. Returns `None`
-/// when `headers` is empty so the caller doesn't insert a blank
-/// "headers" label.
-fn build_headers_section(headers: &[Header], mtm: MainThreadMarker) -> Option<Retained<NSView>> {
-    if headers.is_empty() {
-        return None;
+/// Paint one lowered row.
+///
+/// Every arm is infallible: the shared layer emits a row only when
+/// there is something to draw, so the "empty headers list" and
+/// "`Body::None`" cases that used to be `None` returns here never
+/// reach this point.
+fn build_row_view(
+    row: &EffectRow,
+    mtm: MainThreadMarker,
+    file_button_factory: &FileButtonFactory<'_>,
+) -> Retained<NSView> {
+    match row {
+        EffectRow::Headers(names) => build_headers_section(names, mtm),
+        EffectRow::Body { meta, content } => {
+            build_body_section(meta, content, mtm, file_button_factory)
+        }
+        EffectRow::Auth { text, redacted } => build_auth_row(text, *redacted, mtm),
+        EffectRow::FileRead(path) => build_file_read_row(path, mtm, file_button_factory),
+        EffectRow::FileWrite(path) => build_file_write_row(path, mtm),
+        EffectRow::ProcessSpawn(command) => build_process_row(command, mtm),
     }
+}
+
+/// Build the headers section. `names` is non-empty and already
+/// sanitised by the shared layer.
+fn build_headers_section(names: &[String], mtm: MainThreadMarker) -> Retained<NSView> {
     let stack = vertical_section("headers", mtm);
-    for h in headers {
-        stack.addArrangedSubview(&build_header_row(h, mtm));
+    for name in names {
+        stack.addArrangedSubview(&build_header_row(name, mtm));
     }
-    Some(stack.into_super())
+    stack.into_super()
 }
 
 /// Single header row: just the header name in bold blue (matching
@@ -200,13 +191,12 @@ fn build_headers_section(headers: &[Header], mtm: MainThreadMarker) -> Option<Re
 /// via "Show raw", where the §8.5 renderer applies the same
 /// unconditional `••••<last-4>` redaction recipe (see
 /// `plans/Overview.md` §8.5.1).
-fn build_header_row(h: &Header, mtm: MainThreadMarker) -> Retained<NSView> {
+fn build_header_row(name: &str, mtm: MainThreadMarker) -> Retained<NSView> {
     let row = NSStackView::new(mtm);
     row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
     row.setSpacing(4.0);
 
-    let safe_name = sanitize_for_display(&h.name);
-    let name = NSTextField::labelWithString(&NSString::from_str(&safe_name), mtm);
+    let name = NSTextField::labelWithString(&NSString::from_str(name), mtm);
     name.setFont(Some(&NSFont::boldSystemFontOfSize(ROW_FONT_SIZE)));
     name.setTextColor(Some(&NSColor::systemBlueColor()));
     row.addArrangedSubview(&name);
@@ -216,57 +206,46 @@ fn build_header_row(h: &Header, mtm: MainThreadMarker) -> Retained<NSView> {
     row.into_super()
 }
 
-/// Build the body section. Returns `None` for `Body::None` so we
-/// don't render a stub "body" label for bodyless GETs.
+/// Build the body section. Bodyless GETs never reach here — the
+/// shared layer emits no body row for `Body::None`, so there is no
+/// stub "body" label to suppress.
 ///
-/// `file_button_factory` is threaded in so the `Body::FromFile`
-/// branch can attach the per-row "Open file" button (Phase 5.1).
-/// Other body variants don't reference an on-disk path and ignore
-/// the factory.
+/// `file_button_factory` is threaded in so the
+/// [`BodyContent::FromFile`] branch can attach the per-row "Open
+/// file" button (Phase 5.1). Other body shapes don't reference an
+/// on-disk path and ignore the factory.
 fn build_body_section(
-    body: &Body,
+    meta: &str,
+    content: &BodyContent,
     mtm: MainThreadMarker,
     file_button_factory: &FileButtonFactory<'_>,
-) -> Option<Retained<NSView>> {
-    // `body_meta_label` is the single source of truth for "does this
-    // body get a section at all?" — it returns `None` exactly for
-    // `Body::None`, so the match below never sees that variant.
-    let meta = card_effects::body_meta_label(body)?;
-    let content: Option<Retained<NSView>> = match body {
-        Body::None => None,
-        Body::Inline { bytes } => Some(inline_body_content(bytes, mtm)),
-        Body::FromFile { path } => Some(file_glyph_row_with_open(
-            "doc.text",
-            path,
-            mtm,
-            file_button_factory,
-        )),
-        Body::Form { fields } => {
+) -> Retained<NSView> {
+    let content_view: Retained<NSView> = match content {
+        BodyContent::Inline(text) => inline_body_content(text, mtm),
+        BodyContent::FromFile(path) => {
+            file_glyph_row_with_open("doc.text", path, mtm, file_button_factory)
+        }
+        BodyContent::Form(fields) => {
             let stack = NSStackView::new(mtm);
             stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
             stack.setSpacing(2.0);
             stack.setDistribution(NSStackViewDistribution::Fill);
-            for f in fields {
-                let pair = NSTextField::labelWithString(
-                    &NSString::from_str(&card_effects::form_field_text(f)),
-                    mtm,
-                );
+            for field in fields {
+                let pair = NSTextField::labelWithString(&NSString::from_str(field), mtm);
                 pair.setFont(Some(&monospaced(ROW_FONT_SIZE)));
                 stack.addArrangedSubview(&pair);
             }
-            Some(stack.into_super())
+            stack.into_super()
         }
     };
 
     let stack = vertical_section("body", mtm);
-    let meta_label = NSTextField::labelWithString(&NSString::from_str(&meta), mtm);
+    let meta_label = NSTextField::labelWithString(&NSString::from_str(meta), mtm);
     meta_label.setFont(Some(&NSFont::systemFontOfSize(ROW_FONT_SIZE - 1.0)));
     meta_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
     stack.addArrangedSubview(&meta_label);
-    if let Some(view) = content {
-        stack.addArrangedSubview(&view);
-    }
-    Some(stack.into_super())
+    stack.addArrangedSubview(&content_view);
+    stack.into_super()
 }
 
 /// Render the inline bytes either as a UTF-8 string (when valid)
@@ -275,15 +254,15 @@ fn build_body_section(
 /// (form posts, JSON deltas); long bodies are still reachable via
 /// "Show raw" and the future scroll-on-hover treatment is tracked
 /// in the design doc.
-fn inline_body_content(bytes: &[u8], mtm: MainThreadMarker) -> Retained<NSView> {
-    let text = card_effects::inline_body_text(bytes);
-    let label = NSTextField::labelWithString(&NSString::from_str(&text), mtm);
+fn inline_body_content(text: &str, mtm: MainThreadMarker) -> Retained<NSView> {
+    let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
     label.setFont(Some(&monospaced(ROW_FONT_SIZE)));
     label.into_super().into_super()
 }
 
-/// Auth row. Returns `None` when no auth is set so we don't paint
-/// an "auth: (none)" line for unauthenticated requests.
+/// Auth row. Unauthenticated requests never reach here — the shared
+/// layer emits no auth row for them, so there is no "auth: (none)"
+/// line to suppress.
 ///
 /// Colour rule: the auth row is **green** when the credential value
 /// has been redacted out of the UI (the safe state — the agent has
@@ -294,11 +273,9 @@ fn inline_body_content(bytes: &[u8], mtm: MainThreadMarker) -> Retained<NSView> 
 /// credentials: having auth on a request is generally a good sign,
 /// and a red row was reading as "secret leaked" when the opposite
 /// is true.
-fn build_auth_row(auth: Option<&Auth>, mtm: MainThreadMarker) -> Option<Retained<NSView>> {
-    let auth = auth?;
-    let (label, redacted) = card_effects::auth_label(auth);
+fn build_auth_row(text: &str, redacted: bool, mtm: MainThreadMarker) -> Retained<NSView> {
     let stack = vertical_section("auth", mtm);
-    let value = NSTextField::labelWithString(&NSString::from_str(&label), mtm);
+    let value = NSTextField::labelWithString(&NSString::from_str(text), mtm);
     value.setFont(Some(&monospaced(ROW_FONT_SIZE)));
     if redacted {
         value.setTextColor(Some(&NSColor::systemGreenColor()));
@@ -306,37 +283,33 @@ fn build_auth_row(auth: Option<&Auth>, mtm: MainThreadMarker) -> Option<Retained
         value.setTextColor(Some(&NSColor::secondaryLabelColor()));
     }
     stack.addArrangedSubview(&value);
-    Some(stack.into_super())
+    stack.into_super()
 }
 
 fn build_file_read_row(
-    fr: &FileRead,
+    path: &FilePath,
     mtm: MainThreadMarker,
     file_button_factory: &FileButtonFactory<'_>,
 ) -> Retained<NSView> {
     let stack = vertical_section("read", mtm);
     stack.addArrangedSubview(&file_glyph_row_with_open(
         "doc.text",
-        &fr.path,
+        path,
         mtm,
         file_button_factory,
     ));
     stack.into_super()
 }
 
-fn build_file_write_row(fw: &FileWrite, mtm: MainThreadMarker) -> Retained<NSView> {
+fn build_file_write_row(path: &FilePath, mtm: MainThreadMarker) -> Retained<NSView> {
     let stack = vertical_section("write", mtm);
-    stack.addArrangedSubview(&file_glyph_row(
-        "square.and.pencil",
-        &fw.path.display().to_string(),
-        mtm,
-    ));
+    stack.addArrangedSubview(&file_glyph_row("square.and.pencil", &path.display, mtm));
     stack.into_super()
 }
 
-fn build_process_row(ps: &ProcessSpawn, mtm: MainThreadMarker) -> Retained<NSView> {
+fn build_process_row(command: &str, mtm: MainThreadMarker) -> Retained<NSView> {
     let stack = vertical_section("spawn", mtm);
-    stack.addArrangedSubview(&file_glyph_row("terminal", &ps.command, mtm));
+    stack.addArrangedSubview(&file_glyph_row("terminal", command, mtm));
     stack.into_super()
 }
 
@@ -360,12 +333,12 @@ fn file_glyph_row(symbol: &str, text: &str, mtm: MainThreadMarker) -> Retained<N
 /// pre-write or vanished paths.
 fn file_glyph_row_with_open(
     symbol: &str,
-    path: &Path,
+    path: &FilePath,
     mtm: MainThreadMarker,
     file_button_factory: &FileButtonFactory<'_>,
 ) -> Retained<NSView> {
-    let row = file_glyph_row_base(symbol, &path.display().to_string(), mtm);
-    if let Some(btn) = file_button_factory(path, mtm) {
+    let row = file_glyph_row_base(symbol, &path.display, mtm);
+    if let Some(btn) = file_button_factory(&path.path, mtm) {
         row.addArrangedSubview(&btn);
     }
     let spacer = NSView::new(mtm);
@@ -393,6 +366,12 @@ fn file_glyph_row_base(symbol: &str, text: &str, mtm: MainThreadMarker) -> Retai
         row.addArrangedSubview(&view);
     }
 
+    // Every caller now passes text the shared layer already
+    // sanitised. `sanitize_for_display` is idempotent — its output
+    // contains only ordinary printable characters, none of which are
+    // in its own deny ranges — so this stays as a belt-and-braces
+    // guard on the lowest-level text sink in the module rather than
+    // relying on every future caller remembering.
     let label = NSTextField::labelWithString(&NSString::from_str(&sanitize_for_display(text)), mtm);
     label.setFont(Some(&monospaced(ROW_FONT_SIZE)));
     row.addArrangedSubview(&label);

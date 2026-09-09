@@ -27,7 +27,10 @@ fn every_non_info_kind_builds_a_pill_view() {
     }
     let pill_for = |k: SignalKind| {
         let mtm = objc2_foundation::MainThreadMarker::new()?;
-        build_signal_pill(k, "detail goes here", mtm)
+        // Same composition `popover.rs` uses: the shared layer
+        // decides whether the kind earns a chip, this side paints it.
+        let spec = crate::cards::pills::signal_pill(k, "detail goes here")?;
+        Some(build_spec_pill(&spec, mtm))
     };
     for k in [
         SignalKind::InsecureFlag,

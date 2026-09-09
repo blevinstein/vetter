@@ -35,7 +35,7 @@ jobs:
       # never need it, and its mirror periodically serves a stale
       # Packages.gz that fails the hash check and aborts `apt-get
       # update` for the whole job.
-      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
       - run: sudo apt-get update && tools/install-deps.sh --run
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -56,7 +56,7 @@ jobs:
       # Drop the preinstalled Google Chrome repo first — see the
       # clippy job above for why.
       - if: runner.os == 'Linux'
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
       - if: runner.os == 'Linux'
         run: sudo apt-get update && tools/install-deps.sh --run
       - run: cargo build --workspace --all-targets --all-features
@@ -75,7 +75,7 @@ jobs:
       # package list lives in one place — tools/install-deps.sh. Drop
       # the preinstalled Google Chrome repo first — see the clippy
       # job above for why.
-      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
       - run: sudo apt-get update && tools/install-deps.sh --run
       - run: cargo build --workspace --all-targets --all-features
       - run: cargo test --workspace --all-features

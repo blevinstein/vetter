@@ -554,22 +554,25 @@ The big one. Roughly the Linux counterpart of ~3700 lines of AppKit.
       is `INFO`, because notifications and `vet daemon approve` are
       unaffected.
 
-### Phase 6f — Distribution `[ ]`
+### Phase 6f — Distribution `[x]` **done 2026-09-09**
 
 Per §4.3: tarball + `cargo install` only, for now.
 
-- [ ] `tools/build-linux.sh` producing a staged tree
+- [x] `tools/build-linux.sh` producing a staged tree
       (`bin/vet`, `bin/vetterd`, `share/icons/…`,
       `share/applications/dev.vetter.daemon.desktop`) and a
       `vetter-<version>-x86_64-linux.tar.gz`.
-- [ ] An `install.sh` inside the tarball that copies into
+- [x] An `install.sh` inside the tarball that copies into
       `~/.local` (no sudo) and refreshes the icon cache + desktop
       database.
-- [ ] Document `cargo install --git https://github.com/blevinstein/vetter vet vetterd`
+- [x] Document `cargo install --git https://github.com/blevinstein/vetter vet vetterd`
       as the from-source path, with the per-distro build-dep list.
-- [ ] Attach the tarball to GitHub Releases alongside the macOS
-      artifacts.
-- [ ] **Update `README.md`**: it currently promises
+- [x] Attach the tarball to GitHub Releases alongside the macOS
+      artifacts. Documented in [Release.md](Release.md)
+      §"Linux / tarball" as a `gh release upload` onto the tag the
+      macOS flow already creates; there is no Linux equivalent of
+      `publish-cask.sh` because there is no cask to bump.
+- [x] **Update `README.md`**: it previously promised
       `sudo add-apt-repository ppa:blevinstein/vetter` under
       "Ubuntu (v0.2, planned)". Replace with the tarball /
       `cargo install` instructions and drop the PPA promise until

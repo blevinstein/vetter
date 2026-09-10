@@ -3,10 +3,10 @@
 Operational guide for cutting a distribution-quality artefact on each
 supported platform: the Developer-ID signed + notarised + stapled
 `Vetter.app` shipped through the Homebrew cask (macOS), and the
-`.deb` shipped through the Launchpad PPA (Ubuntu / Linux).
+release tarball attached to the GitHub Release (Linux).
 
 The everyday developer build paths (ad-hoc signed `.app` on macOS;
-`cargo build` + `cargo deb` on Ubuntu) live in
+`cargo build` on Linux) live in
 [MacOSApp.md](MacOSApp.md) and [LinuxApp.md](LinuxApp.md)
 respectively; use those for local hacking, this for shipping.
 
@@ -344,7 +344,74 @@ Phase 5*:
 
 ---
 
-# Linux / Launchpad PPA
+# Linux / tarball
+
+Per [LinuxApp.md](LinuxApp.md) §4.3 the Linux distribution mechanism
+for this milestone is a release tarball plus `cargo install` — no
+`.deb`, no PPA, no COPR, no Flatpak. There is nothing to sign: the
+artifact is a plain `tar.gz` of two binaries and their desktop entry,
+and provenance comes from the GitHub Release it hangs off. `vet
+doctor`'s `provenance` row reports "built from source" until a
+packaged install exists to report otherwise.
+
+## Cutting a Linux release
+
+From a Linux machine, on the tagged commit:
+
+```sh
+tools/build-linux.sh
+```
+
+That builds `--release`, stages `bin/`, `share/`, `install.sh` and
+`install-deps.sh` into `target/vetter-<version>-<arch>-linux/`, and
+writes `target/vetter-<version>-<arch>-linux.tar.gz`. The version comes
+from the workspace `Cargo.toml` through the same helper the macOS
+bundle uses, so the two artifacts cannot disagree about what release
+they are from.
+
+Smoke the artifact before publishing — into a scratch prefix, never
+over your own install:
+
+```sh
+tar -xzf target/vetter-<version>-x86_64-linux.tar.gz -C /tmp
+/tmp/vetter-<version>-x86_64-linux/install.sh --prefix /tmp/vetter-test
+/tmp/vetter-test/bin/vet --version
+/tmp/vetter-<version>-x86_64-linux/install.sh --prefix /tmp/vetter-test --uninstall
+```
+
+## Publishing
+
+The macOS flow creates the GitHub Release as a side effect of
+[`tools/publish-cask.sh`](../tools/publish-cask.sh), because the cask's
+`url` has to resolve. Linux has no cask to bump, so there is no
+equivalent script — attach the tarball to the Release that flow already
+created:
+
+```sh
+gh release upload "v$VERSION" --repo blevinstein/vetter --clobber \
+    target/vetter-$VERSION-x86_64-linux.tar.gz
+```
+
+If the macOS release has not been cut yet, `gh release create` first —
+see §"Publishing the Homebrew cask" above for the shape. Both artifacts
+hang off one tag.
+
+Only `x86_64` is built today. `aarch64` needs a matching runner or a
+cross toolchain; nobody has asked for it, so it is deliberately not in
+this milestone.
+
+---
+
+# Linux / Launchpad PPA — ON HOLD
+
+> **This section is not current.** [LinuxApp.md](LinuxApp.md) §4.3
+> chose a tarball plus `cargo install` for this milestone and ruled out
+> `.deb` / PPA packaging; §10 records this section as on hold. The
+> `tools/release-deb.sh` it refers to has never existed. It is kept
+> because the Launchpad prerequisites are researched and would be the
+> starting point if packaging is revisited (LinuxApp.md §8) — read it
+> as a design note, not as instructions.
+
 
 Operational guide for cutting a distribution-quality `.deb` and
 publishing it to the project's Launchpad PPA so end users get

@@ -28,8 +28,8 @@ click.
 
 ## Status
 
-**v0.1** — macOS support is feature-complete and in use daily. Ubuntu is
-planned for v0.2.
+**v0.1** — macOS support is feature-complete and in use daily. Linux support
+is feature-complete in `main` and not yet released; see the roadmap below.
 
 What works today on macOS:
 
@@ -61,13 +61,41 @@ open target/Vetter.app
 export PATH="$PWD/target/Vetter.app/Contents/MacOS:$PATH"
 ```
 
-### Ubuntu (v0.2, planned)
+### Linux
+
+No release has been cut yet, so both paths below build or install from
+`main`. Vetter needs a graphical session with a D-Bus session bus; for
+SSH and headless use see the `VETTERD_NOTIFIER=noop` notes in
+[AGENTS.md](AGENTS.md).
+
+**From a release tarball** — everything lands under `~/.local`, no sudo:
 
 ```sh
-sudo add-apt-repository ppa:blevinstein/vetter
-sudo apt-get update && sudo apt-get install vetter
-# log out and back in so the tray app auto-starts
+tar -xzf vetter-<version>-x86_64-linux.tar.gz
+cd vetter-<version>-x86_64-linux
+./install-deps.sh --run --runtime    # GTK4 + GLib shared libraries
+./install.sh                         # ~/.local/bin + ~/.local/share
+vet daemon start
 ```
+
+`./install.sh --uninstall` removes exactly what it installed and leaves
+your allowlist and audit log alone.
+
+**From source** with cargo:
+
+```sh
+tools/install-deps.sh --run          # GTK4 + GLib development packages
+cargo install --git https://github.com/blevinstein/vetter vet vetterd
+```
+
+`install-deps.sh` is the single place package names are written down;
+run it with `--check` first if you would rather install them yourself.
+After installing, run `tools/install-desktop.sh` from a checkout so the
+approval window and its notifications get Vetter's name and icon.
+
+Tick **Start at login** in the approval window, or run
+`vet daemon autostart enable`, to have the daemon come back after a
+reboot.
 
 ## Quick start
 
@@ -84,7 +112,7 @@ log is in [plans/MacOSApp.md](plans/MacOSApp.md).
 | Milestone | Status |
 |---|---|
 | v0.1 — macOS, `curl` parser, allowlist, notification UI | Released |
-| v0.2 — Ubuntu (D-Bus notifications, GTK4 popover, `.deb` / PPA) | Design |
+| v0.2 — Linux (D-Bus notifications, tray, GTK4 approval window) | Implemented, unreleased |
 | Backlog — Windows, additional parsers, web UI | Planned |
 
 ## License

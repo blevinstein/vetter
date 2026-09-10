@@ -58,3 +58,114 @@ fn every_outcome_reads_differently() {
         }
     }
 }
+
+// ── vetterd discovery ───────────────────────────────────────────────────────
+
+/// Build a directory holding a fake `vet`, optionally with `vetterd`
+/// beside it. Returns the path to the fake `vet`.
+fn fake_install(root: &Path, name: &str, with_vetterd: bool) -> PathBuf {
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir).expect("create install dir");
+    let vet = dir.join("vet");
+    std::fs::write(&vet, b"#!/bin/sh\n").expect("write vet");
+    if with_vetterd {
+        std::fs::write(dir.join("vetterd"), b"#!/bin/sh\n").expect("write vetterd");
+    }
+    vet
+}
+
+/// The ordinary case: Cargo `target/release`, or the Linux tarball's
+/// `~/.local/bin`, where both binaries are real files side by side.
+#[test]
+fn finds_vetterd_beside_the_invoked_vet() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let vet = fake_install(tmp.path(), "bin", true);
+
+    let found = vetterd_beside_vet(&vet).expect("vetterd sits right there");
+    assert_eq!(found, vet.parent().unwrap().join("vetterd"));
+}
+
+/// The regression this change exists for: a Homebrew cask.
+///
+/// The cask links only `vet` into the brew prefix while both binaries
+/// live inside `Vetter.app/Contents/MacOS/`. macOS `current_exe()`
+/// hands back the unresolved link, so the as-invoked pass looks in a
+/// directory that has no `vetterd` — and before this fix the lookup
+/// gave up there, breaking `vet daemon start` on the primary macOS
+/// install path.
+#[test]
+fn resolves_through_a_symlinked_vet_into_the_bundle() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let real_vet = fake_install(tmp.path(), "Vetter.app", true);
+
+    // The brew prefix: a `vet` symlink and deliberately no `vetterd`.
+    let prefix = tmp.path().join("prefix-bin");
+    std::fs::create_dir_all(&prefix).expect("create prefix");
+    let linked_vet = prefix.join("vet");
+    std::os::unix::fs::symlink(&real_vet, &linked_vet).expect("symlink vet");
+    assert!(
+        !prefix.join("vetterd").exists(),
+        "the whole point is that the invoked directory lacks vetterd"
+    );
+
+    let found = vetterd_beside_vet(&linked_vet).expect("resolve into the bundle");
+    assert_eq!(found, real_vet.parent().unwrap().join("vetterd"));
+}
+
+/// The as-invoked directory is searched *first*, so no layout that
+/// resolves today can regress. A package manager linking both binaries
+/// into one bin directory from separate real locations must keep
+/// getting the sibling it already gets, even though canonicalising
+/// would send the two passes to different directories.
+#[test]
+fn the_invoked_directory_wins_over_the_resolved_one() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let real_vet = fake_install(tmp.path(), "cellar", true);
+
+    // Both binaries present in the bin dir, `vet` only as a link.
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("create bin");
+    let linked_vet = bin.join("vet");
+    std::os::unix::fs::symlink(&real_vet, &linked_vet).expect("symlink vet");
+    std::fs::write(bin.join("vetterd"), b"#!/bin/sh\n").expect("write vetterd");
+
+    let found = vetterd_beside_vet(&linked_vet).expect("sibling exists as invoked");
+    assert_eq!(found, bin.join("vetterd"), "must not canonicalise past it");
+}
+
+/// Neither directory has it: the caller falls through to `PATH`.
+#[test]
+fn reports_nothing_when_no_directory_holds_vetterd() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let real_vet = fake_install(tmp.path(), "app", false);
+
+    let prefix = tmp.path().join("prefix-bin");
+    std::fs::create_dir_all(&prefix).expect("create prefix");
+    let linked_vet = prefix.join("vet");
+    std::os::unix::fs::symlink(&real_vet, &linked_vet).expect("symlink vet");
+
+    assert!(vetterd_beside_vet(&linked_vet).is_none());
+    assert!(vetterd_beside_vet(&real_vet).is_none());
+}
+
+/// A dangling symlink must not panic or resolve to something stray;
+/// `canonicalize` fails and the lookup simply reports nothing.
+#[test]
+fn a_dangling_vet_symlink_resolves_to_nothing() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let prefix = tmp.path().join("prefix-bin");
+    std::fs::create_dir_all(&prefix).expect("create prefix");
+    let linked_vet = prefix.join("vet");
+    std::os::unix::fs::symlink(tmp.path().join("gone/vet"), &linked_vet).expect("symlink");
+
+    assert!(vetterd_beside_vet(&linked_vet).is_none());
+}
+
+/// The failure text has to name every step actually taken, or a user
+/// debugging a broken install is told to check the wrong places.
+#[test]
+fn the_not_found_message_names_every_step() {
+    assert!(VETTERD_NOT_FOUND.contains("$VETTERD_BIN"));
+    assert!(VETTERD_NOT_FOUND.contains("symlink"));
+    assert!(VETTERD_NOT_FOUND.contains("PATH"));
+}

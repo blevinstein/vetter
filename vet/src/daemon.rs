@@ -10,9 +10,14 @@
 //! - **Pidfile** is owned by `vetterd` and read by `stop`/`status`.
 //!   Format: see [`vetter_core::pidfile`]. Co-located with the socket
 //!   by default so per-test scratch dirs stay isolated.
-//! - **Binary discovery** for `start`: `$VETTERD_BIN` → sibling of
-//!   the running `vet` (covers Homebrew installs and Cargo `target/`)
-//!   → first `vetterd` on `PATH`.
+//! - **Binary discovery** for `start`: `$VETTERD_BIN` → the directory
+//!   holding the running `vet`, checked as invoked and again with
+//!   symlinks resolved → first `vetterd` on `PATH`. The resolved pass
+//!   is what covers a Homebrew cask, which links only `vet` into the
+//!   brew prefix and keeps both binaries inside `Vetter.app`; the
+//!   as-invoked pass covers Cargo `target/` and the Linux tarball,
+//!   where the two sit side by side already. See
+//!   [`vetterd_beside_vet`].
 
 use std::io::ErrorKind;
 use std::os::unix::net::UnixStream;
@@ -546,6 +551,12 @@ fn socket_alive(path: &Path) -> bool {
     assert_peer_is_self(&stream).is_ok()
 }
 
+/// Detail returned when every lookup step comes up empty. A const so
+/// the message and the steps below cannot drift apart silently.
+const VETTERD_NOT_FOUND: &str = "looked at $VETTERD_BIN, the directory holding `vet` \
+     (as invoked and again after resolving symlinks), and PATH; \
+     install vetterd or set $VETTERD_BIN";
+
 pub(crate) fn locate_vetterd() -> Result<PathBuf, String> {
     if let Some(p) = std::env::var_os("VETTERD_BIN") {
         let pb = PathBuf::from(p);
@@ -558,19 +569,56 @@ pub(crate) fn locate_vetterd() -> Result<PathBuf, String> {
         ));
     }
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("vetterd");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
+        if let Some(p) = vetterd_beside_vet(&exe) {
+            return Ok(p);
         }
     }
     if let Some(p) = which_in_path("vetterd") {
         return Ok(p);
     }
-    Err("looked at $VETTERD_BIN, sibling of `vet`, and PATH; \
-         install vetterd or set $VETTERD_BIN"
-        .into())
+    Err(VETTERD_NOT_FOUND.into())
+}
+
+/// Find `vetterd` next to the `vet` binary at `exe`, checking the path
+/// **as invoked** and then again with symlinks resolved.
+///
+/// The second pass is what makes a Homebrew cask install work. The
+/// cask links only `vet` into the brew prefix, while
+/// `tools/_bundle_layout.sh` puts both binaries side by side inside
+/// `Vetter.app/Contents/MacOS/`. macOS `current_exe()` is
+/// `_NSGetExecutablePath`, which reports the path used to exec rather
+/// than the real file — so the as-invoked pass looks in
+/// `/opt/homebrew/bin`, finds no `vetterd`, and without this second
+/// pass the lookup fails. That broke `vet daemon start` outright on
+/// the primary macOS install path, and made `vet doctor` report an
+/// error for a perfectly good install. (Linux resolves
+/// `/proc/self/exe` already, so there the two passes usually agree.)
+///
+/// As-invoked is tried **first** so no currently-working layout can
+/// regress: a package manager that links both binaries into one bin
+/// directory from separate real locations keeps resolving the way it
+/// does today, even though canonicalising would send the two passes to
+/// different directories.
+///
+/// Resolving the symlink grants no new trust. The link is already the
+/// thing executing as `vet`; anyone able to repoint it, or to write
+/// into the directory it resolves to, could just replace `vet` itself
+/// and would not need to plant a `vetterd` beside it.
+fn vetterd_beside_vet(exe: &Path) -> Option<PathBuf> {
+    if let Some(found) = sibling_vetterd(exe) {
+        return Some(found);
+    }
+    let resolved = std::fs::canonicalize(exe).ok()?;
+    if resolved == exe {
+        return None;
+    }
+    sibling_vetterd(&resolved)
+}
+
+/// `vetterd` in the same directory as `exe`, if it is there.
+fn sibling_vetterd(exe: &Path) -> Option<PathBuf> {
+    let candidate = exe.parent()?.join("vetterd");
+    candidate.exists().then_some(candidate)
 }
 
 fn which_in_path(name: &str) -> Option<PathBuf> {

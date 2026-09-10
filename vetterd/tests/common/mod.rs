@@ -179,7 +179,10 @@ fn serve(listener: UnixListener, state: Arc<Mutex<MockState>>) {
                     }
                 });
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::Interrupted =>
+            {
                 std::thread::sleep(Duration::from_millis(20));
             }
             Err(_) => return,
@@ -188,6 +191,12 @@ fn serve(listener: UnixListener, state: Arc<Mutex<MockState>>) {
 }
 
 fn handle_one(stream: UnixStream, state: Arc<Mutex<MockState>>) -> std::io::Result<()> {
+    // macOS inherits O_NONBLOCK from a nonblocking listener onto the
+    // accepted fd. Leaving it set turns an early read_line into
+    // WouldBlock; we then drop the stream and the daemon's write hits
+    // Broken pipe. Linux does not inherit the flag, which is why this
+    // only flakes on macos-latest.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut writer = stream.try_clone()?;

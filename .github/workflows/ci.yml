@@ -59,6 +59,15 @@ jobs:
         run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
       - if: runner.os == 'Linux'
         run: sudo apt-get update && tools/install-deps.sh --run
+      # The notifier end-to-end smoke (vetterd/tests/notifier_dbus_e2e.rs)
+      # stands up a private session bus, so `cargo test` needs a
+      # dbus-daemon that neither building nor running vetter requires.
+      # It is declared as a `test`-kind row in the same table rather
+      # than inlined here. Those tests skip when it is absent, but
+      # fail under $CI — which Actions sets — so a silently-missing
+      # bus cannot quietly drop the coverage.
+      - if: runner.os == 'Linux'
+        run: tools/install-deps.sh --run --test
       - run: cargo build --workspace --all-targets --all-features
       - run: cargo test --workspace --all-features
 
@@ -77,6 +86,9 @@ jobs:
       # job above for why.
       - run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
       - run: sudo apt-get update && tools/install-deps.sh --run
+      # Also runs the suite, so it needs the test-kind deps too. See
+      # the test job above.
+      - run: tools/install-deps.sh --run --test
       - run: cargo build --workspace --all-targets --all-features
       - run: cargo test --workspace --all-features
 

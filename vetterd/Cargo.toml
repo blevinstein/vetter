@@ -85,3 +85,13 @@ gtk4 = "0.11"
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
+
+# The D-Bus end-to-end smoke (tests/notifier_dbus_e2e.rs) stands up a
+# fake `org.freedesktop.Notifications` server so the real
+# `LinuxNotifier` can be driven for real. Same zbus the daemon already
+# links on Linux — declared again here because an integration test can
+# only reach the crate's public API plus its own dev-dependencies, so
+# the regular dependency above is not in scope for it. No new crate
+# enters Cargo.lock.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus = "5.19"

@@ -575,7 +575,7 @@ Per §4.3: tarball + `cargo install` only, for now.
       `cargo install` instructions and drop the PPA promise until
       §8 is decided.
 
-### Phase 6g — CI `[~]` **three of four done**
+### Phase 6g — CI `[x]` **done 2026-09-09**
 
 - [x] Linux job already runs fmt/clippy/tests. Extend it to build
       the new `target_os = "linux"` cfg paths — otherwise the
@@ -591,14 +591,44 @@ Per §4.3: tarball + `cargo install` only, for now.
       only (§7) plus unit tests on the extracted pure functions.
       *(Held: the pure halves live in `vetterd/src/cards/` and are
       tested on every platform.)*
-- [ ] Consider a `dbus-run-session` + `dunst` job to smoke the
+- [x] Consider a `dbus-run-session` + `dunst` job to smoke the
       `LinuxNotifier` for real. `dunst` supports `actions`, so an
       end-to-end approve could genuinely be automated. Worth
       prototyping — this would be better coverage than macOS has.
-      *(Unbuilt, but no longer blocked: this configuration — a
-      private bus with no notification server — used to stall the
-      daemon for ~60 s at startup, fixed 2026-09-09. `dunst` is not
-      installed on the reference host.)*
+      **Built 2026-09-09 as `vetterd/tests/notifier_dbus_e2e.rs`, and
+      it is a `cargo test`, not a separate job.**
+
+      Not `dunst`, for three reasons in increasing order of weight.
+      `dunst` is an X11 client, so it would drag a virtual display
+      into CI. `dunstctl` can trigger a notification's *default*
+      action but not an arbitrary named one, leaving `approve` and
+      `reject` — the two that carry a security decision —
+      unreachable from a script. And a fake server can produce states
+      a real one will not, such as advertising no `actions`
+      capability, which is the §5.4 degradation path. What `dunst`
+      would additionally prove is that our payload is accepted by
+      something we did not write; that is worth having, but not at
+      the price of the paths that matter.
+
+      So each test owns a private `dbus-daemon` and serves a fake
+      `org.freedesktop.Notifications` from the zbus the daemon
+      already links. Six tests cover approve, reject, an unregistered
+      action key resolving nothing, the `Notify` payload
+      (`expire_timeout = 0`, the registered action keys, `urgency`),
+      `CloseNotification` on resolve, and the no-`actions`
+      degradation. They run in the existing test job — no new
+      workflow job to go flaky and block merges — and, being plain
+      `cargo test`, they reproduce locally without pushing.
+
+      `dbus-daemon` is declared as a `test`-kind row in
+      `tools/install-deps.sh` rather than inlined in the workflow.
+      The tests skip when it is absent so a contributor without it
+      does not see red, but **fail** under `$CI`, where a silent skip
+      is indistinguishable from coverage that stopped running.
+
+      This is the configuration that used to stall the daemon ~60 s
+      at startup (fixed 2026-09-09 in `85f8d5f`); the suite would
+      have caught it, which was the argument for building it.
 
 ### Phase 6i — Notification and tray parity `[x]` **done 2026-09-08**
 

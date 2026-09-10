@@ -16,6 +16,7 @@
 #   tools/install-deps.sh --run      print it, then run it (uses sudo)
 #   tools/install-deps.sh --check    exit 0 if all present, 1 if not
 #   tools/install-deps.sh --runtime  operate on runtime deps, not build deps
+#   tools/install-deps.sh --test     operate on test deps
 #
 # `--check` is machine-readable: one `missing <probe> <package>` record
 # per line on stdout, human commentary on stderr, and an exit code that
@@ -36,7 +37,7 @@ set -euo pipefail
 # nowhere else.
 #
 # Columns (whitespace-separated; `note` runs to end of line):
-#   kind     build | runtime
+#   kind     build | runtime | test
 #   probe    how to detect presence, distro-independent:
 #              pkgconfig:<module>   pkg-config --exists <module>
 #              command:<binary>     binary on PATH
@@ -44,6 +45,15 @@ set -euo pipefail
 #   fedora   package name under dnf   (Fedora / RHEL / Nobara)
 #   debian   package name under apt   (Debian / Ubuntu)
 #   note     why it is needed
+#
+# `test` is the third kind: needed to RUN THE TEST SUITE, but by
+# neither a build nor an installed binary. It exists because
+# vetterd/tests/notifier_dbus_e2e.rs stands up a private session bus to
+# drive the real LinuxNotifier end to end, and a dependency that only
+# `cargo test` needs must not be inflicted on someone installing the
+# Phase 6f tarball. Declaring it here rather than inlining an
+# `apt-get install` in the workflow keeps this table's promise: package
+# names live in exactly one place.
 #
 # build vs runtime is a real distinction, not bookkeeping. Build deps
 # are needed to COMPILE from source; runtime deps are what an already
@@ -69,6 +79,7 @@ build   command:pkg-config   pkgconf-pkg-config  pkg-config        used by the g
 build   command:cc           gcc                 build-essential   C compiler the gtk4 build script shells out to
 runtime lib:libgtk-4.so.1    gtk4                libgtk-4-1        GTK4 shared library
 runtime lib:libglib-2.0.so.0 glib2               libglib2.0-0      GLib shared library
+test    command:dbus-daemon  dbus-daemon         dbus-daemon       private session bus for the notifier end-to-end smoke
 TABLE
 }
 
@@ -83,6 +94,7 @@ while [[ $# -gt 0 ]]; do
         --check)   MODE=check;;
         --runtime) KIND=runtime;;
         --build)   KIND=build;;
+        --test)    KIND=test;;
         -h|--help)
             # Contiguous comment block from line 2 to the first
             # non-comment line, so this can't rot as the header grows.
@@ -91,7 +103,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "install-deps.sh: unknown argument: $1" >&2
-            echo "usage: $0 [--run|--check] [--build|--runtime]" >&2
+            echo "usage: $0 [--run|--check] [--build|--runtime|--test]" >&2
             exit 64
             ;;
     esac

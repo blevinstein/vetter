@@ -62,6 +62,10 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+#[doc(hidden)]
+#[path = "tests/testutil.rs"]
+pub mod testutil;
+
 #[cfg(test)]
 #[path = "tests/lib.rs"]
 mod tests;

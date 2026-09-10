@@ -2,6 +2,7 @@
 //! `AGENTS.md`.
 
 use super::*;
+use crate::testutil::sticky_tmpdir;
 
 /// Tests in this module mutate process-global env, so they take a
 /// shared mutex to run serially regardless of parallelism.
@@ -66,7 +67,10 @@ fn socket_prefers_xdg_runtime_dir() {
     let _g = lock();
     let _e = Guard::unset("VETTERD_SOCKET");
     let _x = Guard::set("XDG_RUNTIME_DIR", "/run/user/1234");
-    let _t = Guard::set("TMPDIR", "/some/tmp");
+    // TMPDIR is lower priority than XDG; set a real sticky dir so a
+    // concurrent `TempDir::new()` elsewhere cannot see a fictional path.
+    let tmp = sticky_tmpdir();
+    let _t = Guard::set("TMPDIR", tmp.to_str().unwrap());
     assert_eq!(
         default_socket_path(),
         PathBuf::from("/run/user/1234/vetter/vetter.sock")
@@ -90,14 +94,16 @@ fn socket_falls_back_to_per_uid_tmpdir_subdir() {
     let _g = lock();
     let _e = Guard::unset("VETTERD_SOCKET");
     let _runtime = unset_runtime_source();
-    let _t = Guard::set("TMPDIR", "/some/tmp");
+    let tmp = sticky_tmpdir();
+    let _t = Guard::set("TMPDIR", tmp.to_str().unwrap());
     let path = default_socket_path();
     // Per-uid subdir keeps the daemon's 0700 chmod safely off of
     // `/tmp` itself. `Path::starts_with` matches whole components,
     // so compare strings to assert the `vetter-<uid>` prefix.
     let s = path.to_string_lossy();
+    let prefix = format!("{}/vetter-", tmp.display());
     assert!(
-        s.starts_with("/some/tmp/vetter-") && s.ends_with("/vetter.sock"),
+        s.starts_with(&prefix) && s.ends_with("/vetter.sock"),
         "expected per-uid subdir under $TMPDIR, got {s}"
     );
 }
@@ -129,12 +135,10 @@ fn pidfile_falls_back_to_tmpdir_when_socket_has_no_parent() {
     let _g = lock();
     let _e = Guard::unset("VETTERD_PIDFILE");
     let _runtime = unset_runtime_source();
-    let _t = Guard::set("TMPDIR", "/scratch");
+    let tmp = sticky_tmpdir();
+    let _t = Guard::set("TMPDIR", tmp.to_str().unwrap());
     let sock = PathBuf::from("vetter.sock");
-    assert_eq!(
-        default_pidfile_path(&sock),
-        PathBuf::from("/scratch/vetter.pid")
-    );
+    assert_eq!(default_pidfile_path(&sock), tmp.join("vetter.pid"));
 }
 
 #[test]

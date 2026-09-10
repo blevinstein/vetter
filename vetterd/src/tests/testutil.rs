@@ -1,6 +1,8 @@
 //! Shared helpers for `vetterd` unit tests. Layout convention is
 //! described in `AGENTS.md`.
 
+pub(crate) use vetter_core::testutil::sticky_tmpdir;
+
 /// Create a fresh tempdir pinned to `/tmp` instead of `tempfile::tempdir()`.
 ///
 /// `paths::tests` mutates the process-global `TMPDIR` env variable as

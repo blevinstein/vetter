@@ -6,6 +6,7 @@
 //! Layout convention is described in `AGENTS.md`.
 
 use super::*;
+use crate::testutil::sticky_tmpdir;
 
 /// Tests in this module mutate process-global env, so they take a
 /// shared mutex to run serially regardless of parallelism.
@@ -66,11 +67,13 @@ fn socket_falls_back_to_per_uid_tmpdir_subdir() {
     let _g = lock();
     let _e = Guard::unset("VETTERD_SOCKET");
     let _runtime = unset_runtime_source();
-    let _t = Guard::set("TMPDIR", "/some/tmp");
+    let tmp = sticky_tmpdir();
+    let _t = Guard::set("TMPDIR", tmp.to_str().unwrap());
     let path = default_socket_path();
     let s = path.to_string_lossy();
+    let prefix = format!("{}/vetter-", tmp.display());
     assert!(
-        s.starts_with("/some/tmp/vetter-") && s.ends_with("/vetter.sock"),
+        s.starts_with(&prefix) && s.ends_with("/vetter.sock"),
         "expected per-uid subdir under $TMPDIR, got {s}"
     );
 }

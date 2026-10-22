@@ -108,8 +108,14 @@ fn resolves_through_a_symlinked_vet_into_the_bundle() {
         "the whole point is that the invoked directory lacks vetterd"
     );
 
+    // Compare canonical paths: the resolved pass reports the real path,
+    // and on macOS the tempdir itself sits behind `/var -> /private/var`.
     let found = vetterd_beside_vet(&linked_vet).expect("resolve into the bundle");
-    assert_eq!(found, real_vet.parent().unwrap().join("vetterd"));
+    let expected = real_vet.parent().unwrap().join("vetterd");
+    assert_eq!(
+        found,
+        std::fs::canonicalize(expected).expect("canonicalize")
+    );
 }
 
 /// The as-invoked directory is searched *first*, so no layout that

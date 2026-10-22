@@ -15,7 +15,14 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # TODO: migrate off serde_yaml_ng (e.g. serde-saphyr) to drop unsafe-libyaml.
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml via serde_yaml_ng; archived upstream, no safe upgrade" },
+    # TODO: move to zbus 6 once ksni releases against it.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant merged into zbus 6; ksni 0.3 pins zbus 5" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names merged into zbus 6; ksni 0.3 pins zbus 5" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive merged into zbus 6; ksni 0.3 pins zbus 5" },
+]
 
 # ---------------------------------------------------------------------------
 # Licenses — allowlist of permissive SPDX identifiers we accept in the

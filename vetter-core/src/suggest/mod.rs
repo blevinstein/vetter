@@ -154,6 +154,11 @@ pub fn allowlist_suggestions(parsed: &ParsedCommand) -> Vec<RuleSuggestion> {
     // name is enough to keep the rule shape intact across key
     // rotation).
     let headers_allow = observed_header_names(&req.headers);
+    // Same reasoning for `-L`: an omitted `no_redirects` defaults to
+    // rejecting redirect-following requests, so a rule picked from
+    // one has to opt in explicitly or it never fires. The opt-in is
+    // visible in the YAML preview the user confirms.
+    let no_redirects = req.follow_redirects.then_some(false);
 
     let mut out = Vec::with_capacity(3);
 
@@ -165,6 +170,7 @@ pub fn allowlist_suggestions(parsed: &ParsedCommand) -> Vec<RuleSuggestion> {
         &host,
         Some(path.clone()),
         headers_allow.clone(),
+        no_redirects,
     ));
 
     // Tier 2: path-glob with last segment replaced by `*`.
@@ -190,6 +196,7 @@ pub fn allowlist_suggestions(parsed: &ParsedCommand) -> Vec<RuleSuggestion> {
                 &host,
                 Some(glob_path),
                 headers_allow.clone(),
+                no_redirects,
             ));
         }
     }
@@ -202,6 +209,7 @@ pub fn allowlist_suggestions(parsed: &ParsedCommand) -> Vec<RuleSuggestion> {
         &host,
         Some("/**".to_string()),
         headers_allow,
+        no_redirects,
     ));
 
     out
@@ -350,6 +358,7 @@ fn make_rule_suggestion(
     host: &str,
     path: Option<String>,
     headers_allow: Option<Vec<String>>,
+    no_redirects: Option<bool>,
 ) -> RuleSuggestion {
     let url_clause = UrlClause {
         scheme: Some(scheme.to_string()),
@@ -363,7 +372,7 @@ fn make_rule_suggestion(
         headers_allow,
         no_body: None,
         query: None,
-        no_redirects: None,
+        no_redirects,
     };
     let rule_when = RuleWhen {
         http: Some(http),

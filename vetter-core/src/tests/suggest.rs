@@ -274,6 +274,41 @@ fn allowlist_leaves_headers_allow_unset_when_request_has_none() {
 }
 
 #[test]
+fn allowlist_opts_into_redirects_when_request_follows_them() {
+    let parsed = parsed_with_http(HttpRequest {
+        follow_redirects: true,
+        ..http_request(
+            HttpMethod::Get,
+            "https://developers.openai.com/api/docs/pricing",
+        )
+    });
+    for s in allowlist_suggestions(&parsed) {
+        assert_eq!(
+            s.rule.when.http.as_ref().unwrap().no_redirects,
+            Some(false),
+            "tier {:?} should opt into redirects for a `-L` request",
+            s.tier
+        );
+        assert_rule_covers(&s.rule, &parsed);
+    }
+}
+
+#[test]
+fn allowlist_leaves_no_redirects_unset_when_request_does_not_follow() {
+    let parsed = parsed_with_http(http_request(
+        HttpMethod::Get,
+        "https://api.github.com/repos/foo/bar",
+    ));
+    for s in allowlist_suggestions(&parsed) {
+        assert!(
+            s.rule.when.http.as_ref().unwrap().no_redirects.is_none(),
+            "tier {:?} should keep the redirect default-deny",
+            s.tier
+        );
+    }
+}
+
+#[test]
 fn allowlist_method_is_preserved_per_tier() {
     let parsed = parsed_with_http(http_request(
         HttpMethod::Delete,

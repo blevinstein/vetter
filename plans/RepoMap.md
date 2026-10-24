@@ -104,6 +104,7 @@ Both sets are merged by `extend` in the explain path (`vet/src/explain.rs`).
 | Matcher entry point | `vetter-core/src/matcher/mod.rs` |
 | Rule schema | `vetter-core/src/matcher/rule.rs` |
 | YAML loader / config paths | `vetter-core/src/matcher/loader.rs` |
+| YAML (de)serialisation for every file + preview (`serde-saphyr`) | `vetter-core/src/yaml.rs` |
 | `decide` / matching logic | `vetter-core/src/matcher/decide.rs` |
 | URL normalisation | `vetter-core/src/matcher/url.rs` |
 | Host/path glob matching | `vetter-core/src/matcher/glob.rs` |

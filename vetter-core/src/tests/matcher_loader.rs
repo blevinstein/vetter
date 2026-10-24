@@ -41,7 +41,7 @@ rules:
       http:
         method: [GET]
 "#;
-    let f: AllowlistFile = serde_yaml_ng::from_str(yaml).unwrap();
+    let f: AllowlistFile = crate::yaml::from_str(yaml).unwrap();
     assert_eq!(f.rules.len(), 1);
     assert!(f.deny.is_empty());
 }
@@ -52,7 +52,7 @@ fn allowlist_file_rejects_unknown_top_level_key() {
 rules: []
 made_up: 1
 "#;
-    let err = serde_yaml_ng::from_str::<AllowlistFile>(yaml).unwrap_err();
+    let err = crate::yaml::from_str::<AllowlistFile>(yaml).unwrap_err();
     assert!(err.to_string().contains("made_up"), "{err}");
 }
 

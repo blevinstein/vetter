@@ -162,13 +162,13 @@ pub enum KnownHostsError {
     Yaml {
         path: PathBuf,
         #[source]
-        source: serde_yaml_ng::Error,
+        source: crate::yaml::DeError,
     },
     #[error("serialising known-hosts for {path}: {source}")]
     Serialize {
         path: PathBuf,
         #[source]
-        source: serde_yaml_ng::Error,
+        source: crate::yaml::SerError,
     },
     #[error("duplicate known-host pattern `{pattern}` in {path}")]
     DuplicatePattern { pattern: String, path: PathBuf },
@@ -226,7 +226,7 @@ pub fn load_file(path: &Path) -> Result<KnownHostsFile, KnownHostsError> {
         path: path.to_path_buf(),
         source,
     })?;
-    serde_yaml_ng::from_str(&raw).map_err(|source| KnownHostsError::Yaml {
+    crate::yaml::from_str(&raw).map_err(|source| KnownHostsError::Yaml {
         path: path.to_path_buf(),
         source,
     })
@@ -253,7 +253,7 @@ pub fn write_file(path: &Path, file: &KnownHostsFile) -> Result<(), KnownHostsEr
             })?;
         }
     }
-    let yaml = serde_yaml_ng::to_string(file).map_err(|source| KnownHostsError::Serialize {
+    let yaml = crate::yaml::to_string(file).map_err(|source| KnownHostsError::Serialize {
         path: path.to_path_buf(),
         source,
     })?;

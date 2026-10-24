@@ -155,13 +155,13 @@ pub enum SettingsError {
     Yaml {
         path: PathBuf,
         #[source]
-        source: serde_yaml_ng::Error,
+        source: crate::yaml::DeError,
     },
     #[error("serialising settings for {path}: {source}")]
     Serialize {
         path: PathBuf,
         #[source]
-        source: serde_yaml_ng::Error,
+        source: crate::yaml::SerError,
     },
 }
 
@@ -194,7 +194,7 @@ pub fn load_from(path: &Path) -> Result<Settings, SettingsError> {
         path: path.to_path_buf(),
         source,
     })?;
-    serde_yaml_ng::from_str(&raw).map_err(|source| SettingsError::Yaml {
+    crate::yaml::from_str(&raw).map_err(|source| SettingsError::Yaml {
         path: path.to_path_buf(),
         source,
     })
@@ -229,7 +229,7 @@ pub fn write_to(path: &Path, settings: &Settings) -> Result<(), SettingsError> {
             })?;
         }
     }
-    let yaml = serde_yaml_ng::to_string(settings).map_err(|source| SettingsError::Serialize {
+    let yaml = crate::yaml::to_string(settings).map_err(|source| SettingsError::Serialize {
         path: path.to_path_buf(),
         source,
     })?;

@@ -14,6 +14,7 @@
 //!   `vet` and `vetterd`.
 //! - [`fs_secure`]   — restrictive-mode filesystem helpers used by
 //!   every vetter-owned writer (Hardening §H1 / ThreatModel §T8).
+//! - [`yaml`]        — the one YAML (de)serialiser every file and preview uses.
 
 pub mod fs_secure;
 pub mod known_hosts;
@@ -28,6 +29,7 @@ pub mod signals;
 pub mod socket_dir;
 pub mod suggest;
 pub mod wire;
+pub mod yaml;
 
 pub use known_hosts::{load_default as load_known_hosts_default, KnownHostsStore};
 pub use parsers::{

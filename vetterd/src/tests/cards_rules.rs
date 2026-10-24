@@ -275,7 +275,7 @@ fn preview_body_adds_a_uniform_two_space_pad_and_keeps_nesting() {
     // nested mappings, and flattening that would misrepresent the
     // structure of the rule being previewed.
     let rule = sample_rule();
-    let raw = serde_yaml_ng::to_string(&rule.when).expect("when serialises");
+    let raw = vetter_core::yaml::to_string(&rule.when).expect("when serialises");
     let out = render_rule_when_yaml(&rule);
 
     let body: Vec<&str> = out.lines().skip(1).collect();
@@ -311,7 +311,7 @@ fn preview_body_is_truthful_yaml_that_parses_back() {
         .collect::<Vec<_>>()
         .join("\n");
     let round_tripped: RuleWhen =
-        serde_yaml_ng::from_str(&dedented).expect("preview body should be valid YAML");
+        vetter_core::yaml::from_str(&dedented).expect("preview body should be valid YAML");
     assert_eq!(round_tripped, rule.when);
 }
 

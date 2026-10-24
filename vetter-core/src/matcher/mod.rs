@@ -52,7 +52,7 @@ pub fn now_epoch_secs() -> u64 {
 pub fn derive_auto_id(rule: &Rule) -> String {
     let mut canon = rule.clone();
     canon.id = String::new();
-    let yaml = serde_yaml_ng::to_string(&canon).unwrap_or_default();
+    let yaml = crate::yaml::to_string(&canon).unwrap_or_default();
     let mut hasher = Sha256::new();
     hasher.update(yaml.as_bytes());
     let digest = hasher.finalize();

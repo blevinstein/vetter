@@ -252,7 +252,7 @@ fn loose_socket_parent_perms_warns() {
 fn invalid_allowlist_override_exits_error() {
     let s = Scratch::new();
     let bad = s.dir.path().join("bad_allowlist.yaml");
-    // Malformed YAML — unbalanced bracket. `serde_yaml_ng` rejects
+    // Malformed YAML — unbalanced bracket. the YAML parser rejects
     // before reaching the schema validator.
     std::fs::write(&bad, "rules: [\n  - id: oops\n").expect("write bad allowlist");
 

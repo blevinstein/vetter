@@ -4,9 +4,9 @@
 use super::*;
 
 fn roundtrip_yaml(yaml: &str) -> Rule {
-    let rule: Rule = serde_yaml_ng::from_str(yaml).expect("yaml -> rule");
-    let back = serde_yaml_ng::to_string(&rule).expect("rule -> yaml");
-    let again: Rule = serde_yaml_ng::from_str(&back).expect("yaml -> rule (round 2)");
+    let rule: Rule = crate::yaml::from_str(yaml).expect("yaml -> rule");
+    let back = crate::yaml::to_string(&rule).expect("rule -> yaml");
+    let again: Rule = crate::yaml::from_str(&back).expect("yaml -> rule (round 2)");
     assert_eq!(rule, again);
     rule
 }
@@ -52,9 +52,9 @@ note: read-only
 
 #[test]
 fn host_pattern_accepts_string_or_list() {
-    let one: HostPattern = serde_yaml_ng::from_str("api.github.com").unwrap();
+    let one: HostPattern = crate::yaml::from_str("api.github.com").unwrap();
     assert!(matches!(one, HostPattern::One(_)));
-    let many: HostPattern = serde_yaml_ng::from_str("[\"*.github.com\", \"github.com\"]").unwrap();
+    let many: HostPattern = crate::yaml::from_str("[\"*.github.com\", \"github.com\"]").unwrap();
     assert!(matches!(many, HostPattern::Many(ref v) if v.len() == 2));
     assert_eq!(many.patterns().len(), 2);
     assert_eq!(one.patterns(), &["api.github.com".to_string()]);
@@ -82,7 +82,7 @@ id: nope
 when: {}
 made_up_field: 1
 "#;
-    let err = serde_yaml_ng::from_str::<Rule>(yaml).unwrap_err();
+    let err = crate::yaml::from_str::<Rule>(yaml).unwrap_err();
     assert!(
         err.to_string().contains("made_up_field") || err.to_string().contains("unknown field"),
         "{err}"
@@ -98,7 +98,7 @@ when:
     method: [GET]
     nonsense: 1
 "#;
-    let err = serde_yaml_ng::from_str::<Rule>(yaml).unwrap_err();
+    let err = crate::yaml::from_str::<Rule>(yaml).unwrap_err();
     assert!(err.to_string().contains("nonsense"), "{err}");
 }
 
@@ -108,7 +108,7 @@ fn rule_with_all_clauses_empty_can_still_deserialise() {
 id: empty
 when: {}
 "#;
-    let r: Rule = serde_yaml_ng::from_str(yaml).unwrap();
+    let r: Rule = crate::yaml::from_str(yaml).unwrap();
     assert!(r.when.is_empty());
 }
 
@@ -143,7 +143,7 @@ when:
     let r = roundtrip_yaml(yaml);
     let http = r.when.http.as_ref().expect("http clause");
     assert!(http.no_redirects.is_none());
-    let back = serde_yaml_ng::to_string(&r).expect("rule -> yaml");
+    let back = crate::yaml::to_string(&r).expect("rule -> yaml");
     assert!(
         !back.contains("no_redirects"),
         "omitted no_redirects should not be serialised: {back}",
@@ -176,7 +176,7 @@ when:
     let r = roundtrip_yaml(yaml);
     assert!(r.expires_at.is_none());
     assert!(r.sid.is_none());
-    let back = serde_yaml_ng::to_string(&r).expect("rule -> yaml");
+    let back = crate::yaml::to_string(&r).expect("rule -> yaml");
     assert!(
         !back.contains("expires_at") && !back.contains("sid"),
         "omitted expires_at/sid should not be serialised: {back}",

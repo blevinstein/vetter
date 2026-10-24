@@ -64,13 +64,13 @@ pub enum LoadError {
     Yaml {
         path: PathBuf,
         #[source]
-        source: serde_yaml_ng::Error,
+        source: crate::yaml::DeError,
     },
     #[error("serialising allowlist for {path}: {source}")]
     Serialize {
         path: PathBuf,
         #[source]
-        source: serde_yaml_ng::Error,
+        source: crate::yaml::SerError,
     },
     #[error("duplicate rule id `{id}` in {path}")]
     DuplicateId { id: String, path: PathBuf },
@@ -182,7 +182,7 @@ pub fn load_file(path: &Path) -> Result<AllowlistFile, LoadError> {
         path: path.to_path_buf(),
         source,
     })?;
-    let file: AllowlistFile = serde_yaml_ng::from_str(&raw).map_err(|source| LoadError::Yaml {
+    let file: AllowlistFile = crate::yaml::from_str(&raw).map_err(|source| LoadError::Yaml {
         path: path.to_path_buf(),
         source,
     })?;
@@ -224,7 +224,7 @@ pub fn write_file(path: &Path, file: &AllowlistFile) -> Result<(), LoadError> {
             })?;
         }
     }
-    let yaml = serde_yaml_ng::to_string(file).map_err(|source| LoadError::Serialize {
+    let yaml = crate::yaml::to_string(file).map_err(|source| LoadError::Serialize {
         path: path.to_path_buf(),
         source,
     })?;

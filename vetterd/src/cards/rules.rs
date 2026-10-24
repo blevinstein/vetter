@@ -97,7 +97,7 @@ impl DurationChoice {
 /// preview reads as the user sees it in their allowlist, without
 /// the noisy `id:` / `created_*:` autoderived fields.
 pub fn render_rule_when_yaml(rule: &Rule) -> String {
-    match serde_yaml_ng::to_string(&rule.when) {
+    match vetter_core::yaml::to_string(&rule.when) {
         Ok(s) => format!("when:\n{}", indent_lines(&s, "  ")),
         Err(e) => format!("(yaml render failed: {e})"),
     }

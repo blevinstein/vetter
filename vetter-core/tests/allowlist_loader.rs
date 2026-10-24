@@ -214,7 +214,7 @@ rules:
 // ── §5.3 atomic-write tests ──────────────────────────────────────────────────
 
 fn simple_rule(id: &str) -> Rule {
-    let when: RuleWhen = serde_yaml_ng::from_str("http: { method: [GET] }").unwrap();
+    let when: RuleWhen = vetter_core::yaml::from_str("http: { method: [GET] }").unwrap();
     Rule {
         id: id.to_string(),
         command: None,

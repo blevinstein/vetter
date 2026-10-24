@@ -51,7 +51,7 @@ struct RulePattern {
 }
 
 pub fn add(pattern: &str, scope: AllowScope, override_path: Option<&Path>) -> ExitCode {
-    let parsed: RulePattern = match serde_yaml_ng::from_str(pattern) {
+    let parsed: RulePattern = match vetter_core::yaml::from_str(pattern) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("vet allow: cannot parse pattern as YAML rule: {e}");

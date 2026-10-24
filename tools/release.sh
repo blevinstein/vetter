@@ -69,7 +69,21 @@ if ! security find-identity -v -p codesigning | grep -qF "$DEVELOPER_ID_APPLICAT
         echo
         echo "Available codesigning identities:"
         security find-identity -v -p codesigning | sed 's/^/  /'
+        echo
+        echo "See plans/Release.md troubleshooting (\"find-identity shows 0 valid"
+        echo "identities\") to tell a missing intermediate from a missing key."
     } >&2
+    exit 78
+fi
+
+# 2b. Authenticate against the notary service now, so wrong API-key
+#     credentials fail in seconds rather than after the cross-arch build.
+if ! xcrun notarytool history \
+        --key "$AC_API_KEY_PATH" \
+        --key-id "$AC_API_KEY_ID" \
+        --issuer "$AC_API_KEY_ISSUER" \
+        --team-id "$TEAM_ID" >/dev/null; then
+    echo "release.sh: notary credentials rejected; see plans/Release.md troubleshooting (401 Unauthenticated)." >&2
     exit 78
 fi
 

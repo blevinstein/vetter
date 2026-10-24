@@ -37,11 +37,36 @@ Developer ID certificates are not issued to free accounts.
 ### 2. Developer ID Application certificate
 
 In Keychain Access → Certificate Assistant → Request a Certificate
-from a Certificate Authority… → save to disk (this is your CSR).
+from a Certificate Authority…, fill in your developer-account email
+and name, leave **CA Email Address** empty, and choose **Saved to
+disk** (this is your CSR).
+
+> The private key is generated into *this* Mac's login keychain at
+> CSR time and never leaves it. The `.cer` the portal issues is
+> useless without that key — and the portal will re-download the
+> `.cer` on any machine, so holding the `.cer` proves nothing.
+
 Then at <https://developer.apple.com/account/resources/certificates>
-choose **Developer ID Application**, upload the CSR, download the
-issued `.cer`, and double-click it to install into your login
-keychain.
+click **+** and choose **Developer ID Application** from the
+**Developer ID** section (below "Software" — Apple Development and
+Apple Distribution certs cannot be notarised). Pick the **G2 Sub-CA**
+profile if asked, upload the CSR, download the issued `.cer`, and
+double-click it to install into your login keychain.
+
+The cert chains through *Developer ID Certification Authority (G2)*,
+which macOS only has if Xcode installed it. If Keychain Access shows
+the cert as "not trusted", install `DeveloperIDG2CA.cer` from
+<https://www.apple.com/certificateauthority/>. Leave the cert's trust
+on "Use System Defaults"; "Always Trust" overrides break `codesign`.
+
+Keep the identity in the **login** keychain: a private key in
+`System.keychain` is root-owned and `codesign`, running as you,
+cannot use it.
+
+Back the identity up immediately: Keychain Access → My Certificates →
+right-click it → Export… as a password-protected `.p12`, stored in a
+password manager. Losing the key means issuing a new certificate (see
+troubleshooting).
 
 Confirm with:
 
@@ -64,12 +89,15 @@ the trailing `(TEAMIDXX)`) is what you'll pass as
 `xcrun notarytool` supports two auth modes; the API-key path is the
 right one for unattended scripts. At
 <https://appstoreconnect.apple.com/access/integrations/api> →
-**Generate API Key** with the **Developer** role:
+**Team Keys** tab → **Generate API Key** with the **Developer** role
+(a Team key, not an Individual key):
 
 - Download the `.p8` file **immediately** — App Store Connect will
   not let you re-download it. Lose it and you generate a new one.
-- Note the 10-character **Key ID** (visible in the table) and the
-  **Issuer** UUID (top of the page).
+- Note the 10-character **Key ID** (visible in the table, and the
+  suffix of the filename `AuthKey_<KEYID>.p8`) and the **Issuer**
+  UUID (top of the Team Keys tab). The Key ID is *not* your Team ID;
+  swapping them makes notarytool fail with HTTP 401.
 
 Stash the `.p8` outside the repo:
 
@@ -94,8 +122,8 @@ setup; `source` it before each release:
 ```sh
 export DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMIDXX)"
 export TEAM_ID="TEAMIDXX"
-export AC_API_KEY_PATH="$HOME/.private/AuthKey_XXXXXXXXXX.p8"
-export AC_API_KEY_ID="XXXXXXXXXX"
+export AC_API_KEY_PATH="$HOME/.private/AuthKey_KEYID12345.p8"
+export AC_API_KEY_ID="KEYID12345"
 export AC_API_KEY_ISSUER="00000000-0000-0000-0000-000000000000"
 ```
 
@@ -110,17 +138,28 @@ arm64), so cargo needs both rustup targets:
 rustup target add x86_64-apple-darwin aarch64-apple-darwin
 ```
 
-Homebrew rust ships only the host arch and will fail at the cargo
-build step. If `which cargo` points at `/opt/homebrew/bin/cargo`
-you're on Homebrew rust; install rustup
-(<https://rustup.rs>) and re-run.
+Homebrew's `rust` formula ships only the host arch and will fail at
+the cargo build step. If `which cargo` points at
+`/opt/homebrew/bin/cargo` you're on it; replace it with rustup
+(Homebrew's `rustup` formula is fine — only `rust` is the problem):
+
+```sh
+brew uses --installed rust      # empty → nothing else depends on it
+brew uninstall rust
+# install rustup from https://rustup.rs (or `brew install rustup`)
+which cargo                     # must now be ~/.cargo/bin/cargo
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
+```
 
 ## Cutting a release
 
 ```sh
-# 1. Confirm `Cargo.toml` workspace.package.version is what you
-#    want to ship; bump if not.
-git diff Cargo.toml
+# 1. Bump both version strings in Cargo.toml:
+#      [workspace.package]       version = "X.Y.Z"
+#      [workspace.dependencies]  vetter-core = { ..., version = "X.Y.Z" }
+#    then refresh the lockfile (vet, vetter-core, vetterd change) and commit.
+cargo check --workspace
+git commit -am "bump version to X.Y.Z"
 
 # 2. Tag the commit you intend to release.
 VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
@@ -285,6 +324,53 @@ already.
   or re-staple by hand (`xcrun stapler staple Vetter.app`) and
   re-zip with `ditto`.
 
+- **`notarytool` fails with `HTTP status code: 401.
+  Unauthenticated`.** The API-key triple is wrong. Most often
+  `AC_API_KEY_ID` holds the Team ID instead of the Key ID (the
+  suffix of `AuthKey_<KEYID>.p8`). Otherwise the Issuer was copied from
+  somewhere other than the top of the **Team Keys** tab, or the key
+  is an Individual key, which notarytool authenticates without an
+  issuer.
+
+- **`security find-identity -v -p codesigning` shows 0 valid
+  identities, or Keychain Access says the cert is "not trusted".**
+  Drop the `-v`:
+
+  ```sh
+  security find-identity -p codesigning
+  ```
+
+  - Identity listed with `CSSMERR_TP_NOT_TRUSTED`: the G2
+    intermediate is missing; install it (§2).
+  - Identity not listed at all: no usable private key pairs with the
+    cert. Either the identity sits in `System.keychain` (move it to
+    login via a `.p12` export/import), or the key is on whichever
+    machine generated the CSR. To confirm, compare the cert's
+    public-key hash against the private-key labels in the login
+    keychain:
+
+    ```sh
+    security find-certificate -c "Developer ID Application: <Name>" -p \
+        | openssl x509 -noout -pubkey \
+        | openssl rsa -pubin -RSAPublicKey_out -outform DER | shasum
+    security dump-keychain ~/Library/Keychains/login.keychain-db \
+        | grep -i <hash>
+    ```
+
+    No match means the key is not here; see the next entry.
+
+- **Lost the Developer ID private key.** Generate a new CSR on this
+  Mac and issue a new Developer ID Application cert (§2); several can
+  coexist. Do **not** revoke the old cert unless the key may be
+  compromised: revocation can stop already-shipped releases from
+  launching for users who haven't upgraded, while leaving it alone
+  affects nothing. Gatekeeper and users' notification / login-item
+  grants key off the Team ID, so a new cert under the same team is
+  transparent to them. If the key *was* exposed, ask Apple to revoke
+  with an effective date before the exposure (check Apple's current
+  Developer ID documentation). Delete the key-less old cert from your
+  keychain so the identity name isn't ambiguous.
+
 - **`security find-identity` lists the Developer ID identity but
   the script can't see it.** Either the keychain is locked
   (`security unlock-keychain ~/Library/Keychains/login.keychain-db`)
@@ -315,7 +401,14 @@ already.
   `/Applications/`; the daemon's bundle-location check (the
   `VETTERD_NOTIFIER=mac` guard from `plans/MacOSApp.md`) accepts
   any `.app` under `/Applications/Vetter.app/Contents/MacOS/`, so
-  there's nothing cask-specific to fix here. The user does need to
+  there's nothing cask-specific to fix here. Releases up to 0.2.4
+  are the exception: `vet daemon start` failed with ``cannot locate
+  vetterd binary: looked at $VETTERD_BIN, sibling of `vet`, and
+  PATH`` because `vet` did not follow the cask's symlink back into
+  the bundle. Upgrade, or work around it with
+  `open /Applications/Vetter.app` or
+  `VETTERD_BIN=/Applications/Vetter.app/Contents/MacOS/vetterd`.
+  The user does need to
   `open /Applications/Vetter.app` once on first install so macOS
   can run the notification-permission dialog and (optionally) the
   user can opt into autostart by ticking the popover's **Start at

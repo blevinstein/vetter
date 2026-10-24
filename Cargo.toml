@@ -3,7 +3,7 @@ resolver = "2"
 members = ["vetter-core", "vet", "vetterd"]
 
 [workspace.package]
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 rust-version = "1.95"
 license = "MIT"
@@ -13,7 +13,7 @@ repository = "https://github.com/blevinstein/vetter"
 # Version is required alongside path so cargo-deny does not treat
 # this as a wildcard when the consuming crates remain publishable
 # (crates.io rejects path-only deps).
-vetter-core = { path = "vetter-core", version = "0.2.4" }
+vetter-core = { path = "vetter-core", version = "0.2.5" }
 
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

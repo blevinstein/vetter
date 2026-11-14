@@ -332,6 +332,15 @@ already.
   is an Individual key, which notarytool authenticates without an
   issuer.
 
+- **`notarytool` fails with `HTTP status code: 403. A required
+  agreement is missing or has expired`.** Apple has a pending or
+  expired agreement (accept it at developer.apple.com/account and in
+  App Store Connect; some need the Account Holder). Right after
+  accepting, the answer is intermittent while it propagates, so
+  retry every ~30s before suspecting the key. `release.sh` prints
+  this under its "credentials rejected" message even though the key
+  is fine.
+
 - **`security find-identity -v -p codesigning` shows 0 valid
   identities, or Keychain Access says the cert is "not trusted".**
   Drop the `-v`:

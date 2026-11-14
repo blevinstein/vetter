@@ -130,25 +130,15 @@ fn latest_release(fetch: Fetch) -> Option<Version> {
 }
 
 fn refresh_cache(path: &Path, now: u64) {
-    let previous = load_cache_from(path);
     let latest = fetch_latest().ok().map(|v| v.to_string());
-    let cache = UpdateCache {
-        checked_at: now,
-        latest: latest.or_else(|| previous.as_ref().and_then(|c| c.latest.clone())),
-        daemon_checked_at: previous.and_then(|c| c.daemon_checked_at),
-    };
+    let cache = UpdateCache::after_lookup(load_cache_from(path).as_ref(), now, latest);
     let _ = store_cache_to(path, &cache);
 }
 
 /// Stamp the attempt, then lookup in a detached child so concurrent
 /// commands neither pile up lookups nor wait on one.
 fn spawn_refresh(path: &Path, now: u64) {
-    let previous = load_cache_from(path);
-    let stamp = UpdateCache {
-        checked_at: now,
-        latest: previous.as_ref().and_then(|c| c.latest.clone()),
-        daemon_checked_at: previous.and_then(|c| c.daemon_checked_at),
-    };
+    let stamp = UpdateCache::after_lookup(load_cache_from(path).as_ref(), now, None);
     if store_cache_to(path, &stamp).is_err() {
         return;
     }

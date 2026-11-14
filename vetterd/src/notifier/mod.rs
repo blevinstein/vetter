@@ -61,6 +61,12 @@ pub trait Notifier: Send + Sync {
     /// mock and noop implementations ignore it.
     fn notify(&self, summary: &PromptSummary, hint: NotifyHint);
 
+    /// Tell the user a newer release is available, with a way to
+    /// restart the daemon into it. Not an approval: nothing is queued
+    /// and nothing needs resolving. The default is silent, which is
+    /// right for the mock and noop notifiers.
+    fn notify_update(&self, _notice: &str) {}
+
     /// Optional graceful shutdown hook. The default is a no-op; the
     /// mock implementation overrides this so its background reader
     /// thread terminates promptly when the daemon is going down.

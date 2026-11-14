@@ -124,9 +124,24 @@ pub struct UpdateCache {
     /// Unix seconds of the last daemon-version check on the wrap path.
     #[serde(default)]
     pub daemon_checked_at: Option<u64>,
+    /// The release the daemon's own banner last announced, so each
+    /// release is announced once.
+    #[serde(default)]
+    pub notified_version: Option<String>,
 }
 
 impl UpdateCache {
+    /// The cache after a lookup attempt at `now`. A failed lookup
+    /// (`latest == None`) keeps the previously known release.
+    pub fn after_lookup(previous: Option<&Self>, now: u64, latest: Option<String>) -> Self {
+        Self {
+            checked_at: now,
+            latest: latest.or_else(|| previous.and_then(|c| c.latest.clone())),
+            daemon_checked_at: previous.and_then(|c| c.daemon_checked_at),
+            notified_version: previous.and_then(|c| c.notified_version.clone()),
+        }
+    }
+
     pub fn is_fresh(&self, now: u64) -> bool {
         now.saturating_sub(self.checked_at) < CACHE_TTL_SECS
     }

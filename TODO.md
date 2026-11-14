@@ -1470,10 +1470,12 @@ Tracked from [plans/Overview.md](plans/Overview.md) §12:
 - [x] Stale-daemon notice, phase 1 (CLI): `MgmtRequest::GetVersion`,
       `vetter_core::update`, `vet daemon restart`, warnings from
       `vet daemon status|start`, `vet doctor` and (daily) the wrap path
-- [ ] Stale-daemon notice, phase 2 (native): daemon-side 24h check, an
-      informational banner with a "Restart" action (macOS category +
-      Linux action key), popover/tray entry; needs an informational
-      method on the `Notifier` trait
+- [x] Stale-daemon notice, phase 2 (native banner): daemon-side daily
+      check (`vetterd/src/update_watch.rs`), `Notifier::notify_update`,
+      macOS category `vetter.update` and Linux banner, each with a
+      Restart action. The Linux half is not yet compiled or run
+- [ ] Stale-daemon notice: popover footer and Linux tray entries
+      ("Update available" / Restart)
 
 ---
 

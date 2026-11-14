@@ -87,6 +87,7 @@ fn cache_freshness_and_daemon_check_windows() {
         checked_at: 1_000,
         latest: Some("0.2.5".into()),
         daemon_checked_at: None,
+        notified_version: None,
     };
     assert!(cache.is_fresh(1_000 + CACHE_TTL_SECS - 1));
     assert!(!cache.is_fresh(1_000 + CACHE_TTL_SECS));
@@ -112,6 +113,7 @@ fn cache_round_trips_at_mode_0600_and_bad_files_read_as_absent() {
         checked_at: 42,
         latest: Some("0.2.5".into()),
         daemon_checked_at: Some(7),
+        notified_version: Some("0.2.5".into()),
     };
     store_cache_to(&path, &cache).unwrap();
     assert_eq!(load_cache_from(&path), Some(cache));
@@ -122,4 +124,22 @@ fn cache_round_trips_at_mode_0600_and_bad_files_read_as_absent() {
 
     std::fs::write(&path, "not: [valid").unwrap();
     assert_eq!(load_cache_from(&path), None);
+}
+
+#[test]
+fn a_failed_lookup_keeps_what_was_known() {
+    let previous = UpdateCache {
+        checked_at: 1,
+        latest: Some("0.2.5".into()),
+        daemon_checked_at: Some(2),
+        notified_version: Some("0.2.5".into()),
+    };
+    let after = UpdateCache::after_lookup(Some(&previous), 99, None);
+    assert_eq!(after.checked_at, 99);
+    assert_eq!(after.latest, previous.latest);
+    assert_eq!(after.daemon_checked_at, Some(2));
+    assert_eq!(after.notified_version, previous.notified_version);
+
+    let newer = UpdateCache::after_lookup(Some(&previous), 100, Some("0.3.0".into()));
+    assert_eq!(newer.latest.as_deref(), Some("0.3.0"));
 }

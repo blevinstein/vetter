@@ -29,6 +29,7 @@ signal-hook = "0.3"
 # declared here so the platform-neutral card layer can name `Url` in
 # its own signatures. Adds nothing to the dependency graph.
 url = { workspace = true }
+semver = { workspace = true }
 
 # macOS approver UI (Phase 4). Pulled in only on macOS targets so the
 # crate still builds on Linux/CI workers; the daemon refuses to start

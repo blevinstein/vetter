@@ -101,6 +101,9 @@ const ACTION_TRUST_HOST: &str = "trust_host";
 /// what a server that does render one would show.
 const ACTION_DEFAULT: &str = "default";
 
+/// The one button on the "newer release available" banner.
+const ACTION_RESTART: &str = "restart";
+
 /// `sound-name` hint value. An XDG sound-naming-spec name rather than
 /// a file path, so the server picks the theme's own sound.
 const SOUND_NAME: &str = "dialog-question";
@@ -430,6 +433,8 @@ pub(crate) fn banners_to_close(held: &[String], still_pending: &[String]) -> Vec
 enum Job {
     /// Post a banner for a pending request.
     Post(Box<PromptSummary>),
+    /// Post the "newer release available" banner.
+    PostUpdate(String),
     /// Re-derive which banners are stale and close them.
     Reconcile,
     /// Re-read `GetCapabilities` after a server restart.
@@ -456,6 +461,9 @@ struct Shared {
     /// long-press, a hover on some shells — and those would otherwise
     /// accumulate for the daemon's lifetime.
     tokens: Mutex<HashMap<u32, String>>,
+    /// Server id of the update banner, kept apart from `map` because no
+    /// request stands behind it.
+    update_notification: Mutex<Option<u32>>,
     shutdown: AtomicBool,
 }
 
@@ -555,6 +563,46 @@ impl Shared {
         }
     }
 
+    /// Post the update banner, replacing one still on screen.
+    fn post_update(&self, notice: &str) {
+        let caps = self.capabilities();
+        let replaces = self
+            .update_notification
+            .lock()
+            .expect("update notification mutex poisoned")
+            .unwrap_or(0);
+        let actions = if caps.actions {
+            vec![ACTION_DEFAULT, "Dismiss", ACTION_RESTART, "Restart"]
+        } else {
+            Vec::new()
+        };
+        let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
+        hints.insert("urgency", Value::U8(1));
+        hints.insert("desktop-entry", Value::Str(DESKTOP_ENTRY.into()));
+        let args = (
+            APP_NAME,
+            replaces,
+            "",
+            "Vetter update available",
+            notice,
+            actions,
+            hints,
+            0i32,
+        );
+        match self
+            .proxy()
+            .and_then(|p| p.call::<_, _, u32>("Notify", &args))
+        {
+            Ok(notification) => {
+                *self
+                    .update_notification
+                    .lock()
+                    .expect("update notification mutex poisoned") = Some(notification);
+            }
+            Err(e) => eprintln!("vetterd: notifications: Notify failed for the update banner: {e}"),
+        }
+    }
+
     /// Close the banners of every request that is no longer pending.
     fn reconcile(&self) {
         let held = self
@@ -635,6 +683,7 @@ impl LinuxNotifier {
             map: Mutex::new(NotificationMap::default()),
             caps: Mutex::new(Capabilities::default()),
             tokens: Mutex::new(HashMap::new()),
+            update_notification: Mutex::new(None),
             shutdown: AtomicBool::new(false),
         });
         let (tx, rx) = channel::<Job>();
@@ -711,6 +760,7 @@ fn spawn_jobs_thread(shared: Arc<Shared>, rx: std::sync::mpsc::Receiver<Job>) {
                 }
                 match job {
                     Job::Post(summary) => shared.post(&summary),
+                    Job::PostUpdate(notice) => shared.post_update(&notice),
                     Job::Reconcile => shared.reconcile(),
                     Job::RefreshCapabilities => shared.refresh_capabilities(),
                     Job::Stop => return,
@@ -860,6 +910,20 @@ fn on_action_invoked(shared: &Arc<Shared>, notification: u32, key: &str) {
         .expect("token map poisoned")
         .remove(&notification);
 
+    // The update banner has no request behind it: Restart acts, any
+    // other click just dismisses it.
+    if *shared
+        .update_notification
+        .lock()
+        .expect("update notification mutex poisoned")
+        == Some(notification)
+    {
+        if key == ACTION_RESTART {
+            crate::update_watch::restart_daemon();
+        }
+        return;
+    }
+
     let request = shared
         .map
         .lock()
@@ -927,6 +991,14 @@ impl Notifier for LinuxNotifier {
                 summary.id
             );
         }
+    }
+
+    fn notify_update(&self, notice: &str) {
+        let _ = self
+            .jobs
+            .lock()
+            .expect("jobs sender poisoned")
+            .send(Job::PostUpdate(notice.to_string()));
     }
 
     fn shutdown(&self) {

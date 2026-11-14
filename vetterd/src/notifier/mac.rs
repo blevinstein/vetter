@@ -146,6 +146,10 @@ impl Notifier for MacNotifier {
         );
     }
 
+    fn notify_update(&self, notice: &str) {
+        crate::runloop::post_update_notification(notice.to_string());
+    }
+
     fn shutdown(&self) {
         // The runloop tears its own state down via `cancel_all` once
         // `NSApplication::run()` returns; nothing extra to do here.

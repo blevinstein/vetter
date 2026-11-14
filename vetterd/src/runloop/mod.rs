@@ -81,6 +81,13 @@ pub const ACTION_REJECT: &str = "vetter.reject";
 pub const ACTION_ALLOWLIST: &str = "vetter.allowlist";
 pub const ACTION_TRUST_HOST: &str = "vetter.trust_host";
 
+/// The "newer release available" banner. Not an approval card: it has
+/// a single Restart action and a fixed identifier, so a later notice
+/// replaces an earlier one that is still on screen.
+pub const CATEGORY_ID_UPDATE: &str = "vetter.update";
+pub const ACTION_RESTART: &str = "vetter.restart";
+const UPDATE_NOTIFICATION_ID: &str = "vetter.update-available";
+
 /// Reason recorded on the audit log when the user resolves via the
 /// popover instead of the notification banner.
 const REASON_POPOVER_APPROVE: &str = "approved via popover";
@@ -241,6 +248,29 @@ pub(crate) fn post_notification(
     });
 }
 
+/// Post the update banner on the main queue. Called through
+/// [`crate::notifier::mac::MacNotifier::notify_update`].
+pub(crate) fn post_update_notification(notice: String) {
+    DispatchQueue::main().exec_async(move || {
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        let content = UNMutableNotificationContent::new();
+        content.setTitle(&NSString::from_str("Vetter update available"));
+        content.setBody(&NSString::from_str(&notice));
+        content.setCategoryIdentifier(&NSString::from_str(CATEGORY_ID_UPDATE));
+        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+            &NSString::from_str(UPDATE_NOTIFICATION_ID),
+            &content,
+            None,
+        );
+        let handler: RcBlock<dyn Fn(*mut NSError)> = RcBlock::new(move |err: *mut NSError| {
+            if !err.is_null() {
+                eprintln!("vetterd: addNotificationRequest failed for the update banner");
+            }
+        });
+        center.addNotificationRequest_withCompletionHandler(&request, Some(&*handler));
+    });
+}
+
 /// Remove any delivered banners for `ids` so resolving via the
 /// popover (or by clicking through the banner body) doesn't leave a
 /// stale notification card sitting in Notification Center. Called
@@ -315,7 +345,20 @@ fn install_notification_machinery(_mtm: MainThreadMarker, delegate: &AppDelegate
             &intents,
             UNNotificationCategoryOptions::CustomDismissAction,
         );
-    let categories = NSSet::from_retained_slice(&[base_category, with_host_category]);
+    let restart = UNNotificationAction::actionWithIdentifier_title_options(
+        &NSString::from_str(ACTION_RESTART),
+        &NSString::from_str("Restart"),
+        UNNotificationActionOptions::empty(),
+    );
+    let update_category =
+        UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+            &NSString::from_str(CATEGORY_ID_UPDATE),
+            &NSArray::from_retained_slice(&[restart]),
+            &intents,
+            UNNotificationCategoryOptions::empty(),
+        );
+    let categories =
+        NSSet::from_retained_slice(&[base_category, with_host_category, update_category]);
     center.setNotificationCategories(&categories);
 
     // Authorization request. First-run pops the system permission
@@ -481,7 +524,12 @@ define_class!(
             let default = unsafe { UNNotificationDefaultActionIdentifier.to_string() };
             let dismiss = unsafe { UNNotificationDismissActionIdentifier.to_string() };
 
-            if action == ACTION_APPROVE {
+            if action == ACTION_RESTART {
+                crate::update_watch::restart_daemon();
+            } else if id == UPDATE_NOTIFICATION_ID {
+                // Body click or dismissal of the update banner: there
+                // is no queued request behind it to focus or resolve.
+            } else if action == ACTION_APPROVE {
                 self.ivars()
                     .queue()
                     .resolve(&id, PendingDecision::allow("approved via notification"));

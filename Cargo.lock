@@ -2486,6 +2486,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-user-notifications",
  "predicates",
+ "semver",
  "serde",
  "serde_json",
  "signal-hook",

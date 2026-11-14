@@ -50,6 +50,7 @@ pub mod socket;
 pub mod suggestions;
 #[cfg(target_os = "linux")]
 pub mod tray;
+pub mod update_watch;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -330,6 +331,8 @@ pub fn run(
     };
 
     eprintln!("vetterd: listening on {}", socket_path.display());
+
+    update_watch::spawn(Arc::clone(&notifier), Arc::clone(&shutdown));
 
     // Admin accept loop runs on a background thread; it carries the
     // full daemon `Context` so the Phase-5 suggestion handlers can

@@ -24,6 +24,8 @@ url = { version = "2", features = ["serde"] }
 anstyle = "1"
 
 ulid = "1"
+semver = "1"
+ureq = "3"
 
 assert_cmd = "2"
 predicates = "3"

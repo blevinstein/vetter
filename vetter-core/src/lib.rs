@@ -9,6 +9,8 @@
 //! - [`settings`]    — user preferences persisted at `~/.vet/settings.yaml`.
 //! - [`suggest`]     — generalisation engine (allowlist + known-host) for
 //!   the macOS approver picker.
+//! - [`update`]      — release-staleness logic and cache for the
+//!   "daemon is out of date" notice.
 //! - [`wire`]        — JSON wire types (Phase 3; placeholder until then).
 //! - [`paths`]       — shared socket / pidfile resolution used by both
 //!   `vet` and `vetterd`.
@@ -28,6 +30,7 @@ pub mod settings;
 pub mod signals;
 pub mod socket_dir;
 pub mod suggest;
+pub mod update;
 pub mod wire;
 pub mod yaml;
 

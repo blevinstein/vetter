@@ -9,16 +9,19 @@
 //!   [`SMAppService.mainApp`](https://developer.apple.com/documentation/servicemanagement/smappservice).
 //! - `notification_sound` — play the system default notification
 //!   sound alongside each approval banner.
+//! - `check_for_updates` — warn when the running daemon is older than
+//!   the latest release.
 //!
 //! ## File format
 //!
 //! ```yaml
 //! autostart: true
 //! notification_sound: true
+//! check_for_updates: true
 //! ```
 //!
 //! Missing file → [`Settings::default`] (autostart off,
-//! notification_sound on). Unknown fields
+//! notification_sound on, check_for_updates on). Unknown fields
 //! (`#[serde(deny_unknown_fields)]`) are rejected at load time so a
 //! typo in the YAML surfaces as a config error rather than being
 //! silently ignored. Fields missing from an otherwise-valid file
@@ -67,6 +70,14 @@ pub struct Settings {
     /// settings remain the ultimate control.
     #[serde(default = "default_notification_sound")]
     pub notification_sound: bool,
+
+    /// Look up the latest released version and warn when the running
+    /// daemon is older (see [`crate::update`]). On by default: the
+    /// check only reads public release metadata, and a stale daemon
+    /// silently misses fixes. Set to `false` to disable every update
+    /// lookup and notice.
+    #[serde(default = "default_check_for_updates")]
+    pub check_for_updates: bool,
 }
 
 impl Default for Settings {
@@ -74,11 +85,16 @@ impl Default for Settings {
         Self {
             autostart: false,
             notification_sound: true,
+            check_for_updates: true,
         }
     }
 }
 
 fn default_notification_sound() -> bool {
+    true
+}
+
+fn default_check_for_updates() -> bool {
     true
 }
 

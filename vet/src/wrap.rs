@@ -44,6 +44,7 @@ use vetter_core::{
 
 use crate::color::{self, Style};
 use crate::messages::{explain_load_error, explain_parse_error, explain_resolve_error};
+use crate::update_check;
 
 const EXIT_CONFIG: u8 = 78;
 const EXIT_DENY: u8 = 77;
@@ -141,6 +142,10 @@ pub fn run(
             return ExitCode::from(EXIT_CONFIG);
         }
     };
+
+    if !quiet {
+        update_check::warn_if_stale();
+    }
 
     match dec.decision {
         WireDecision::Allow => {

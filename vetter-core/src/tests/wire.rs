@@ -284,3 +284,19 @@ fn from_match_maps_decisions_correctly() {
     );
     assert_eq!(WireDecision::from_match(&MatchDecision::Prompt), None);
 }
+
+#[test]
+fn mgmt_get_version_round_trips_through_serde() {
+    let json = serde_json::to_string(&MgmtRequest::GetVersion).unwrap();
+    assert!(json.contains("get_version"), "unexpected tag: {json}");
+    assert!(matches!(
+        serde_json::from_str::<MgmtRequest>(&json).unwrap(),
+        MgmtRequest::GetVersion
+    ));
+
+    let resp = MgmtResponse::Version {
+        version: "0.2.5".into(),
+    };
+    let back: MgmtResponse = serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+    assert_eq!(back, resp);
+}

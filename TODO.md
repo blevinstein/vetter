@@ -1467,6 +1467,13 @@ Tracked from [plans/Overview.md](plans/Overview.md) §12:
       [`blevinstein/homebrew-vetter`](https://github.com/blevinstein/homebrew-vetter)
       tap repo; release walkthrough in
       [plans/Release.md](plans/Release.md))
+- [x] Stale-daemon notice, phase 1 (CLI): `MgmtRequest::GetVersion`,
+      `vetter_core::update`, `vet daemon restart`, warnings from
+      `vet daemon status|start`, `vet doctor` and (daily) the wrap path
+- [ ] Stale-daemon notice, phase 2 (native): daemon-side 24h check, an
+      informational banner with a "Restart" action (macOS category +
+      Linux action key), popover/tray entry; needs an informational
+      method on the `Notifier` trait
 
 ---
 

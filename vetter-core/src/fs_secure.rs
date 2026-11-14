@@ -50,6 +50,23 @@ pub fn persist_at_mode(tmp: tempfile::NamedTempFile, dest: &Path, mode: u32) -> 
     Ok(())
 }
 
+/// Write `contents` to `dest` atomically at `mode`, creating the parent
+/// directory (at `0700`) if needed. The bytes land in a sibling
+/// tempfile that is fsynced and then renamed over `dest`, so readers
+/// see either the old file or the whole new one.
+pub fn write_atomic(dest: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
+    use std::io::Write as _;
+    let parent = dest.parent().filter(|p| !p.as_os_str().is_empty());
+    if let Some(p) = parent {
+        create_dir_secure(p, 0o700)?;
+    }
+    let tmp = tempfile::NamedTempFile::new_in(parent.unwrap_or_else(|| Path::new(".")))?;
+    let mut handle = tmp.as_file();
+    handle.write_all(contents)?;
+    handle.sync_all()?;
+    persist_at_mode(tmp, dest, mode)
+}
+
 #[cfg(test)]
 #[path = "tests/fs_secure.rs"]
 mod tests;

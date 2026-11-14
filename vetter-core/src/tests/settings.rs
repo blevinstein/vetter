@@ -31,6 +31,7 @@ fn roundtrip_preserves_autostart_true() {
         &Settings {
             autostart: true,
             notification_sound: true,
+            check_for_updates: true,
         },
     )
     .unwrap();
@@ -47,6 +48,7 @@ fn roundtrip_preserves_notification_sound_false() {
         &Settings {
             autostart: false,
             notification_sound: false,
+            check_for_updates: true,
         },
     )
     .unwrap();
@@ -63,6 +65,7 @@ fn write_creates_parent_dirs() {
         &Settings {
             autostart: true,
             notification_sound: true,
+            check_for_updates: true,
         },
     )
     .unwrap();
@@ -92,6 +95,7 @@ fn write_replaces_atomically_with_no_leftover_tempfiles() {
         &Settings {
             autostart: false,
             notification_sound: true,
+            check_for_updates: true,
         },
     )
     .unwrap();
@@ -100,6 +104,7 @@ fn write_replaces_atomically_with_no_leftover_tempfiles() {
         &Settings {
             autostart: true,
             notification_sound: true,
+            check_for_updates: true,
         },
     )
     .unwrap();
@@ -168,4 +173,11 @@ fn settings_path_uses_home() {
             .join("settings.yaml");
         assert_eq!(path, expected);
     }
+}
+
+#[test]
+fn check_for_updates_defaults_on_and_survives_a_file_without_the_key() {
+    assert!(Settings::default().check_for_updates);
+    let s: Settings = crate::yaml::from_str("autostart: true\n").unwrap();
+    assert!(s.check_for_updates);
 }

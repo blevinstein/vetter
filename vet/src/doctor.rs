@@ -32,7 +32,10 @@ use vetter_core::matcher::{
 };
 use vetter_core::peer_cred::{current_euid, peer_pid, peer_uid};
 use vetter_core::pidfile::{self, PidFileContents};
+use vetter_core::update::{notice_text, Staleness};
 use vetter_core::{default_audit_path, default_pidfile_path, default_socket_path};
+
+use crate::update_check::{self, Fetch};
 
 /// `EX_CONFIG`-equivalent per `plans/Overview.md` §4.
 const EXIT_CONFIG: u8 = 78;
@@ -92,6 +95,7 @@ pub fn run(allowlist_override: Option<&Path>) -> ExitCode {
 
     let mut checks: Vec<Check> = vec![
         check_daemon(&pidfile_path, &socket_path),
+        check_daemon_version(),
         check_socket(&socket_path),
         check_socket_parent_dir(&socket_path),
         check_pidfile(&pidfile_path),
@@ -187,6 +191,24 @@ fn check_daemon(pidfile_path: &Path, socket_path: &Path) -> Check {
             format!("cannot read pidfile {}: {e}", pidfile_path.display()),
         ),
         Ok(contents) => check_daemon_with_pidfile(contents, pidfile_path, socket_path),
+    }
+}
+
+/// Compare the running daemon with the latest release. A daemon that
+/// cannot be assessed (not running, checks disabled, offline) is not a
+/// problem worth a row beyond `skip`.
+fn check_daemon_version() -> Check {
+    const NAME: &str = "daemon version";
+    match update_check::daemon_staleness(Fetch::Blocking) {
+        None => Check::new(
+            NAME,
+            Status::Skip,
+            "not assessed (daemon not running, update checks disabled, or latest release unknown)",
+        ),
+        Some(Staleness::Current) => Check::new(NAME, Status::Ok, "up to date"),
+        Some(Staleness::Behind { running, latest }) => {
+            Check::new(NAME, Status::Warn, notice_text(running.as_ref(), &latest))
+        }
     }
 }
 

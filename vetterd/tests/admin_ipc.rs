@@ -557,3 +557,16 @@ fn admin_resolve_refuses_allow_once() {
     sigterm_and_wait(child);
     let _ = worker.join();
 }
+
+#[test]
+fn admin_get_version_reports_the_daemon_build() {
+    let scratch = TempDir::new().unwrap();
+    let (child, _socket, admin_socket) = spawn_noop_daemon(&scratch);
+
+    match send_mgmt(&admin_socket, MgmtRequest::GetVersion) {
+        MgmtResponse::Version { version } => assert_eq!(version, vetter_core::version()),
+        other => panic!("unexpected admin response: {other:?}"),
+    }
+
+    sigterm_and_wait(child);
+}

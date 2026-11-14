@@ -16,6 +16,7 @@ mod doctor;
 mod explain;
 mod init;
 mod messages;
+mod update_check;
 mod wrap;
 
 #[derive(Parser, Debug)]
@@ -70,6 +71,11 @@ enum Command {
         action: DaemonAction,
     },
 
+    /// Refresh the cached latest-release lookup. Spawned in the
+    /// background by the wrap path; not meant to be run by hand.
+    #[command(hide = true)]
+    UpdateRefresh,
+
     /// Wrap a command: `vet <cmd> [args...]`. Any non-builtin first
     /// positional argument is treated as the command to vet.
     #[command(external_subcommand)]
@@ -117,6 +123,8 @@ enum DaemonAction {
     Start,
     /// Stop the vetterd daemon.
     Stop,
+    /// Stop the daemon, then start it again (picks up an upgraded build).
+    Restart,
     /// Show daemon status (pid, uptime, pending count).
     Status,
     /// List pending approval requests waiting for a human decision.
@@ -164,6 +172,10 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Doctor => doctor::run(cli.allowlist.as_deref()),
         Command::Init => init::run(),
+        Command::UpdateRefresh => {
+            update_check::refresh();
+            ExitCode::SUCCESS
+        }
         Command::Allow { action } => match action {
             AllowAction::Add { pattern, scope } => {
                 allow::add(&pattern, scope, cli.allowlist.as_deref())
@@ -176,6 +188,7 @@ fn main() -> ExitCode {
         Command::Daemon { action } => match action {
             DaemonAction::Start => daemon::start(),
             DaemonAction::Stop => daemon::stop(),
+            DaemonAction::Restart => daemon::restart(),
             DaemonAction::Status => daemon::status(),
             DaemonAction::List => daemon::list(),
             DaemonAction::Approve { id } => daemon::approve(&id),

@@ -23,6 +23,7 @@ sha2 = "0.10"
 serde-saphyr = { version = "2", default-features = false, features = ["serialize", "deserialize"] }
 tempfile = { workspace = true }
 ulid = { workspace = true }
+semver = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

@@ -429,6 +429,13 @@ pub enum MgmtRequest {
     ///
     /// Linux-only; other platforms answer [`MgmtResponse::Error`].
     GetDesktopHealth,
+    /// Read-only query for the running daemon's build version. Answered
+    /// with [`MgmtResponse::Version`].
+    ///
+    /// A daemon that predates this variant cannot deserialise it and
+    /// closes the connection without replying, so a client reads
+    /// "no answer" as "older than version reporting".
+    GetVersion,
 }
 
 /// Live state of the desktop services the Linux approval UI depends
@@ -558,6 +565,11 @@ pub enum MgmtResponse {
     },
     /// Result of [`MgmtRequest::GetDesktopHealth`].
     DesktopHealth(DesktopHealth),
+    /// Result of [`MgmtRequest::GetVersion`]: the daemon's
+    /// `CARGO_PKG_VERSION`.
+    Version {
+        version: String,
+    },
     Error {
         message: String,
     },

@@ -656,6 +656,9 @@ fn handle_admin_request(ctx: &Arc<Context>, req: MgmtRequest) -> MgmtResponse {
         } => handle_resolve(ctx, &id, decision, reason.as_deref()),
         MgmtRequest::OpenWindow => handle_open_window(),
         MgmtRequest::GetDesktopHealth => handle_desktop_health(),
+        MgmtRequest::GetVersion => MgmtResponse::Version {
+            version: vetter_core::version().to_string(),
+        },
         MgmtRequest::GetAutostart => {
             // Read both: settings.yaml (the user's persisted
             // preference) and SMAppService (the live OS state). The

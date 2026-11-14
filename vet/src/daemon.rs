@@ -1,4 +1,4 @@
-//! `vet daemon start | stop | status` — supervise the long-running
+//! `vet daemon start | stop | restart | status` — supervise the long-running
 //! `vetterd` process from the user's CLI.
 //!
 //! Design notes:
@@ -34,6 +34,8 @@ use vetter_core::wire::{
 };
 use vetter_core::{default_admin_socket_path, default_pidfile_path, default_socket_path};
 
+use crate::update_check::{self, DaemonVersion, Fetch};
+
 const EXIT_OK: u8 = 0;
 const EXIT_CONFIG: u8 = 78;
 
@@ -61,6 +63,7 @@ pub fn start() -> ExitCode {
             "vet daemon: already running{pid_msg}, listening on {}",
             socket.display()
         );
+        warn_if_stale();
         return ExitCode::from(EXIT_OK);
     }
 
@@ -146,6 +149,21 @@ pub fn start() -> ExitCode {
     ExitCode::from(EXIT_CONFIG)
 }
 
+pub fn restart() -> ExitCode {
+    let stopped = stop();
+    if socket_alive(&default_socket_path()) {
+        return stopped;
+    }
+    start()
+}
+
+/// Print the stale-daemon warning, if there is one, on stderr.
+fn warn_if_stale() {
+    if let Some(notice) = update_check::stale_notice(Fetch::Blocking) {
+        eprintln!("vet daemon: warning: {notice}");
+    }
+}
+
 pub fn stop() -> ExitCode {
     let socket = default_socket_path();
     let pidfile = default_pidfile_path(&socket);
@@ -213,13 +231,18 @@ pub fn status() -> ExitCode {
                 Ok(MgmtResponse::PendingList { items }) => items.len().to_string(),
                 _ => "?".to_string(),
             };
+            let version_label = match update_check::daemon_version() {
+                DaemonVersion::Reported(v) => v.to_string(),
+                _ => "unknown".to_string(),
+            };
             println!(
-                "vet daemon: running (pid={}, uptime={}, socket={}, pending={})",
+                "vet daemon: running (pid={}, version={version_label}, uptime={}, socket={}, pending={})",
                 c.pid,
                 format_uptime(&c),
                 socket.display(),
                 pending_label,
             );
+            warn_if_stale();
             ExitCode::from(EXIT_OK)
         }
         (Some(c), false) => {
@@ -536,7 +559,7 @@ pub(crate) fn query_admin(req: MgmtRequest) -> Result<MgmtResponse, String> {
         .map_err(|e: WireError| format!("admin read error: {e}"))
 }
 
-fn socket_alive(path: &Path) -> bool {
+pub(crate) fn socket_alive(path: &Path) -> bool {
     if !path.exists() {
         return false;
     }

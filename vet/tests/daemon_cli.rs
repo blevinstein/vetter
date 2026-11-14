@@ -426,3 +426,75 @@ fn approve_with_no_daemon_running_exits_non_zero() {
         .code(78)
         .stderr(contains("admin socket"));
 }
+
+// ── Stale-daemon notice ─────────────────────────────────────────────
+
+impl Scratch {
+    /// `vet daemon status` with the latest release pinned to `latest`.
+    fn status_assuming_latest(&self, latest: &str) -> assert_cmd::assert::Assert {
+        self.vet()
+            .env("HOME", self.dir.path())
+            .env("VET_UPDATE_LATEST", latest)
+            .args(["daemon", "status"])
+            .assert()
+            .success()
+    }
+}
+
+#[test]
+fn status_reports_version_and_warns_when_a_newer_release_exists() {
+    let s = Scratch::new();
+    let _r = Reaper(s.pidfile.clone());
+    s.vet().args(["daemon", "start"]).assert().success();
+
+    s.status_assuming_latest("99.0.0")
+        .stdout(contains(format!("version={}", vetter_core::version())))
+        .stderr(contains("v99.0.0 is available"))
+        .stderr(contains("vet daemon restart"));
+}
+
+#[test]
+fn status_is_quiet_when_the_daemon_is_current() {
+    let s = Scratch::new();
+    let _r = Reaper(s.pidfile.clone());
+    s.vet().args(["daemon", "start"]).assert().success();
+
+    s.status_assuming_latest(vetter_core::version())
+        .stderr(predicates::str::is_empty());
+}
+
+#[test]
+fn status_warns_about_a_daemon_that_never_answers_version_queries() {
+    let s = Scratch::new();
+    let admin = s.dir.path().join("vetter-admin.sock");
+    // Stand-ins for a daemon predating `GetVersion`: both sockets
+    // accept and hang up without replying.
+    let listeners: Vec<_> = [&s.socket, &admin]
+        .into_iter()
+        .map(|p| std::os::unix::net::UnixListener::bind(p).expect("bind fake daemon socket"))
+        .collect();
+    for l in listeners {
+        std::thread::spawn(move || for _ in l.incoming() {});
+    }
+    std::fs::write(&s.pidfile, format!("{}\n0\n", std::process::id())).expect("write pidfile");
+
+    s.status_assuming_latest("99.0.0")
+        .stdout(contains("version=unknown"))
+        .stderr(contains("predates version reporting"));
+}
+
+#[test]
+fn restart_replaces_the_running_daemon() {
+    let s = Scratch::new();
+    let _r = Reaper(s.pidfile.clone());
+    s.vet().args(["daemon", "start"]).assert().success();
+    let before = read_pidfile(&s.pidfile).expect("pid after start");
+
+    s.vet()
+        .args(["daemon", "restart"])
+        .assert()
+        .success()
+        .stdout(contains("started"));
+    let after = read_pidfile(&s.pidfile).expect("pid after restart");
+    assert_ne!(before, after, "restart should spawn a new process");
+}
